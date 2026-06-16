@@ -16,6 +16,18 @@ import {
 import * as THREE from "three"
 import { Layers, Smartphone, Volume2, VolumeX } from "lucide-react"
 import { audioReady, playBeep, playImpact, playTone, primeBlocks, setMuted, unlockAudio } from "@/lib/impact-sound"
+import { BLOCKS, MESH_FIT, blockBaseFreq, blockRadius, type Block } from "@/lib/blocks"
+import {
+  CAM_FOV,
+  FLOOR,
+  WALL_COL_HEIGHT,
+  WALL_VIS_HEIGHT,
+  boxLayout,
+  buildWalls,
+  viewTarget,
+  type Box,
+  type Wall,
+} from "@/lib/layout"
 
 /* ------------------------------------------------------------------ */
 /*  Rapier body-type constants (avoid importing the wasm enum)         */
@@ -34,155 +46,7 @@ type TiltState = {
   sz: number // calibrated screen-down gravity component (-1..1)
 }
 
-/* ------------------------------------------------------------------ */
-/*  Block catalogue – sizes are real millimetres scaled to scene units */
-/* ------------------------------------------------------------------ */
-const S = 0.036 // 1 mm -> scene units (blocks sized to sit smaller in the tray)
-// The GLB block meshes were authored to match colliders at this scale. The
-// visual is scaled by S / MESH_DESIGN_S so the mesh and its cuboid collider
-// always stay the same size – change S alone and they drift apart (blocks
-// float / interpenetrate), so the visual must scale with it.
-const MESH_DESIGN_S = 0.045
-const MESH_FIT = S / MESH_DESIGN_S
 
-type BlockMeshAsset = {
-  url: string
-}
-
-type BlockBase = {
-  id: string
-  name: string
-  color: string
-  dims: string
-  pos: [number, number, number]
-  rot?: [number, number, number]
-  mesh: BlockMeshAsset
-}
-
-type BoxBlock = {
-  shape: "box"
-  half: [number, number, number]
-} & BlockBase
-type CylBlock = {
-  shape: "cylinder"
-  radius: number
-  halfHeight: number
-} & BlockBase
-type Block = BoxBlock | CylBlock
-
-const MESHES = {
-  cube: {
-    url: "/block_lightblue_cube.glb",
-  },
-  orange: {
-    url: "/block_orange.glb",
-  },
-  blueLong: {
-    url: "/block_blue_02.glb",
-  },
-  blueShort: {
-    url: "/block_blue_01.glb",
-  },
-  cylinder: {
-    url: "/block_red_cylinder.glb",
-  },
-} satisfies Record<string, BlockMeshAsset>
-
-const REST = 0.06 // small gap above floor when spawning
-
-const BLOCKS: Block[] = [
-  {
-    id: "cube",
-    name: "Light Blue Cube",
-    color: "#3f9ec9",
-    shape: "box",
-    half: [(30 * S) / 2, (30 * S) / 2, (30 * S) / 2],
-    dims: "30 × 30 × 30 mm",
-    pos: [-1.48, (30 * S) / 2 + REST, -2.96],
-    mesh: MESHES.cube,
-  },
-  {
-    id: "orange",
-    name: "Orange Block",
-    color: "#e07b22",
-    shape: "box",
-    // 45 × 45 × 24, lying so the 24 mm dimension is the height
-    half: [(45 * S) / 2, (24 * S) / 2, (45 * S) / 2],
-    dims: "45 × 45 × 24 mm",
-    pos: [-0.84, (24 * S) / 2 + REST, 0.26],
-    mesh: MESHES.orange,
-  },
-  {
-    id: "plank-long",
-    name: "Dark Blue Plank",
-    color: "#2f63cc",
-    shape: "box",
-    // 30 × 75 × 15, lying flat. Spawn rotated so the 75 mm length starts across the tray.
-    half: [(30 * S) / 2, (15 * S) / 2, (75 * S) / 2],
-    dims: "30 × 75 × 15 mm",
-    pos: [0.19, (15 * S) / 2 + REST, 3.21],
-    rot: [0, Math.PI / 2, 0],
-    mesh: MESHES.blueLong,
-  },
-  {
-    id: "plank-short",
-    name: "Dark Blue Short",
-    color: "#2f63cc",
-    shape: "box",
-    // 30 × 60 × 15, lying flat (60 along z, 30 along x, 15 high)
-    half: [(30 * S) / 2, (15 * S) / 2, (60 * S) / 2],
-    dims: "30 × 60 × 15 mm",
-    pos: [1.29, (15 * S) / 2 + REST, -1.48],
-    mesh: MESHES.blueShort,
-  },
-  {
-    id: "cylinder",
-    name: "Red Cylinder",
-    color: "#c83a2e",
-    shape: "cylinder",
-    radius: (30 * S) / 2,
-    halfHeight: (60 * S) / 2,
-    dims: "Ø 30 mm · H 60 mm",
-    pos: [1.22, (60 * S) / 2 + REST, 1.93],
-    mesh: MESHES.cylinder,
-  },
-]
-
-/* ------------------------------------------------------------------ */
-/*  Camera + tray layout – the single source of truth                  */
-/*                                                                     */
-/*  The camera looks straight down at the origin, so the visible floor */
-/*  is an axis-aligned rectangle centred on (0,0). We derive its half  */
-/*  extents analytically (no raycasting), build a clean rectangular    */
-/*  tray from them, and reuse the EXACT same numbers to clamp dragging */
-/*  and to catch any body that ever escapes – so the box, the camera   */
-/*  and the containment logic can never drift apart.                   */
-/* ------------------------------------------------------------------ */
-const CAM_FOV = 36
-// How many world units to keep visible. Smaller = camera tighter = blocks read
-// BIGGER on screen. Phones get a tighter frame so the blocks aren't tiny.
-const TARGET_HALF_DESKTOP = 4.4
-function viewTarget(w: number, h: number) {
-  const min = Math.min(w, h)
-  if (min < 520) return 2.8 // phones
-  if (min < 820) return 3.6 // small tablets
-  return TARGET_HALF_DESKTOP
-}
-const BOX_INSET = 0.9 // pull the walls inward so the whole frame reads on screen
-const WALL_HALF_THICK = 0.4
-const WALL_VIS_HEIGHT = 3.0 // the wood-coloured tray walls you actually see
-const WALL_COL_HEIGHT = 16 // invisible containment walls – a deep box nothing escapes
-
-// Half extents of the inner wall faces: the playable rectangle on the floor.
-type Box = { bx: number; bz: number }
-
-function boxLayout(aspect: number, target: number) {
-  const halfV = Math.tan((CAM_FOV / 2) * (Math.PI / 180))
-  const dist = Math.max(target / (halfV * aspect), target / halfV) + 0.5
-  const halfX = dist * halfV * aspect
-  const halfZ = dist * halfV
-  return { dist, bx: halfX * BOX_INSET, bz: halfZ * BOX_INSET }
-}
 
 function useBox(): Box {
   const size = useThree((s) => s.size)
@@ -192,36 +56,7 @@ function useBox(): Box {
   }, [size.width, size.height])
 }
 
-type Wall = { half: [number, number, number]; pos: [number, number, number] }
 
-// Four axis-aligned walls whose inner faces sit exactly on ±bx / ±bz.
-function buildWalls({ bx, bz }: Box, height: number): Wall[] {
-  const t = WALL_HALF_THICK
-  const h = height / 2
-  return [
-    { half: [t, h, bz + 2 * t], pos: [-(bx + t), h, 0] }, // left
-    { half: [t, h, bz + 2 * t], pos: [bx + t, h, 0] }, // right
-    { half: [bx + 2 * t, h, t], pos: [0, h, -(bz + t)] }, // back
-    { half: [bx + 2 * t, h, t], pos: [0, h, bz + t] }, // front
-  ]
-}
-
-// Horizontal bounding radius of a block – the margin to keep it off the walls
-// no matter how it is rotated about the vertical axis.
-function blockRadius(b: Block) {
-  return b.shape === "cylinder" ? b.radius : Math.hypot(b.half[0], b.half[2])
-}
-
-// Largest real dimension of a block in mm – longer pieces ring at a lower pitch.
-function blockMaxMm(b: Block) {
-  const u = b.shape === "cylinder" ? Math.max(b.radius * 2, b.halfHeight * 2) : Math.max(...b.half) * 2
-  return u / S
-}
-
-// Fundamental impact frequency: bigger block -> lower knock.
-function blockBaseFreq(b: Block) {
-  return THREE.MathUtils.clamp(2600 / Math.sqrt(blockMaxMm(b)), 230, 680)
-}
 
 function BlockMesh({
   block,
@@ -882,7 +717,6 @@ const LIGHT_RADIUS = 14 // how far the key light orbits when you shift+right-dra
 /* ------------------------------------------------------------------ */
 /*  Room environments – floor + walls + fill lighting, swapped by env   */
 /* ------------------------------------------------------------------ */
-const FLOOR = 120
 
 type RoomProps = {
   env: EnvConfig
