@@ -553,6 +553,88 @@ function makePlayMatTexture(size = 512, cells = 4, seam = 0.04): THREE.DataTextu
   return tex
 }
 
+/* ------------------------------------------------------------------ */
+/*  Haptics – "so you almost feel it". Vibration on every tactile beat: */
+/*  grabbing, impacts (scaled by force), and squeezing.                 */
+/* ------------------------------------------------------------------ */
+function haptic(ms: number) {
+  try {
+    const nav = typeof navigator !== "undefined" ? (navigator as Navigator & { vibrate?: (p: number | number[]) => boolean }) : null
+    nav?.vibrate?.(Math.round(ms))
+  } catch {}
+}
+let lastImpactBuzz = 0
+function impactHaptic(strength: number) {
+  const now = typeof performance !== "undefined" ? performance.now() : 0
+  if (now - lastImpactBuzz < 38) return // don't machine-gun the motor during tumbles
+  lastImpactBuzz = now
+  haptic(4 + strength * 44)
+}
+
+// A short-lived flash of light a block leaves where it strikes a reactive floor.
+type Glow = { x: number; z: number; strength: number; life: number; dur: number }
+const GLOW_POOL = 18
+
+function ImpactGlows({
+  poolRef,
+  active,
+  tile,
+}: {
+  poolRef: React.MutableRefObject<Glow[]>
+  active: boolean
+  tile: number
+}) {
+  const refs = useRef<(THREE.Mesh | null)[]>([])
+  useFrame((_s, dt) => {
+    const pool = poolRef.current
+    for (let i = 0; i < GLOW_POOL; i++) {
+      const m = refs.current[i]
+      if (!m) continue
+      const g = pool[i]
+      if (!active || !g || g.life <= 0) {
+        if (m.visible) m.visible = false
+        continue
+      }
+      g.life -= dt / g.dur
+      if (g.life <= 0) {
+        m.visible = false
+        continue
+      }
+      m.visible = true
+      // snap to the tile grid so a whole tile lights up
+      m.position.set(Math.round(g.x / tile) * tile, 0.02, Math.round(g.z / tile) * tile)
+      const s = tile * 0.96
+      m.scale.set(s, s, s)
+      const mat = m.material as THREE.MeshBasicMaterial
+      mat.opacity = Math.min(1.4, g.strength * 1.4) * g.life * g.life
+    }
+  })
+  return (
+    <>
+      {Array.from({ length: GLOW_POOL }).map((_, i) => (
+        <mesh
+          key={i}
+          ref={(el) => {
+            refs.current[i] = el
+          }}
+          rotation={[-Math.PI / 2, 0, 0]}
+          visible={false}
+        >
+          <planeGeometry args={[1, 1]} />
+          <meshBasicMaterial
+            color="#dcefff"
+            transparent
+            opacity={0}
+            blending={THREE.AdditiveBlending}
+            depthWrite={false}
+            toneMapped={false}
+          />
+        </mesh>
+      ))}
+    </>
+  )
+}
+
 function TiltController({
   tiltRef,
 }: {
@@ -866,6 +948,68 @@ function GlassRoom({ visibleWalls }: RoomProps) {
   )
 }
 
+// 4 — pastel foam play-mat: interlocking soft tiles + padded bumper walls.
+function PlayMatRoom({ visibleWalls }: RoomProps) {
+  const albedo = useMemo(() => makePlayMatTexture(512, 4), [])
+  const puff = useMemo(() => makeBrickNormalTexture(256, 0.2, 1.4), [])
+  const floorAlbedo = useMemo(() => {
+    const t = albedo.clone()
+    t.repeat.set(6, 6)
+    t.needsUpdate = true
+    return t
+  }, [albedo])
+  const floorN = useMemo(() => {
+    const t = puff.clone()
+    t.repeat.set(24, 24)
+    t.needsUpdate = true
+    return t
+  }, [puff])
+  const wallAlbedo = useMemo(() => {
+    const t = albedo.clone()
+    t.repeat.set(2, 1)
+    t.needsUpdate = true
+    return t
+  }, [albedo])
+  const wallN = useMemo(() => {
+    const t = puff.clone()
+    t.repeat.set(8, 3)
+    t.needsUpdate = true
+    return t
+  }, [puff])
+
+  return (
+    <>
+      <ambientLight intensity={0.55} color="#fff3ea" />
+      <hemisphereLight intensity={0.5} color="#fffaf3" groundColor="#cfc2d6" />
+      <pointLight position={[3, 12, 5]} intensity={28} distance={40} decay={2} color="#fff0e0" />
+
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
+        <planeGeometry args={[FLOOR, FLOOR]} />
+        <meshStandardMaterial
+          map={floorAlbedo}
+          normalMap={floorN}
+          normalScale={new THREE.Vector2(0.8, 0.8)}
+          roughness={0.92}
+          metalness={0}
+        />
+      </mesh>
+
+      {visibleWalls.map((w, i) => (
+        <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
+          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
+          <meshStandardMaterial
+            map={wallAlbedo}
+            normalMap={wallN}
+            normalScale={new THREE.Vector2(0.6, 0.6)}
+            roughness={0.95}
+            metalness={0}
+          />
+        </mesh>
+      ))}
+    </>
+  )
+}
+
 function SceneContents({
   env,
   measureMode,
@@ -873,6 +1017,7 @@ function SceneContents({
   setSelectedId,
   registerReset,
   tiltRef,
+  grabbingRef,
 }: {
   env: EnvConfig
   measureMode: boolean
@@ -880,6 +1025,7 @@ function SceneContents({
   setSelectedId: (id: string | null) => void
   registerReset: (fn: () => void) => void
   tiltRef: React.MutableRefObject<TiltState>
+  grabbingRef: React.MutableRefObject<boolean>
 }) {
   const { camera, gl, size } = useThree()
   const box = useBox()
@@ -902,6 +1048,15 @@ function SceneContents({
   const lightDragging = useRef(false)
   const pointerNdc = useRef(new THREE.Vector2())
   const raycaster = useMemo(() => new THREE.Raycaster(), [])
+
+  // reactive-floor impact flashes (round-robin pool)
+  const glowPool = useRef<Glow[]>([])
+  const glowCursor = useRef(0)
+  const pushGlow = useCallback((x: number, z: number, strength: number) => {
+    const i = glowCursor.current % GLOW_POOL
+    glowPool.current[i] = { x, z, strength, life: 1, dur: 0.55 }
+    glowCursor.current++
+  }, [])
 
   /* ---- keep the shadow camera in sync when the box resizes ---- */
   useEffect(() => {
@@ -950,8 +1105,10 @@ function SceneContents({
         liftY,
         radius: blockRadius(block),
       }
+      grabbingRef.current = true
+      haptic(9) // a little "tick" as it lifts into your hand
     },
-    [gl],
+    [gl, grabbingRef],
   )
 
   /* ---- pointer tracking + light aim + release ---- */
@@ -1002,8 +1159,7 @@ function SceneContents({
       const d = drag.current
       if (!d) return
       el.style.cursor = "grab"
-      // gentle set-down: the body is already moving slowly (speed was capped
-      // while held); clamp once more so a release can never become a fling
+      // clamp the release speed so a flick stays a toss, not a hurl
       const lv = d.body.linvel()
       const v = new THREE.Vector3(lv.x, lv.y, lv.z)
       if (v.length() > THROW_MAX) {
@@ -1011,6 +1167,8 @@ function SceneContents({
         d.body.setLinvel({ x: v.x, y: v.y, z: v.z }, true)
       }
       drag.current = null
+      grabbingRef.current = false
+      haptic(6)
     }
 
     el.addEventListener("pointermove", onMove)
