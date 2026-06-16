@@ -593,6 +593,32 @@ export default function WoodenBlocks() {
   const [tiltOn, setTiltOn] = useState(false)
   const resetRef = useRef<() => void>(() => {})
   const tiltRef = useRef<TiltState>({ enabled: false, beta: 0, gamma: 0 })
+  const iconRef = useRef<HTMLSpanElement>(null)
+
+  // While tilt is on, spin the phone icon to mirror the live device
+  // orientation – it becomes the indicator instead of a filled button.
+  useEffect(() => {
+    const el = iconRef.current
+    if (!tiltOn) {
+      if (el) el.style.transform = ""
+      return
+    }
+    let raf = 0
+    const cur = { beta: 0, gamma: 0 }
+    const loop = () => {
+      const t = tiltRef.current
+      cur.gamma += (t.gamma - cur.gamma) * 0.18
+      cur.beta += (t.beta - cur.beta) * 0.18
+      const ry = Math.max(-48, Math.min(48, cur.gamma)) // left-right lean
+      const rx = Math.max(-48, Math.min(48, cur.beta)) // front-back lean
+      if (iconRef.current) {
+        iconRef.current.style.transform = `perspective(140px) rotateY(${ry}deg) rotateX(${-rx}deg)`
+      }
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [tiltOn])
 
   const onOrient = useCallback((e: DeviceOrientationEvent) => {
     tiltRef.current.beta = e.beta ?? 0
@@ -667,13 +693,13 @@ export default function WoodenBlocks() {
           aria-label="Tilt to control gravity"
           aria-pressed={tiltOn}
           onClick={toggleTilt}
-          className={`pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full transition ${
-            tiltOn
-              ? "bg-foreground text-background opacity-100 shadow-md"
-              : "text-foreground opacity-40 hover:opacity-90"
+          className={`pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full text-foreground transition ${
+            tiltOn ? "opacity-100" : "opacity-40 hover:opacity-90"
           }`}
         >
-          <Smartphone className="h-5 w-5" strokeWidth={2.4} />
+          <span ref={iconRef} className="flex items-center justify-center [transform-style:preserve-3d]">
+            <Smartphone className="h-5 w-5" strokeWidth={2.4} />
+          </span>
         </button>
         <button
           type="button"
