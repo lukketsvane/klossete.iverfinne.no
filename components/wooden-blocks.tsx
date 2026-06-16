@@ -283,7 +283,12 @@ function BlockBody({
       speed = Math.max(speed, Math.hypot(bv.x, bv.y, bv.z))
     }
     const strength = THREE.MathUtils.clamp((speed - 0.45) / 7, 0, 1)
-    if (strength > 0) playImpact(block.id, strength)
+    if (strength > 0) {
+      playImpact(block.id, strength)
+      const t = a.translation()
+      onImpact(t.x, t.z, strength) // light up the tile it struck
+      impactHaptic(strength) // and let you feel the knock
+    }
   }
 
   return (
@@ -1398,6 +1403,9 @@ function SceneContents({
       {/* environment-specific room: floor, walls, fill lighting */}
       <Room env={env} box={box} visibleWalls={visibleWalls} shadowSpan={shadowSpan} roughMap={roughMap} />
 
+      {/* reactive floor: tiles flash where blocks strike, brightness ~ force */}
+      <ImpactGlows poolRef={glowPool} active={!!env.reactive} tile={GLASS_TILE} />
+
       {/* blocks */}
       {BLOCKS.map((b) => (
         <BlockBody
@@ -1405,6 +1413,7 @@ function SceneContents({
           block={b}
           bodyRef={(r) => (bodies.current[b.id] = r)}
           onGrab={onGrab}
+          onImpact={pushGlow}
           measureMode={measureMode}
           selected={selectedId === b.id}
           onSelect={(id) => setSelectedId(id)}
@@ -1459,6 +1468,9 @@ export default function WoodenBlocks() {
   const resetRef = useRef<() => void>(() => {})
   const tiltRef = useRef<TiltState>({ enabled: false, beta: 0, gamma: 0, sx: 0, sz: 0 })
   const iconRef = useRef<HTMLSpanElement>(null)
+  // true while a block is held – so a 2nd finger squeezes it instead of the
+  // two-finger gesture cycling the environment
+  const grabbingRef = useRef(false)
 
   // The control cluster fades itself out when idle and fades back in when the
   // pointer comes near the corner, so it stays out of the way of the toy.
@@ -1526,7 +1538,9 @@ export default function WoodenBlocks() {
       holdTimer = null
     }
     const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length === 2) {
+      // two fingers with NO block held = cycle environment; if a block is held a
+      // 2nd finger is a squeeze (handled in SceneContents), so don't cycle.
+      if (e.touches.length === 2 && !grabbingRef.current) {
         start = { x: e.touches[0].clientX, y: e.touches[0].clientY }
         clearHold()
         holdTimer = setTimeout(() => setEnvIndex((i) => (i + 1) % ENVIRONMENTS.length), 450)
@@ -1651,6 +1665,7 @@ export default function WoodenBlocks() {
               setSelectedId={setSelectedId}
               registerReset={(fn) => (resetRef.current = fn)}
               tiltRef={tiltRef}
+              grabbingRef={grabbingRef}
             />
           </Suspense>
         </Physics>
