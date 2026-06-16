@@ -242,6 +242,7 @@ function BlockBody({
   block,
   bodyRef,
   onGrab,
+  onImpact,
   measureMode,
   selected,
   onSelect,
@@ -249,6 +250,7 @@ function BlockBody({
   block: Block
   bodyRef: (b: RapierRigidBody | null) => void
   onGrab: (body: RapierRigidBody, point: THREE.Vector3, block: Block) => void
+  onImpact: (x: number, z: number, strength: number) => void
   measureMode: boolean
   selected: boolean
   onSelect: (id: string) => void
@@ -1184,6 +1186,68 @@ function SceneContents({
       window.removeEventListener("pointercancel", onUp)
     }
   }, [camera, gl, raycaster, size.width, size.height])
+
+  /* ---- pinch-to-squeeze: a 2nd finger on a held block squeezes it ---- */
+  // You feel the grip (graded vibration), and letting go "pops" the block with a
+  // force that scales with how hard you squeezed. (A 2-finger gesture with no
+  // block held cycles environments instead – handled up in WoodenBlocks.)
+  useEffect(() => {
+    const el = gl.domElement
+    let startDist = 0
+    let squeeze = 0
+    let lastBuzz = 0
+    const span = (e: TouchEvent) =>
+      Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY,
+      )
+    const onStart = (e: TouchEvent) => {
+      if (e.touches.length === 2 && drag.current) {
+        startDist = span(e)
+        squeeze = 0
+      }
+    }
+    const onMove = (e: TouchEvent) => {
+      if (e.touches.length !== 2 || !drag.current || startDist <= 0) return
+      squeeze = THREE.MathUtils.clamp((startDist - span(e)) / (startDist * 0.55), 0, 1)
+      const now = performance.now()
+      if (squeeze > 0.05 && now - lastBuzz > 65) {
+        lastBuzz = now
+        haptic(2 + squeeze * 10) // tighter pinch -> stronger buzz
+      }
+    }
+    const onEnd = (e: TouchEvent) => {
+      if (startDist <= 0) return
+      if (e.touches.length < 2) {
+        const d = drag.current
+        if (d && squeeze > 0.15) {
+          // "pop": release the squeezed block with force proportional to squeeze
+          const m = d.body.mass() || 1
+          const f = squeeze * 3.4
+          d.body.applyImpulse(
+            { x: (Math.random() - 0.5) * 0.5 * m, y: f * m, z: (Math.random() - 0.5) * 0.5 * m },
+            true,
+          )
+          const t = d.body.translation()
+          pushGlow(t.x, t.z, 0.45 + squeeze * 0.6)
+          playImpact(d.block.id, 0.5 + squeeze * 0.5)
+          haptic(18 + squeeze * 24)
+        }
+        startDist = 0
+        squeeze = 0
+      }
+    }
+    el.addEventListener("touchstart", onStart, { passive: true })
+    el.addEventListener("touchmove", onMove, { passive: true })
+    el.addEventListener("touchend", onEnd)
+    el.addEventListener("touchcancel", onEnd)
+    return () => {
+      el.removeEventListener("touchstart", onStart)
+      el.removeEventListener("touchmove", onMove)
+      el.removeEventListener("touchend", onEnd)
+      el.removeEventListener("touchcancel", onEnd)
+    }
+  }, [gl, pushGlow])
 
   /* ---- light rig: blend the shift-drag base position with the tilt offset ---- */
   useFrame(() => {
