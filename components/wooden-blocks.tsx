@@ -153,8 +153,15 @@ const BLOCKS: Block[] = [
 /*  and the containment logic can never drift apart.                   */
 /* ------------------------------------------------------------------ */
 const CAM_FOV = 36
-const TARGET_HALF_X = 4.4 // world units to keep visible across the short axis
-const TARGET_HALF_Z = 4.4 // world units to keep visible across the long axis
+// How many world units to keep visible. Smaller = camera tighter = blocks read
+// BIGGER on screen. Phones get a tighter frame so the blocks aren't tiny.
+const TARGET_HALF_DESKTOP = 4.4
+function viewTarget(w: number, h: number) {
+  const min = Math.min(w, h)
+  if (min < 520) return 2.8 // phones
+  if (min < 820) return 3.6 // small tablets
+  return TARGET_HALF_DESKTOP
+}
 const BOX_INSET = 0.9 // pull the walls inward so the whole frame reads on screen
 const WALL_HALF_THICK = 0.4
 const WALL_VIS_HEIGHT = 3.0 // the wood-coloured tray walls you actually see
@@ -163,9 +170,9 @@ const WALL_COL_HEIGHT = 16 // invisible containment walls – a deep box nothing
 // Half extents of the inner wall faces: the playable rectangle on the floor.
 type Box = { bx: number; bz: number }
 
-function boxLayout(aspect: number) {
+function boxLayout(aspect: number, target: number) {
   const halfV = Math.tan((CAM_FOV / 2) * (Math.PI / 180))
-  const dist = Math.max(TARGET_HALF_X / (halfV * aspect), TARGET_HALF_Z / halfV) + 0.5
+  const dist = Math.max(target / (halfV * aspect), target / halfV) + 0.5
   const halfX = dist * halfV * aspect
   const halfZ = dist * halfV
   return { dist, bx: halfX * BOX_INSET, bz: halfZ * BOX_INSET }
@@ -174,7 +181,7 @@ function boxLayout(aspect: number) {
 function useBox(): Box {
   const size = useThree((s) => s.size)
   return useMemo(() => {
-    const { bx, bz } = boxLayout(size.width / size.height)
+    const { bx, bz } = boxLayout(size.width / size.height, viewTarget(size.width, size.height))
     return { bx, bz }
   }, [size.width, size.height])
 }
@@ -2158,7 +2165,7 @@ function CameraRig() {
 
   useEffect(() => {
     const aspect = size.width / size.height
-    const { dist } = boxLayout(aspect)
+    const { dist } = boxLayout(aspect, viewTarget(size.width, size.height))
 
     const cam = camera as THREE.PerspectiveCamera
     cam.up.set(0, 0, -1) // screen-up maps to -z
