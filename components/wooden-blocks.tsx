@@ -37,7 +37,7 @@ type TiltState = {
 /* ------------------------------------------------------------------ */
 /*  Block catalogue – sizes are real millimetres scaled to scene units */
 /* ------------------------------------------------------------------ */
-const S = 0.045 // 1 mm -> scene units (blocks sit comfortably inside the tray)
+const S = 0.036 // 1 mm -> scene units (blocks sized to sit smaller in the tray)
 
 type BlockMeshAsset = {
   url: string
@@ -317,10 +317,10 @@ function BlockBody({
       // volume (the cylinder lands heavier than the little cube). Low damping
       // keeps them lively rather than floating through air.
       friction={0.7}
-      restitution={0.12}
+      restitution={0.1}
       density={6}
-      linearDamping={0.12}
-      angularDamping={0.7}
+      linearDamping={0.2}
+      angularDamping={1.1}
       canSleep={false}
       onCollisionEnter={handleImpact}
       ccd
@@ -353,7 +353,7 @@ const G = 20
 // down with screen-up mapped to -z, so a light on the -z side reads as coming
 // from the TOP of the page (shadows fall down-screen). A small -x bias keeps a
 // touch of form. Shift+right-drag re-aims it; tilt swings it around this anchor.
-const KEY = { x: 1.5, y: 26, z: 0.5 }
+const KEY = { x: -6, y: 18, z: -5 }
 
 // A subtle low-contrast value-noise texture used to break the perfectly-flat
 // roughness of the floor and tray walls (material imperfection).
@@ -784,12 +784,12 @@ const ESCAPE_MARGIN = 0.4 // how far past a wall a body must be before we rescue
    swings from your cursor like it's on a string. It's responsive enough to
    position and stack precisely, but the RELEASE speed is clamped low so a flick
    can never become a fling. */
-const DRAG_K = 185 // spring stiffness (how eagerly the grab point chases the cursor)
-const DRAG_C = 44 // damping (over-critical -> smooth, no shake/jitter while held)
+const DRAG_K = 95 // spring stiffness (lower -> calmer, no buzzy chase)
+const DRAG_C = 38 // damping (well over critical for this K -> dead smooth, no shake)
 const DRAG_ERR_MAX = 1.5 // cap on position error -> caps the pull force
-const DRAG_ACCEL_MAX = 230 // ceiling on grab acceleration
-const MAX_DRAG_SPEED = 7 // linear speed cap while held – responsive but steady
-const MAX_DRAG_ANGSPEED = 4.5 // spin cap while held (lower = calmer)
+const DRAG_ACCEL_MAX = 140 // ceiling on grab acceleration
+const MAX_DRAG_SPEED = 6 // linear speed cap while held – responsive but steady
+const MAX_DRAG_ANGSPEED = 2.4 // spin cap while held (lower = calmer dangle, less shake)
 const LIGHT_RADIUS = 14 // how far the key light orbits when you shift+right-drag it
 
 /* ------------------------------------------------------------------ */
@@ -2422,7 +2422,7 @@ export default function WoodenBlocks() {
         <Physics
           gravity={[0, -G, 0]}
           timeStep={1 / 120}
-          numSolverIterations={8}
+          numSolverIterations={12}
           maxCcdSubsteps={4}
           interpolate
         >
