@@ -771,11 +771,81 @@ function Room(props: RoomProps) {
   return <ConcreteRoom {...props} />
 }
 
-// 5 — video room: the clip plays on loop across the floor and every wall.
+/* CRT / low-res TV shader for the video screens: chunky pixels, scanlines,
+   RGB-subpixel bleed, flicker + static, and a per-screen vignette. */
+const CRT_VERT = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`
+const CRT_FRAG = /* glsl */ `
+  precision mediump float;
+  uniform sampler2D map;
+  uniform float time;
+  uniform vec2 res;        // pixel grid of the "screen"
+  uniform float scan;      // scanline depth
+  uniform float aberration;
+  varying vec2 vUv;
+
+  float rand(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+  void main() {
+    // chunky low-res pixels
+    vec2 puv = (floor(vUv * res) + 0.5) / res;
+    // chromatic aberration – split the channels by a pixel or so
+    vec2 off = vec2(aberration) / res;
+    float r = texture2D(map, puv + off).r;
+    float g = texture2D(map, puv).g;
+    float b = texture2D(map, puv - off).b;
+    vec3 col = vec3(r, g, b);
+
+    // scanlines + faint vertical aperture grille
+    float sl = 0.5 + 0.5 * cos(vUv.y * res.y * 6.2831853);
+    col *= 1.0 - scan * (1.0 - sl);
+    col *= 1.0 - 0.10 * (0.5 + 0.5 * cos(vUv.x * res.x * 6.2831853));
+
+    // rolling brightness flicker + a little analogue static
+    col *= 0.93 + 0.07 * sin(time * 7.0 + vUv.y * 12.0);
+    col += (rand(puv + fract(time)) - 0.5) * 0.07;
+
+    // per-screen vignette + a brightened "tube" centre
+    vec2 d = vUv - 0.5;
+    col *= smoothstep(1.15, 0.25, dot(d, d) * 3.0);
+
+    col = clamp(col * 1.12, 0.0, 1.0);
+    // approximate sRGB -> linear so it sits right under the tone-mapping pass
+    gl_FragColor = vec4(pow(col, vec3(2.2)), 1.0);
+  }
+`
+
+// 5 — video room: the clip plays on loop across the floor and every wall, fed
+// through a low-res CRT shader so each surface reads as an old TV display.
 // The <video> + VideoTexture are created inside the effect (one per mount) so
 // React StrictMode's mount/unmount/mount can't leave a dead, src-less element.
 function VideoRoom({ box, visibleWalls }: RoomProps) {
   const [tex, setTex] = useState<THREE.VideoTexture | null>(null)
+  const crt = useMemo(
+    () =>
+      new THREE.ShaderMaterial({
+        uniforms: {
+          map: { value: null },
+          time: { value: 0 },
+          res: { value: new THREE.Vector2(168, 126) },
+          scan: { value: 0.36 },
+          aberration: { value: 1.15 },
+        },
+        vertexShader: CRT_VERT,
+        fragmentShader: CRT_FRAG,
+      }),
+    [],
+  )
+  useFrame((_s, dt) => {
+    crt.uniforms.time.value += dt
+    if (tex) crt.uniforms.map.value = tex
+  })
+  useEffect(() => () => crt.dispose(), [crt])
   useEffect(() => {
     if (typeof document === "undefined") return
     const v = document.createElement("video")
