@@ -464,7 +464,7 @@ function makeBrickGlowTexture(size = 256, bevel = 0.16): THREE.DataTexture {
 /*  Environments – cycle with number keys 1-9 (desktop) or a two-finger */
 /*  tap-and-hold (touch). Each swaps the room materials + lighting mood. */
 /* ------------------------------------------------------------------ */
-type EnvKind = "concrete" | "gold" | "glass" | "playmat" | "video"
+type EnvKind = "concrete" | "gold" | "glass" | "playmat" | "video" | "peel" | "texturemiss"
 type EnvConfig = {
   id: EnvKind
   name: string
@@ -520,6 +520,24 @@ const ENVIRONMENTS: EnvConfig[] = [
     keyColor: "#ffffff",
     keyIntensity: 1.5,
     contact: { color: "#000000", opacity: 0.45 },
+    bloom: true,
+  },
+  {
+    id: "peel",
+    name: "Reality peel",
+    bg: "#cbc6b9",
+    keyColor: "#fff4e6",
+    keyIntensity: 2.2,
+    contact: { color: "#37332a", opacity: 0.3 },
+    bloom: false,
+  },
+  {
+    id: "texturemiss",
+    name: "Texture not found",
+    bg: "#060609",
+    keyColor: "#ffffff",
+    keyIntensity: 1.8,
+    contact: { color: "#000000", opacity: 0.4 },
     bloom: true,
   },
 ]
@@ -768,7 +786,85 @@ function Room(props: RoomProps) {
   if (props.env.id === "glass") return <GlassRoom {...props} />
   if (props.env.id === "playmat") return <PlayMatRoom {...props} />
   if (props.env.id === "video") return <VideoRoom {...props} />
+  if (props.env.id === "peel") return <PeelRoom {...props} />
+  if (props.env.id === "texturemiss") return <TextureMissRoom {...props} />
   return <ConcreteRoom {...props} />
+}
+
+// 6 — Reality peel room (shader on floor + walls).
+function PeelRoom({ box, visibleWalls }: RoomProps) {
+  const mat = useMemo(
+    () =>
+      new THREE.ShaderMaterial({
+        uniforms: {
+          gridScale: { value: 7 },
+          peelScale: { value: 3.2 },
+          wireScale: { value: 9 },
+          thr: { value: 0.52 },
+        },
+        vertexShader: CRT_VERT,
+        fragmentShader: PEEL_FRAG,
+      }),
+    [],
+  )
+  useEffect(() => () => mat.dispose(), [mat])
+  const fw = box.bx * 2
+  const fd = box.bz * 2
+  return (
+    <>
+      <ambientLight intensity={0.7} color="#fff6ea" />
+      <directionalLight position={[6, 9, -5]} intensity={0.5} color="#ffffff" />
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} material={mat}>
+        <planeGeometry args={[fw, fd]} />
+      </mesh>
+      {visibleWalls.map((w, i) => (
+        <mesh key={`wall-${i}`} position={w.pos} material={mat}>
+          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
+        </mesh>
+      ))}
+    </>
+  )
+}
+
+// 7 — Texture-not-found room (shader patches neon-grid / missing-checker / concrete).
+function TextureMissRoom({ box, visibleWalls }: RoomProps) {
+  const concrete = useTexture("/textures/concrete/concrete_albedo.png")
+  const mat = useMemo(
+    () =>
+      new THREE.ShaderMaterial({
+        uniforms: {
+          concrete: { value: null },
+          regionScale: { value: 2.4 },
+          neonScale: { value: 9 },
+          checkScale: { value: 11 },
+          concreteScale: { value: 4 },
+        },
+        vertexShader: CRT_VERT,
+        fragmentShader: MISS_FRAG,
+      }),
+    [],
+  )
+  useEffect(() => {
+    concrete.wrapS = concrete.wrapT = THREE.RepeatWrapping
+    concrete.needsUpdate = true
+    mat.uniforms.concrete.value = concrete
+  }, [concrete, mat])
+  useEffect(() => () => mat.dispose(), [mat])
+  const fw = box.bx * 2
+  const fd = box.bz * 2
+  return (
+    <>
+      <ambientLight intensity={0.6} color="#ffffff" />
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} material={mat}>
+        <planeGeometry args={[fw, fd]} />
+      </mesh>
+      {visibleWalls.map((w, i) => (
+        <mesh key={`wall-${i}`} position={w.pos} material={mat}>
+          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
+        </mesh>
+      ))}
+    </>
+  )
 }
 
 /* CRT / low-res TV shader for the video screens: chunky pixels, scanlines,
@@ -816,6 +912,73 @@ const CRT_FRAG = /* glsl */ `
 
     col = clamp(col * 1.12, 0.0, 1.0);
     // approximate sRGB -> linear so it sits right under the tone-mapping pass
+    gl_FragColor = vec4(pow(col, vec3(2.2)), 1.0);
+  }
+`
+
+/* shared value-noise for the "broken reality" debug rooms */
+const NOISE_GLSL = /* glsl */ `
+  float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float vnoise(vec2 p){
+    vec2 i = floor(p), f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i + vec2(0.0,0.0)), hash(i + vec2(1.0,0.0)), u.x),
+               mix(hash(i + vec2(0.0,1.0)), hash(i + vec2(1.0,1.0)), u.x), u.y);
+  }
+  float fbm(vec2 p){ float a = 0.5, s = 0.0; for (int i=0;i<4;i++){ s += a*vnoise(p); p *= 2.0; a *= 0.5; } return s; }
+`
+
+// 6 — Reality peel: a grid "wallpaper" flakes off in patches, revealing white
+// wireframe + grey placeholder material underneath, with a dark curl at the tear.
+const PEEL_FRAG = /* glsl */ `
+  precision mediump float;
+  varying vec2 vUv;
+  uniform float gridScale, peelScale, wireScale, thr;
+  ${NOISE_GLSL}
+  void main(){
+    vec2 uv = vUv;
+    // wallpaper: cream paper with blueprint grid lines
+    vec2 g = uv * gridScale; vec2 gf = abs(fract(g) - 0.5);
+    float minor = smoothstep(0.47, 0.5, max(gf.x, gf.y));
+    vec3 paperCol = mix(vec3(0.85,0.83,0.76), vec3(0.46,0.55,0.68), minor);
+    // peel mask – where the paper is still attached
+    float n = fbm(uv * peelScale);
+    float paper = smoothstep(thr - 0.03, thr + 0.06, n);
+    // underneath: grey placeholder + white triangle wireframe
+    vec2 wg = uv * wireScale; vec2 wf = abs(fract(wg) - 0.5);
+    float wl = smoothstep(0.45, 0.5, max(wf.x, wf.y));
+    float wd = smoothstep(0.45, 0.5, abs(fract(wg.x + wg.y) - 0.5));
+    float wire = max(wl, wd);
+    vec3 placeholder = mix(vec3(0.52), vec3(0.97), wire);
+    // dark curl shadow right at the tear line
+    float curl = smoothstep(0.10, 0.0, abs(n - thr));
+    vec3 col = mix(placeholder, paperCol, paper);
+    col *= mix(1.0, 0.5, curl);
+    gl_FragColor = vec4(pow(col, vec3(2.2)), 1.0);
+  }
+`
+
+// 7 — Texture not found: patches of neon dev-grid, magenta/black missing-texture
+// checker, and real concrete, stitched together by a region mask.
+const MISS_FRAG = /* glsl */ `
+  precision mediump float;
+  varying vec2 vUv;
+  uniform sampler2D concrete;
+  uniform float regionScale, neonScale, checkScale, concreteScale;
+  ${NOISE_GLSL}
+  void main(){
+    vec2 uv = vUv;
+    float r = fbm(uv * regionScale);
+    // neon dev grid
+    vec2 ng = uv * neonScale; vec2 nf = abs(fract(ng) - 0.5);
+    float nl = smoothstep(0.46, 0.5, max(nf.x, nf.y));
+    vec3 neon = mix(vec3(0.015,0.03,0.04), vec3(0.15,1.0,0.7), nl);
+    // magenta/black missing-texture checker
+    vec2 cg = floor(uv * checkScale); float chk = mod(cg.x + cg.y, 2.0);
+    vec3 miss = mix(vec3(0.03), vec3(1.0,0.0,1.0), chk);
+    // real concrete
+    vec3 conc = texture2D(concrete, uv * concreteScale).rgb;
+    vec3 col = r < 0.42 ? neon : (r < 0.68 ? miss : conc);
     gl_FragColor = vec4(pow(col, vec3(2.2)), 1.0);
   }
 `
