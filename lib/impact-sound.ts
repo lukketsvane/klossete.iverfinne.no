@@ -1,18 +1,27 @@
-// Procedural "wooden block" impact sounds via the Web Audio API – no audio
-// assets required. Each hit is a short percussive knock: a couple of decaying
-// resonant partials (the woody body) plus a filtered noise transient (the
-// contact "tock"). Volume tracks impact strength; pitch tracks block size.
+// Realistic wooden-block impact sounds via lightweight modal + noise synthesis
+// (Web Audio API, no audio assets).
+//
+// Real hardwood-on-hardwood is a dry "clack", not a ringing tone: a sharp
+// broadband contact transient, a band-passed mid "knock" body, and only a
+// brief low resonance that damps almost immediately. We pre-render that impulse
+// per block into a few buffers (variations), then on each collision play one
+// through a velocity-driven low-pass — soft taps come out dull, hard knocks
+// crack — which is what sells solid wood.
 
 let ctx: AudioContext | null = null
 let master: GainNode | null = null
 let muted = false
 let lastPlay = 0
 
+// id -> a few pre-rendered impulse variations
+const buffers = new Map<string, AudioBuffer[]>()
+
 function ensureCtx(): AudioContext | null {
   if (typeof window === "undefined") return null
   if (!ctx) {
     const AC: typeof AudioContext | undefined =
-      window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
     if (!AC) return null
     ctx = new AC()
     master = ctx.createGain()
@@ -22,7 +31,6 @@ function ensureCtx(): AudioContext | null {
   return ctx
 }
 
-/** Resume the audio context from a user gesture (required by browsers). */
 export function unlockAudio() {
   const c = ensureCtx()
   if (c && c.state === "suspended") void c.resume()
@@ -33,62 +41,129 @@ export function setMuted(value: boolean) {
   if (!value) unlockAudio()
 }
 
+// A short, well-damped modal body. Decays are tiny (tens of ms) so the result
+// reads as a dry knock rather than a tuned bar.
+const MODES: { ratio: number; gain: number; decay: number }[] = [
+  { ratio: 1.0, gain: 0.7, decay: 0.07 },
+  { ratio: 2.18, gain: 0.32, decay: 0.045 },
+  { ratio: 3.7, gain: 0.16, decay: 0.03 },
+]
+
+// One-pass 2nd-order band-pass (RBJ cookbook) used to colour the noise "knock".
+function bandpass(input: Float32Array, sr: number, freq: number, Q: number) {
+  const w0 = (2 * Math.PI * freq) / sr
+  const cw = Math.cos(w0)
+  const alpha = Math.sin(w0) / (2 * Q)
+  const a0 = 1 + alpha
+  const b0 = alpha / a0
+  const b2 = -alpha / a0
+  const a1 = (-2 * cw) / a0
+  const a2 = (1 - alpha) / a0
+  let x1 = 0
+  let x2 = 0
+  let y1 = 0
+  let y2 = 0
+  for (let n = 0; n < input.length; n++) {
+    const x = input[n]
+    const y = b0 * x + b2 * x2 - a1 * y1 - a2 * y2
+    x2 = x1
+    x1 = x
+    y2 = y1
+    y1 = y
+    input[n] = y
+  }
+}
+
+function renderImpact(c: AudioContext, f0: number): AudioBuffer {
+  const sr = c.sampleRate
+  const dur = 0.2
+  const len = Math.floor(sr * dur)
+  const buf = c.createBuffer(1, len, sr)
+  const data = buf.getChannelData(0)
+
+  // Modal body – short decaying sinusoids for a touch of pitch.
+  for (const m of MODES) {
+    const w = 2 * Math.PI * f0 * m.ratio
+    const decay = m.decay * (0.85 + Math.random() * 0.3)
+    const phase = Math.random() * Math.PI * 2
+    for (let n = 0; n < len; n++) {
+      const t = n / sr
+      data[n] += m.gain * Math.exp(-t / decay) * Math.sin(w * t + phase)
+    }
+  }
+
+  // Band-passed noise "knock" – the woody dry body of the clack.
+  const knock = new Float32Array(len)
+  for (let n = 0; n < len; n++) knock[n] = Math.random() * 2 - 1
+  bandpass(knock, sr, f0 * 3.2, 1.1)
+  for (let n = 0; n < len; n++) {
+    const t = n / sr
+    data[n] += 0.8 * Math.exp(-t / 0.022) * knock[n]
+  }
+
+  // Bright contact tick – a very short high-passed noise transient.
+  let prev = 0
+  for (let n = 0; n < len; n++) {
+    const t = n / sr
+    const white = Math.random() * 2 - 1
+    const hp = white - prev
+    prev = white
+    data[n] += 0.5 * Math.exp(-t / 0.0022) * hp
+  }
+
+  // Normalize.
+  let peak = 0
+  for (let n = 0; n < len; n++) peak = Math.max(peak, Math.abs(data[n]))
+  if (peak > 0) {
+    const k = 0.92 / peak
+    for (let n = 0; n < len; n++) data[n] *= k
+  }
+  return buf
+}
+
+/** Pre-render impulse variations for each block so the first hit has no hitch. */
+export function primeBlocks(specs: { id: string; freq: number }[]) {
+  const c = ensureCtx()
+  if (!c) return
+  for (const { id, freq } of specs) {
+    if (buffers.has(id)) continue
+    buffers.set(id, [renderImpact(c, freq), renderImpact(c, freq), renderImpact(c, freq)])
+  }
+}
+
 /**
- * Play one wooden impact.
- * @param strength 0..1 – how hard the hit was (maps to loudness)
- * @param pitch    multiplier on the base frequency (smaller block -> higher)
+ * Play one impact for a block.
+ * @param id       block id (must have been primed)
+ * @param strength 0..1 – how hard the hit was
  */
-export function playImpact(strength: number, pitch = 1) {
+export function playImpact(id: string, strength: number) {
   if (muted) return
   const c = ensureCtx()
   if (!c || !master || c.state !== "running") return
 
+  const variants = buffers.get(id)
+  if (!variants || variants.length === 0) return
+
   const now = c.currentTime
-  if (now - lastPlay < 0.018) return // throttle dense contact bursts
+  if (now - lastPlay < 0.015) return
   lastPlay = now
 
   const v = Math.max(0, Math.min(1, strength))
   if (v < 0.02) return
 
-  const base = 200 * pitch
+  const src = c.createBufferSource()
+  src.buffer = variants[(Math.random() * variants.length) | 0]
+  src.playbackRate.value = 1 + (Math.random() * 0.08 - 0.04) // ±4% so hits vary
 
-  // Woody body: a fundamental plus an inharmonic partial, each decaying fast.
-  const partials = [
-    { mul: 1, gain: 0.6, decay: 0.19 },
-    { mul: 2.76, gain: 0.22, decay: 0.12 },
-  ]
-  for (const p of partials) {
-    const osc = c.createOscillator()
-    osc.type = "sine"
-    osc.frequency.value = base * p.mul * (0.99 + Math.random() * 0.02)
-    const g = c.createGain()
-    const peak = v * p.gain
-    g.gain.setValueAtTime(0.0001, now)
-    g.gain.exponentialRampToValueAtTime(Math.max(peak, 0.0002), now + 0.003)
-    g.gain.exponentialRampToValueAtTime(0.0001, now + p.decay)
-    osc.connect(g).connect(master)
-    osc.start(now)
-    osc.stop(now + p.decay + 0.02)
-  }
+  // Harder hits excite more high-frequency energy: open the low-pass with v.
+  const lp = c.createBiquadFilter()
+  lp.type = "lowpass"
+  lp.frequency.value = 800 + v * v * 9000
+  lp.Q.value = 0.6
 
-  // Contact transient: a short, quickly-decaying band-passed noise burst.
-  const dur = 0.045
-  const len = Math.max(1, Math.ceil(c.sampleRate * dur))
-  const buf = c.createBuffer(1, len, c.sampleRate)
-  const data = buf.getChannelData(0)
-  for (let i = 0; i < len; i++) {
-    const env = 1 - i / len
-    data[i] = (Math.random() * 2 - 1) * env * env
-  }
-  const noise = c.createBufferSource()
-  noise.buffer = buf
-  const bp = c.createBiquadFilter()
-  bp.type = "bandpass"
-  bp.frequency.value = base * 3
-  bp.Q.value = 0.7
-  const ng = c.createGain()
-  ng.gain.value = v * 0.5
-  noise.connect(bp).connect(ng).connect(master)
-  noise.start(now)
-  noise.stop(now + dur)
+  const g = c.createGain()
+  g.gain.value = Math.min(1, 0.14 + v)
+
+  src.connect(lp).connect(g).connect(master)
+  src.start()
 }
