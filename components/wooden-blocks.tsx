@@ -243,6 +243,7 @@ function BlockBody({
   bodyRef,
   onGrab,
   onImpact,
+  showAfterimage,
   measureMode,
   selected,
   onSelect,
@@ -251,6 +252,7 @@ function BlockBody({
   bodyRef: (b: RapierRigidBody | null) => void
   onGrab: (body: RapierRigidBody, point: THREE.Vector3, block: Block) => void
   onImpact: (x: number, z: number, strength: number) => void
+  showAfterimage: boolean
   measureMode: boolean
   selected: boolean
   onSelect: (id: string) => void
@@ -324,6 +326,8 @@ function BlockBody({
           <BlockMesh block={block} onPointerDown={handlePointerDown} />
         </>
       )}
+
+      {showAfterimage && <Afterimage block={block} />}
 
       {measureMode && selected && (
         <Html position={[0, labelY, 0]} center distanceFactor={10} zIndexRange={[100, 0]}>
@@ -464,7 +468,7 @@ function makeBrickGlowTexture(size = 256, bevel = 0.16): THREE.DataTexture {
 /*  Environments – cycle with number keys 1-9 (desktop) or a two-finger */
 /*  tap-and-hold (touch). Each swaps the room materials + lighting mood. */
 /* ------------------------------------------------------------------ */
-type EnvKind = "concrete" | "gold" | "glass" | "playmat" | "video" | "peel" | "texturemiss"
+type EnvKind = "concrete" | "gold" | "glass" | "playmat" | "video" | "peel" | "texturemiss" | "fourthside"
 type EnvConfig = {
   id: EnvKind
   name: string
@@ -474,6 +478,7 @@ type EnvConfig = {
   contact: { color: string; opacity: number } // grounding contact shadow
   bloom: boolean
   reactive?: boolean // tiles flash with light where a block hits (brightness ~ force)
+  fourthSide?: boolean // wraps each block in glowing wireframe "4D" shells
 }
 const ENVIRONMENTS: EnvConfig[] = [
   {
@@ -539,6 +544,16 @@ const ENVIRONMENTS: EnvConfig[] = [
     keyIntensity: 1.8,
     contact: { color: "#000000", opacity: 0.4 },
     bloom: true,
+  },
+  {
+    id: "fourthside",
+    name: "The Fourth Side",
+    bg: "#03050a",
+    keyColor: "#cfe6ff",
+    keyIntensity: 1.4,
+    contact: { color: "#0b2f3a", opacity: 0.55 }, // cold, sharp 2D projection on the floor
+    bloom: true, // makes the wireframe shells glow like TRON
+    fourthSide: true,
   },
 ]
 
@@ -788,7 +803,87 @@ function Room(props: RoomProps) {
   if (props.env.id === "video") return <VideoRoom {...props} />
   if (props.env.id === "peel") return <PeelRoom {...props} />
   if (props.env.id === "texturemiss") return <TextureMissRoom {...props} />
+  if (props.env.id === "fourthside") return <FourthRoom {...props} />
   return <ConcreteRoom {...props} />
+}
+
+// 8 — The Fourth Side room: cold TRON grid floor + walls.
+function FourthRoom({ box, visibleWalls }: RoomProps) {
+  const mat = useMemo(
+    () =>
+      new THREE.ShaderMaterial({
+        uniforms: { scale: { value: 9 } },
+        vertexShader: CRT_VERT,
+        fragmentShader: GRID_FRAG,
+      }),
+    [],
+  )
+  useEffect(() => () => mat.dispose(), [mat])
+  const fw = box.bx * 2
+  const fd = box.bz * 2
+  return (
+    <>
+      <ambientLight intensity={0.22} color="#9fc4ff" />
+      <directionalLight position={[4, 10, -6]} intensity={0.45} color="#cfe0ff" />
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} material={mat}>
+        <planeGeometry args={[fw, fd]} />
+      </mesh>
+      {visibleWalls.map((w, i) => (
+        <mesh key={`wall-${i}`} position={w.pos} material={mat}>
+          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
+        </mesh>
+      ))}
+    </>
+  )
+}
+
+// A precise tesseract (hypercube) projection around a box of half-extents h:
+// the inner cube hugs the real shape, an outer cube is the "fourth side", and
+// every corner is joined to its counterpart – the classic cube-within-a-cube.
+function makeTesseract(hx: number, hy: number, hz: number, s0: number, s1: number) {
+  const corner = (i: number): [number, number, number] => [i & 1 ? 1 : -1, i & 2 ? 1 : -1, i & 4 ? 1 : -1]
+  const inner: [number, number, number][] = []
+  const outer: [number, number, number][] = []
+  for (let i = 0; i < 8; i++) {
+    const c = corner(i)
+    inner.push([c[0] * hx * s0, c[1] * hy * s0, c[2] * hz * s0])
+    outer.push([c[0] * hx * s1, c[1] * hy * s1, c[2] * hz * s1])
+  }
+  const seg: number[] = []
+  for (let i = 0; i < 8; i++) {
+    for (let j = i + 1; j < 8; j++) {
+      const d = i ^ j
+      if (d === 1 || d === 2 || d === 4) {
+        seg.push(...inner[i], ...inner[j], ...outer[i], ...outer[j]) // matching edges of both cubes
+      }
+    }
+    seg.push(...inner[i], ...outer[i]) // join the cube to its fourth-side shell
+  }
+  const g = new THREE.BufferGeometry()
+  g.setAttribute("position", new THREE.Float32BufferAttribute(seg, 3))
+  return g
+}
+
+// The "fourth side": one precise hyper-object per shape, slowly rotating as a
+// rigid whole. Rendered as a child of the block's rigid body, so it tracks the
+// shape exactly. Cold cyan; bloom makes the edges glow.
+function Afterimage({ block }: { block: Block }) {
+  const ref = useRef<THREE.Group>(null)
+  useFrame((_s, dt) => {
+    if (!ref.current) return
+    ref.current.rotation.y += dt * 0.18
+    ref.current.rotation.z += dt * 0.07
+  })
+  const half: [number, number, number] =
+    block.shape === "cylinder" ? [block.radius, block.halfHeight, block.radius] : block.half
+  const geom = useMemo(() => makeTesseract(half[0], half[1], half[2], 1.06, 1.7), [half[0], half[1], half[2]])
+  return (
+    <group ref={ref}>
+      <lineSegments geometry={geom}>
+        <lineBasicMaterial color="#46dcff" transparent opacity={0.6} toneMapped={false} />
+      </lineSegments>
+    </group>
+  )
 }
 
 // 6 — Reality peel room (shader on floor + walls).
@@ -979,6 +1074,21 @@ const MISS_FRAG = /* glsl */ `
     // real concrete
     vec3 conc = texture2D(concrete, uv * concreteScale).rgb;
     vec3 col = r < 0.42 ? neon : (r < 0.68 ? miss : conc);
+    gl_FragColor = vec4(pow(col, vec3(2.2)), 1.0);
+  }
+`
+
+// 8 — The Fourth Side: cold near-black floor with a faint TRON cyan grid.
+const GRID_FRAG = /* glsl */ `
+  precision mediump float;
+  varying vec2 vUv;
+  uniform float scale;
+  void main(){
+    vec2 g = vUv * scale; vec2 gf = abs(fract(g) - 0.5);
+    float line = smoothstep(0.49, 0.5, max(gf.x, gf.y));
+    vec2 g2 = vUv * scale * 4.0; vec2 gf2 = abs(fract(g2) - 0.5);
+    float sub = smoothstep(0.48, 0.5, max(gf2.x, gf2.y)) * 0.22;
+    vec3 col = vec3(0.008, 0.018, 0.03) + vec3(0.0, 0.82, 1.0) * (line + sub);
     gl_FragColor = vec4(pow(col, vec3(2.2)), 1.0);
   }
 `
@@ -1734,6 +1844,7 @@ function SceneContents({
           bodyRef={(r) => (bodies.current[b.id] = r)}
           onGrab={onGrab}
           onImpact={pushGlow}
+          showAfterimage={env.fourthSide === true}
           measureMode={measureMode}
           selected={selectedId === b.id}
           onSelect={(id) => setSelectedId(id)}
