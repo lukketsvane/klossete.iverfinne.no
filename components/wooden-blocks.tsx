@@ -13,7 +13,7 @@ import {
 } from "@react-three/rapier"
 import * as THREE from "three"
 import { RotateCcw, Ruler, Smartphone, Volume2, VolumeX } from "lucide-react"
-import { playImpact, setMuted, unlockAudio } from "@/lib/impact-sound"
+import { playImpact, primeBlocks, setMuted, unlockAudio } from "@/lib/impact-sound"
 
 /* ------------------------------------------------------------------ */
 /*  Rapier body-type constants (avoid importing the wasm enum)         */
@@ -177,6 +177,17 @@ function blockRadius(b: Block) {
   return b.shape === "cylinder" ? b.radius : Math.hypot(b.half[0], b.half[2])
 }
 
+// Largest real dimension of a block in mm – longer pieces ring at a lower pitch.
+function blockMaxMm(b: Block) {
+  const u = b.shape === "cylinder" ? Math.max(b.radius * 2, b.halfHeight * 2) : Math.max(...b.half) * 2
+  return u / S
+}
+
+// Fundamental impact frequency: bigger block -> lower knock.
+function blockBaseFreq(b: Block) {
+  return THREE.MathUtils.clamp(2600 / Math.sqrt(blockMaxMm(b)), 230, 680)
+}
+
 /* ------------------------------------------------------------------ */
 /*  A single draggable / throwable block                               */
 /* ------------------------------------------------------------------ */
@@ -209,9 +220,6 @@ function BlockBody({
 
   const labelY = block.shape === "cylinder" ? block.halfHeight + 0.5 : block.half[1] + 0.5
 
-  // smaller blocks ring higher; larger pieces knock lower
-  const pitch = THREE.MathUtils.clamp(1.55 - 0.42 * blockRadius(block), 0.7, 1.55)
-
   const handleImpact = (payload: {
     target: { rigidBody?: RapierRigidBody }
     other: { rigidBody?: RapierRigidBody }
@@ -226,7 +234,7 @@ function BlockBody({
       speed = Math.max(speed, Math.hypot(bv.x, bv.y, bv.z))
     }
     const strength = THREE.MathUtils.clamp((speed - 0.45) / 7, 0, 1)
-    if (strength > 0) playImpact(strength, pitch)
+    if (strength > 0) playImpact(block.id, strength)
   }
 
   return (
@@ -661,9 +669,13 @@ export default function WoodenBlocks() {
   const tiltRef = useRef<TiltState>({ enabled: false, beta: 0, gamma: 0 })
   const iconRef = useRef<HTMLSpanElement>(null)
 
-  // Browsers only let audio start from a user gesture – unlock on first touch.
+  // Browsers only let audio start from a user gesture – unlock and pre-render
+  // each block's impact sound on the first touch.
   useEffect(() => {
-    const unlock = () => unlockAudio()
+    const unlock = () => {
+      unlockAudio()
+      primeBlocks(BLOCKS.map((b) => ({ id: b.id, freq: blockBaseFreq(b) })))
+    }
     window.addEventListener("pointerdown", unlock, { once: true })
     return () => window.removeEventListener("pointerdown", unlock)
   }, [])
