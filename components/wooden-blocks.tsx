@@ -1507,49 +1507,36 @@ function MagnetController({
       }
     })
 
-    // edge force-field: in zero-g there's no floor/walls to lean on, so softly
-    // repel every piece back inward as it nears the screen bounds (and keep it
-    // in a sensible depth band) – nothing can drift off-screen.
+    // edge force-field: in zero-g there's no floor/walls, so gently ease every
+    // piece's velocity back inward as it drifts toward the screen bounds. It
+    // ramps in over a soft margin and *eases* the velocity (no hard stop) so it
+    // feels like a soft field, not a collision.
     const { bx, bz } = box
+    const MARGIN = 1.2 // start nudging this far before the edge
+    const REP = 3.0 // inward speed at deep penetration
+    const EASE = 0.12 // how gently the velocity is steered inward
+    // ease one axis: returns the new velocity component
+    const ease = (pos: number, vel: number, lim: number): number => {
+      const inset = Math.max(lim - MARGIN, 0.4)
+      let target = vel
+      if (pos > inset) target = -(pos - inset) * REP
+      else if (pos < -inset) target = (-inset - pos) * REP
+      else return vel
+      return vel + (target - vel) * EASE
+    }
     for (const b of BLOCKS) {
       const body = bodies.current[b.id]
       if (!body || body === dragged) continue
       const t = body.translation()
       const lv = body.linvel()
       const r = blockRadius(b)
-      const lx = Math.max(bx - r, 0.5)
-      const lz = Math.max(bz - r, 0.5)
-      let nx = lv.x
-      let ny = lv.y
-      let nz = lv.z
-      let hit = false
-      // push inward proportional to how far past the soft limit the piece is,
-      // and damp the outward velocity so it settles instead of bouncing forever
-      if (t.x > lx) {
-        nx = Math.min(nx, 0) - (t.x - lx) * 6
-        hit = true
-      } else if (t.x < -lx) {
-        nx = Math.max(nx, 0) + (-lx - t.x) * 6
-        hit = true
-      }
-      if (t.z > lz) {
-        nz = Math.min(nz, 0) - (t.z - lz) * 6
-        hit = true
-      } else if (t.z < -lz) {
-        nz = Math.max(nz, 0) + (-lz - t.z) * 6
-        hit = true
-      }
-      // keep pieces in a depth band so they don't float toward / through the camera
-      const yLo = r + 0.1
-      const yHi = 5
-      if (t.y > yHi) {
-        ny = Math.min(ny, 0) - (t.y - yHi) * 6
-        hit = true
-      } else if (t.y < yLo) {
-        ny = Math.max(ny, 0) + (yLo - t.y) * 6
-        hit = true
-      }
-      if (hit) body.setLinvel({ x: nx, y: ny, z: nz }, true)
+      const nx = ease(t.x, lv.x, Math.max(bx - r, 0.6))
+      const nz = ease(t.z, lv.z, Math.max(bz - r, 0.6))
+      // depth band, centred ~2.4 so it doesn't drift toward / through the camera
+      const yMid = 2.4
+      const yHalf = 2.6
+      const ny = ease(t.y - yMid, lv.y, yHalf) // re-centre on the band
+      body.setLinvel({ x: nx, y: ny, z: nz }, true)
     }
 
     if (!revealRef.current) {
