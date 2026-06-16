@@ -772,45 +772,50 @@ function Room(props: RoomProps) {
 }
 
 // 5 — video room: the clip plays on loop across the floor and every wall.
+// The <video> + VideoTexture are created inside the effect (one per mount) so
+// React StrictMode's mount/unmount/mount can't leave a dead, src-less element.
 function VideoRoom({ box, visibleWalls }: RoomProps) {
-  const video = useMemo(() => {
-    if (typeof document === "undefined") return null
+  const [tex, setTex] = useState<THREE.VideoTexture | null>(null)
+  useEffect(() => {
+    if (typeof document === "undefined") return
     const v = document.createElement("video")
     v.src = "/videoplayback.mp4"
     v.loop = true
     v.muted = true
+    v.defaultMuted = true
     v.playsInline = true
-    v.crossOrigin = "anonymous"
+    v.setAttribute("muted", "")
+    v.setAttribute("playsinline", "")
     v.preload = "auto"
-    return v
-  }, [])
-  const tex = useMemo(() => {
-    if (!video) return null
-    const t = new THREE.VideoTexture(video)
+    // in the DOM but invisible: display:none stops some browsers decoding, so
+    // park it offscreen at ~0 opacity instead
+    v.style.cssText = "position:fixed;width:2px;height:2px;opacity:0.01;top:0;left:0;pointer-events:none;z-index:-1"
+    document.body.appendChild(v)
+
+    const t = new THREE.VideoTexture(v)
     t.colorSpace = THREE.SRGBColorSpace
     t.minFilter = THREE.LinearFilter
     t.magFilter = THREE.LinearFilter
-    return t
-  }, [video])
-  useEffect(() => {
-    if (!video) return
+    setTex(t)
+
     const start = () => {
-      const p = video.play()
+      const p = v.play()
       if (p && typeof p.catch === "function") p.catch(() => {})
     }
     start()
-    // browsers may block autoplay until a gesture – retry on the first one
-    window.addEventListener("pointerdown", start, { once: true })
+    window.addEventListener("pointerdown", start) // retry if autoplay is gated
+
     return () => {
       window.removeEventListener("pointerdown", start)
-      video.pause()
-      video.removeAttribute("src")
-      video.load()
-      tex?.dispose()
+      v.pause()
+      v.removeAttribute("src")
+      v.load()
+      v.remove()
+      t.dispose()
+      setTex(null)
     }
-  }, [video, tex])
+  }, [])
 
-  if (!tex) return null
   const fw = box.bx * 2
   const fd = box.bz * 2
   return (
@@ -819,19 +824,23 @@ function VideoRoom({ box, visibleWalls }: RoomProps) {
       <ambientLight intensity={0.45} color="#ffffff" />
       <pointLight position={[0, 11, 0]} intensity={16} distance={36} decay={2} color="#ffffff" />
 
-      {/* floor screen – fitted to the visible tray so the clip fills the ground */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
-        <planeGeometry args={[fw, fd]} />
-        <meshBasicMaterial map={tex} toneMapped={false} />
-      </mesh>
+      {tex && (
+        <>
+          {/* floor screen – fitted to the visible tray so the clip fills the ground */}
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
+            <planeGeometry args={[fw, fd]} />
+            <meshBasicMaterial map={tex} toneMapped={false} />
+          </mesh>
 
-      {/* each wall is a screen too */}
-      {visibleWalls.map((w, i) => (
-        <mesh key={`wall-${i}`} position={w.pos}>
-          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
-          <meshBasicMaterial map={tex} toneMapped={false} />
-        </mesh>
-      ))}
+          {/* each wall is a screen too */}
+          {visibleWalls.map((w, i) => (
+            <mesh key={`wall-${i}`} position={w.pos}>
+              <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
+              <meshBasicMaterial map={tex} toneMapped={false} />
+            </mesh>
+          ))}
+        </>
+      )}
     </>
   )
 }
