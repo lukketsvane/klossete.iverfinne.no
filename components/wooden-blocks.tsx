@@ -32,7 +32,7 @@ type TiltState = {
 /* ------------------------------------------------------------------ */
 /*  Block catalogue – sizes are real millimetres scaled to scene units */
 /* ------------------------------------------------------------------ */
-const S = 0.035 // 1 mm -> scene units (blocks kept small relative to the tray)
+const S = 0.045 // 1 mm -> scene units (blocks sit comfortably inside the tray)
 
 type BoxBlock = {
   id: string
@@ -67,7 +67,7 @@ const BLOCKS: Block[] = [
     shape: "box",
     half: [(30 * S) / 2, (30 * S) / 2, (30 * S) / 2],
     dims: "30 × 30 × 30 mm",
-    pos: [-1.15, (30 * S) / 2 + REST, -2.3],
+    pos: [-1.48, (30 * S) / 2 + REST, -2.96],
   },
   {
     id: "orange",
@@ -77,7 +77,7 @@ const BLOCKS: Block[] = [
     // 45 × 45 × 24, lying so the 24 mm dimension is the height
     half: [(45 * S) / 2, (24 * S) / 2, (45 * S) / 2],
     dims: "45 × 45 × 24 mm",
-    pos: [-0.65, (24 * S) / 2 + REST, 0.2],
+    pos: [-0.84, (24 * S) / 2 + REST, 0.26],
   },
   {
     id: "plank-long",
@@ -87,7 +87,7 @@ const BLOCKS: Block[] = [
     // 75 × 30 × 15, lying flat (75 along x, 30 along z, 15 high)
     half: [(75 * S) / 2, (15 * S) / 2, (30 * S) / 2],
     dims: "75 × 30 × 15 mm",
-    pos: [0.15, (15 * S) / 2 + REST, 2.5],
+    pos: [0.19, (15 * S) / 2 + REST, 3.21],
   },
   {
     id: "plank-short",
@@ -97,7 +97,7 @@ const BLOCKS: Block[] = [
     // 60 × 30 × 15, lying flat (60 along z, 30 along x, 15 high)
     half: [(30 * S) / 2, (15 * S) / 2, (60 * S) / 2],
     dims: "60 × 30 × 15 mm",
-    pos: [1, (15 * S) / 2 + REST, -1.15],
+    pos: [1.29, (15 * S) / 2 + REST, -1.48],
   },
   {
     id: "cylinder",
@@ -107,7 +107,7 @@ const BLOCKS: Block[] = [
     radius: (30 * S) / 2,
     halfHeight: (60 * S) / 2,
     dims: "Ø 30 mm · H 60 mm",
-    pos: [0.95, (60 * S) / 2 + REST, 1.5],
+    pos: [1.22, (60 * S) / 2 + REST, 1.93],
   },
 ]
 
@@ -120,67 +120,60 @@ const WOOD = {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Box walls fitted to the visible floor region (inset to form a tray)*/
+/*  Camera + tray layout – the single source of truth                  */
+/*                                                                     */
+/*  The camera looks straight down at the origin, so the visible floor */
+/*  is an axis-aligned rectangle centred on (0,0). We derive its half  */
+/*  extents analytically (no raycasting), build a clean rectangular    */
+/*  tray from them, and reuse the EXACT same numbers to clamp dragging */
+/*  and to catch any body that ever escapes – so the box, the camera   */
+/*  and the containment logic can never drift apart.                   */
 /* ------------------------------------------------------------------ */
-type Wall = {
-  half: [number, number, number]
-  pos: [number, number, number]
-  rot: [number, number, number]
+const CAM_FOV = 36
+const TARGET_HALF_X = 4.4 // world units to keep visible across the short axis
+const TARGET_HALF_Z = 4.4 // world units to keep visible across the long axis
+const BOX_INSET = 0.9 // pull the walls inward so the whole frame reads on screen
+const WALL_HALF_THICK = 0.4
+const WALL_VIS_HEIGHT = 3.0 // the wood-coloured tray walls you actually see
+const WALL_COL_HEIGHT = 16 // invisible containment walls – a deep box nothing escapes
+
+// Half extents of the inner wall faces: the playable rectangle on the floor.
+type Box = { bx: number; bz: number }
+
+function boxLayout(aspect: number) {
+  const halfV = Math.tan((CAM_FOV / 2) * (Math.PI / 180))
+  const dist = Math.max(TARGET_HALF_X / (halfV * aspect), TARGET_HALF_Z / halfV) + 0.5
+  const halfX = dist * halfV * aspect
+  const halfZ = dist * halfV
+  return { dist, bx: halfX * BOX_INSET, bz: halfZ * BOX_INSET }
 }
 
-const WALL_HEIGHT = 3.2
-const WALL_HALF_THICK = 0.4
-const BOX_INSET = 0.9 // shrink the box toward centre so the frame reads inside the screen
+function useBox(): Box {
+  const size = useThree((s) => s.size)
+  return useMemo(() => {
+    const { bx, bz } = boxLayout(size.width / size.height)
+    return { bx, bz }
+  }, [size.width, size.height])
+}
 
-function useFrustumWalls() {
-  const { camera, size } = useThree()
-  const [walls, setWalls] = useState<Wall[]>([])
+type Wall = { half: [number, number, number]; pos: [number, number, number] }
 
-  useEffect(() => {
-    const cam = camera as THREE.PerspectiveCamera
-    cam.updateMatrixWorld()
+// Four axis-aligned walls whose inner faces sit exactly on ±bx / ±bz.
+function buildWalls({ bx, bz }: Box, height: number): Wall[] {
+  const t = WALL_HALF_THICK
+  const h = height / 2
+  return [
+    { half: [t, h, bz + 2 * t], pos: [-(bx + t), h, 0] }, // left
+    { half: [t, h, bz + 2 * t], pos: [bx + t, h, 0] }, // right
+    { half: [bx + 2 * t, h, t], pos: [0, h, -(bz + t)] }, // back
+    { half: [bx + 2 * t, h, t], pos: [0, h, bz + t] }, // front
+  ]
+}
 
-    const ndc: [number, number][] = [
-      [-1, -1],
-      [1, -1],
-      [1, 1],
-      [-1, 1],
-    ]
-    const camPos = new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld)
-
-    const raw = ndc.map(([x, y]) => {
-      const v = new THREE.Vector3(x, y, 0.5).unproject(cam)
-      const dir = v.sub(camPos).normalize()
-      const t = -camPos.y / dir.y // intersect plane y = 0
-      return camPos.clone().add(dir.multiplyScalar(t))
-    })
-
-    const centroid = raw
-      .reduce((a, c) => a.add(c), new THREE.Vector3())
-      .multiplyScalar(1 / raw.length)
-
-    // inset the corners toward the centre so all four walls sit inside the view
-    const corners = raw.map((c) => centroid.clone().lerp(c, BOX_INSET))
-
-    const next: Wall[] = corners.map((a, i) => {
-      const b = corners[(i + 1) % corners.length]
-      const mid = a.clone().add(b).multiplyScalar(0.5)
-      const edge = b.clone().sub(a)
-      const len = Math.hypot(edge.x, edge.z)
-      const angle = Math.atan2(-edge.z, edge.x)
-      const outward = new THREE.Vector3(mid.x - centroid.x, 0, mid.z - centroid.z).normalize()
-      const center = mid.clone().add(outward.multiplyScalar(WALL_HALF_THICK))
-      return {
-        half: [len / 2 + WALL_HALF_THICK, WALL_HEIGHT / 2, WALL_HALF_THICK],
-        pos: [center.x, WALL_HEIGHT / 2, center.z],
-        rot: [0, angle, 0],
-      }
-    })
-
-    setWalls(next)
-  }, [camera, size.width, size.height])
-
-  return walls
+// Horizontal bounding radius of a block – the margin to keep it off the walls
+// no matter how it is rotated about the vertical axis.
+function blockRadius(b: Block) {
+  return b.shape === "cylinder" ? b.radius : Math.hypot(b.half[0], b.half[2])
 }
 
 /* ------------------------------------------------------------------ */
@@ -196,7 +189,7 @@ function BlockBody({
 }: {
   block: Block
   bodyRef: (b: RapierRigidBody | null) => void
-  onGrab: (body: RapierRigidBody, point: THREE.Vector3) => void
+  onGrab: (body: RapierRigidBody, point: THREE.Vector3, block: Block) => void
   measureMode: boolean
   selected: boolean
   onSelect: (id: string) => void
@@ -210,7 +203,7 @@ function BlockBody({
       onSelect(block.id)
       return
     }
-    onGrab(ref.current, e.point.clone())
+    onGrab(ref.current, e.point.clone(), block)
   }
 
   const labelY = block.shape === "cylinder" ? block.halfHeight + 0.5 : block.half[1] + 0.5
@@ -334,7 +327,13 @@ type DragState = {
   last: THREE.Vector3
   vel: THREE.Vector3
   time: number
+  radius: number // horizontal footprint, used to keep the block off the walls
 }
+
+const MIN_LIFT = 0.35 // how high a grabbed block floats while you slide it
+const MAX_LIFT = WALL_VIS_HEIGHT - 0.6 // never lift above the tray rim
+const THROW_MAX = 13 // clamp toss speed for a believable flick
+const ESCAPE_MARGIN = 0.4 // how far past a wall a body must be before we rescue it
 
 function SceneContents({
   measureMode,
@@ -350,7 +349,11 @@ function SceneContents({
   tiltRef: React.MutableRefObject<TiltState>
 }) {
   const { camera, gl, size } = useThree()
-  const walls = useFrustumWalls()
+  const box = useBox()
+  const boxRef = useRef(box)
+  boxRef.current = box
+  const colliderWalls = useMemo(() => buildWalls(box, WALL_COL_HEIGHT), [box])
+  const visibleWalls = useMemo(() => buildWalls(box, WALL_VIS_HEIGHT), [box])
   const lightRef = useRef<THREE.DirectionalLight>(null)
   const bodies = useRef<Record<string, RapierRigidBody | null>>({})
   const drag = useRef<DragState | null>(null)
@@ -375,11 +378,11 @@ function SceneContents({
 
   /* ---- grab ---- */
   const onGrab = useCallback(
-    (body: RapierRigidBody, point: THREE.Vector3) => {
+    (body: RapierRigidBody, point: THREE.Vector3, block: Block) => {
       gl.domElement.style.cursor = "grabbing"
       const t = body.translation()
       const center = new THREE.Vector3(t.x, t.y, t.z)
-      const liftY = Math.max(point.y, 0.4)
+      const liftY = THREE.MathUtils.clamp(point.y, MIN_LIFT, MAX_LIFT)
       body.setBodyType(BODY_KINEMATIC_POSITION, true)
       body.setLinvel({ x: 0, y: 0, z: 0 }, true)
       body.setAngvel({ x: 0, y: 0, z: 0 }, true)
@@ -390,6 +393,7 @@ function SceneContents({
         last: new THREE.Vector3(point.x, liftY, point.z),
         vel: new THREE.Vector3(),
         time: performance.now(),
+        radius: blockRadius(block),
       }
     },
     [gl],
@@ -415,6 +419,13 @@ function SceneContents({
       if (!raycaster.ray.intersectPlane(d.plane, hit)) return
       const target = hit.add(d.offset)
       target.y = -d.plane.constant // keep at lift height
+      // hard-clamp inside the tray so a drag can never pull a block through a
+      // wall, accounting for the block's own footprint
+      const { bx, bz } = boxRef.current
+      const lx = Math.max(bx - d.radius, 0)
+      const lz = Math.max(bz - d.radius, 0)
+      target.x = THREE.MathUtils.clamp(target.x, -lx, lx)
+      target.z = THREE.MathUtils.clamp(target.z, -lz, lz)
       const now = performance.now()
       const dt = Math.max((now - d.time) / 1000, 1 / 240)
       d.vel.copy(target).sub(d.last).multiplyScalar(1 / dt)
@@ -430,8 +441,7 @@ function SceneContents({
       d.body.setBodyType(BODY_DYNAMIC, true)
       // clamp throw speed for a believable toss
       const v = d.vel.clone()
-      const max = 14
-      if (v.length() > max) v.setLength(max)
+      if (v.length() > THROW_MAX) v.setLength(THROW_MAX)
       d.body.setLinvel({ x: v.x, y: v.y, z: v.z }, true)
       d.body.setAngvel(
         { x: (Math.random() - 0.5) * 3, y: (Math.random() - 0.5) * 3, z: (Math.random() - 0.5) * 3 },
@@ -449,6 +459,37 @@ function SceneContents({
       window.removeEventListener("pointercancel", onUp)
     }
   }, [camera, gl, raycaster, size.width, size.height])
+
+  /* ---- safety net: rescue any body that ever leaves the box ---- */
+  // Belt-and-braces guarantee on top of the solid walls and drag clamp: if a
+  // body is ever found outside the tray (a freak tunnel, a stale resize), pull
+  // it back inside and kill its velocity instead of letting it vanish offscreen.
+  useFrame(() => {
+    const { bx, bz } = boxRef.current
+    for (const b of BLOCKS) {
+      const body = bodies.current[b.id]
+      if (!body) continue
+      if (drag.current?.body === body) continue
+      const t = body.translation()
+      const escaped =
+        Math.abs(t.x) > bx + ESCAPE_MARGIN ||
+        Math.abs(t.z) > bz + ESCAPE_MARGIN ||
+        t.y < -0.5 ||
+        t.y > WALL_COL_HEIGHT
+      if (!escaped) continue
+      const r = blockRadius(b)
+      body.setTranslation(
+        {
+          x: THREE.MathUtils.clamp(t.x, -(bx - r), bx - r),
+          y: THREE.MathUtils.clamp(t.y, r + 0.05, WALL_VIS_HEIGHT),
+          z: THREE.MathUtils.clamp(t.z, -(bz - r), bz - r),
+        },
+        true,
+      )
+      body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+      body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+    }
+  })
 
   return (
     <>
@@ -473,11 +514,11 @@ function SceneContents({
 
       <TiltController tiltRef={tiltRef} lightRef={lightRef} />
 
-      {/* static world: floor + box walls (colliders) */}
+      {/* static world: floor + tall invisible containment walls */}
       <RigidBody type="fixed" colliders={false} friction={0.6} restitution={0.12}>
         <CuboidCollider args={[60, 1, 60]} position={[0, -1, 0]} />
-        {walls.map((w, i) => (
-          <CuboidCollider key={i} args={w.half} position={w.pos} rotation={w.rot} restitution={0.2} />
+        {colliderWalls.map((w, i) => (
+          <CuboidCollider key={i} args={w.half} position={w.pos} restitution={0.15} />
         ))}
       </RigidBody>
 
@@ -487,9 +528,9 @@ function SceneContents({
         <meshStandardMaterial color="#f1ece2" roughness={0.95} metalness={0} />
       </mesh>
 
-      {/* visible box walls */}
-      {walls.map((w, i) => (
-        <mesh key={`wall-${i}`} position={w.pos} rotation={w.rot} castShadow receiveShadow>
+      {/* visible (short) tray walls */}
+      {visibleWalls.map((w, i) => (
+        <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
           <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
           <meshStandardMaterial color="#d8cfbd" roughness={0.9} metalness={0} />
         </mesh>
@@ -521,21 +562,15 @@ function SceneContents({
 
 /* ------------------------------------------------------------------ */
 /*  Top-down camera – looks straight down into the box, fits any aspect */
+/*  (uses the same boxLayout as the walls, so they always agree).       */
 /* ------------------------------------------------------------------ */
-const CAM_FOV = 36
-const TARGET_HALF_X = 4.4 // world units to keep visible across the short axis
-const TARGET_HALF_Z = 4.4 // world units to keep visible across the long axis
-
 function CameraRig() {
   const camera = useThree((s) => s.camera)
   const size = useThree((s) => s.size)
 
   useEffect(() => {
     const aspect = size.width / size.height
-    const halfV = Math.tan((CAM_FOV / 2) * (Math.PI / 180))
-    const distForX = TARGET_HALF_X / (halfV * aspect)
-    const distForZ = TARGET_HALF_Z / halfV
-    const dist = Math.max(distForX, distForZ) + 0.5
+    const { dist } = boxLayout(aspect)
 
     const cam = camera as THREE.PerspectiveCamera
     cam.up.set(0, 0, -1) // screen-up maps to -z
@@ -558,6 +593,32 @@ export default function WoodenBlocks() {
   const [tiltOn, setTiltOn] = useState(false)
   const resetRef = useRef<() => void>(() => {})
   const tiltRef = useRef<TiltState>({ enabled: false, beta: 0, gamma: 0 })
+  const iconRef = useRef<HTMLSpanElement>(null)
+
+  // While tilt is on, spin the phone icon to mirror the live device
+  // orientation – it becomes the indicator instead of a filled button.
+  useEffect(() => {
+    const el = iconRef.current
+    if (!tiltOn) {
+      if (el) el.style.transform = ""
+      return
+    }
+    let raf = 0
+    const cur = { beta: 0, gamma: 0 }
+    const loop = () => {
+      const t = tiltRef.current
+      cur.gamma += (t.gamma - cur.gamma) * 0.18
+      cur.beta += (t.beta - cur.beta) * 0.18
+      const ry = Math.max(-48, Math.min(48, cur.gamma)) // left-right lean
+      const rx = Math.max(-48, Math.min(48, cur.beta)) // front-back lean
+      if (iconRef.current) {
+        iconRef.current.style.transform = `perspective(140px) rotateY(${ry}deg) rotateX(${-rx}deg)`
+      }
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [tiltOn])
 
   const onOrient = useCallback((e: DeviceOrientationEvent) => {
     tiltRef.current.beta = e.beta ?? 0
@@ -608,7 +669,13 @@ export default function WoodenBlocks() {
       >
         <color attach="background" args={["#f6f2ea"]} />
         <CameraRig />
-        <Physics gravity={[0, -G, 0]} timeStep={1 / 120} interpolate>
+        <Physics
+          gravity={[0, -G, 0]}
+          timeStep={1 / 120}
+          numSolverIterations={8}
+          maxCcdSubsteps={4}
+          interpolate
+        >
           <SceneContents
             measureMode={measureMode}
             selectedId={selectedId}
@@ -626,13 +693,13 @@ export default function WoodenBlocks() {
           aria-label="Tilt to control gravity"
           aria-pressed={tiltOn}
           onClick={toggleTilt}
-          className={`pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full transition ${
-            tiltOn
-              ? "bg-foreground text-background opacity-100 shadow-md"
-              : "text-foreground opacity-40 hover:opacity-90"
+          className={`pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full text-foreground transition ${
+            tiltOn ? "opacity-100" : "opacity-40 hover:opacity-90"
           }`}
         >
-          <Smartphone className="h-5 w-5" strokeWidth={2.4} />
+          <span ref={iconRef} className="flex items-center justify-center [transform-style:preserve-3d]">
+            <Smartphone className="h-5 w-5" strokeWidth={2.4} />
+          </span>
         </button>
         <button
           type="button"
