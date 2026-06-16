@@ -814,6 +814,7 @@ type RoomProps = {
   visibleWalls: Wall[]
   shadowSpan: number
   roughMap: THREE.Texture
+  muted: boolean // global mute state (drives the video room's audio)
 }
 
 // glass floor is tiled into chunky ~1.9-unit bricks; the glow snaps to this grid
@@ -1377,8 +1378,12 @@ const GRID_FRAG = /* glsl */ `
 // through a low-res CRT shader so each surface reads as an old TV display.
 // The <video> + VideoTexture are created inside the effect (one per mount) so
 // React StrictMode's mount/unmount/mount can't leave a dead, src-less element.
-function VideoRoom({ box, visibleWalls }: RoomProps) {
+function VideoRoom({ box, visibleWalls, muted }: RoomProps) {
   const [tex, setTex] = useState<THREE.VideoTexture | null>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const mutedRef = useRef(muted)
+  const gestured = useRef(false)
+  mutedRef.current = muted
   const crt = useMemo(
     () =>
       new THREE.ShaderMaterial({
@@ -1414,6 +1419,7 @@ function VideoRoom({ box, visibleWalls }: RoomProps) {
     // park it offscreen at ~0 opacity instead
     v.style.cssText = "position:fixed;width:2px;height:2px;opacity:0.01;top:0;left:0;pointer-events:none;z-index:-1"
     document.body.appendChild(v)
+    videoRef.current = v
 
     const t = new THREE.VideoTexture(v)
     t.colorSpace = THREE.SRGBColorSpace
@@ -1425,19 +1431,34 @@ function VideoRoom({ box, visibleWalls }: RoomProps) {
       const p = v.play()
       if (p && typeof p.catch === "function") p.catch(() => {})
     }
+    // the video must autoplay MUTED; on the first gesture we unmute it to the
+    // user's preference so you actually hear the clip in this room
+    const onGesture = () => {
+      gestured.current = true
+      v.muted = mutedRef.current
+      start()
+    }
     start()
-    window.addEventListener("pointerdown", start) // retry if autoplay is gated
+    window.addEventListener("pointerdown", onGesture)
+    window.addEventListener("touchend", onGesture)
 
     return () => {
-      window.removeEventListener("pointerdown", start)
+      window.removeEventListener("pointerdown", onGesture)
+      window.removeEventListener("touchend", onGesture)
       v.pause()
       v.removeAttribute("src")
       v.load()
       v.remove()
+      videoRef.current = null
       t.dispose()
       setTex(null)
     }
   }, [])
+
+  // keep the clip's audio in sync with the mute button (once audio is unlocked)
+  useEffect(() => {
+    if (gestured.current && videoRef.current) videoRef.current.muted = muted
+  }, [muted])
 
   const fw = box.bx * 2
   const fd = box.bz * 2
@@ -1729,6 +1750,7 @@ function PlayMatRoom({ visibleWalls }: RoomProps) {
 
 function SceneContents({
   env,
+  muted,
   measureMode,
   selectedId,
   setSelectedId,
@@ -1737,6 +1759,7 @@ function SceneContents({
   grabbingRef,
 }: {
   env: EnvConfig
+  muted: boolean
   measureMode: boolean
   selectedId: string | null
   setSelectedId: (id: string | null) => void
@@ -2139,7 +2162,7 @@ function SceneContents({
       </RigidBody>
 
       {/* environment-specific room: floor, walls, fill lighting */}
-      <Room env={env} box={box} visibleWalls={visibleWalls} shadowSpan={shadowSpan} roughMap={roughMap} />
+      <Room env={env} box={box} visibleWalls={visibleWalls} shadowSpan={shadowSpan} roughMap={roughMap} muted={muted} />
 
       {/* reactive floor: tiles flash where blocks strike, brightness ~ force */}
       <ImpactGlows poolRef={glowPool} active={!!env.reactive} tile={GLASS_TILE} />
@@ -2420,6 +2443,7 @@ export default function WoodenBlocks() {
           <Suspense fallback={null}>
             <SceneContents
               env={env}
+              muted={muted}
               measureMode={measureMode}
               selectedId={selectedId}
               setSelectedId={setSelectedId}
