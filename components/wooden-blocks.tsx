@@ -1365,10 +1365,10 @@ const TOTEM_LINKS: Link[] = [
   { id: "plank-short", parent: "plank-long", off: [1.62, 0, 0.81], rot: [0, Math.PI / 2, 0] }, // corner -> foot (across)
   { id: "cylinder", parent: "plank-short", off: [2.16, 0, 0], rot: [0, 0, Math.PI / 2] }, // foot tip (lying)
 ]
-const SNAP_RADIUS = 2.0 // a piece starts feeling its partner within this distance
-const CONNECT_DIST = 0.6 // considered "snapped" (counts toward the solve) within this
-const MAG_PULL = 6 // proximity error -> gentle velocity toward the snap pose
-const MAG_RESPONSE = 0.16 // how fast that velocity is applied (low = soft, not forcible)
+const SNAP_RADIUS = 2.8 // a piece starts feeling its partner within this distance
+const CONNECT_DIST = 1.4 // counts as "snapped" within this (forgiving – colliders stop pieces seating perfectly)
+const MAG_PULL = 9 // proximity error -> velocity toward the snap pose
+const MAG_RESPONSE = 0.24 // how fast that velocity is applied (firm enough to seat them)
 const SPIN_AXIS = new THREE.Vector3(0.28, 1, 0.18).normalize() // the solved L tumbles about this
 const SPIN_SPEED = 0.7 // rad/s of the victory spin
 
@@ -1430,6 +1430,7 @@ function MagnetController({
   useFrame((_s, dt) => {
     const dragged = dragRef.current?.body ?? null
     let connectedCount = 0
+    const snapping = new Set<string>() // pieces actively seating – exempt from the edge field
 
     // on first frame in the space level, scatter the pieces across space at
     // random floating orientations (no floor/gravity -> they hang at odd angles)
@@ -1520,6 +1521,7 @@ function MagnetController({
       // gentle magnetic pull on the child toward the snap pose (skip while it's
       // the piece being dragged, so the cursor stays in full control)
       if (dist < SNAP_RADIUS && child !== dragged) {
+        snapping.add(link.id) // let the magnet win over the edge field here
         const k = 1 - dist / SNAP_RADIUS // firmer the closer it gets
         let dvx = toTarget.x * MAG_PULL
         let dvy = toTarget.y * MAG_PULL
@@ -1574,7 +1576,7 @@ function MagnetController({
     }
     for (const b of BLOCKS) {
       const body = bodies.current[b.id]
-      if (!body || body === dragged) continue
+      if (!body || body === dragged || snapping.has(b.id)) continue
       const t = body.translation()
       const lv = body.linvel()
       const r = blockRadius(b)
