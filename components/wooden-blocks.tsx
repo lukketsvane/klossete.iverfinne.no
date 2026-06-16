@@ -1371,10 +1371,12 @@ const MAG_RESPONSE = 0.16 // how fast that velocity is applied (low = soft, not 
 
 function MagnetController({
   bodies,
+  box,
   dragRef,
   revealRef,
 }: {
   bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  box: Box
   dragRef: React.MutableRefObject<DragState | null>
   revealRef: React.MutableRefObject<boolean>
 }) {
@@ -1403,6 +1405,7 @@ function MagnetController({
   const flash = useRef<THREE.PointLight>(null)
   const flashT = useRef(0)
   const dwell = useRef(0)
+  const scattered = useRef(false)
 
   useEffect(() => () => {
     revealRef.current = false
@@ -1411,6 +1414,41 @@ function MagnetController({
   useFrame((_s, dt) => {
     const dragged = dragRef.current?.body ?? null
     let connectedCount = 0
+
+    // on first frame in the space level, scatter the pieces across space at
+    // random floating orientations (no floor/gravity -> they hang at odd angles)
+    if (!scattered.current) {
+      scattered.current = true
+      for (const b of BLOCKS) {
+        const body = bodies.current[b.id]
+        if (!body) {
+          scattered.current = false // bodies not ready yet – try next frame
+          break
+        }
+      }
+      if (scattered.current) {
+        for (const b of BLOCKS) {
+          const body = bodies.current[b.id]
+          if (!body) continue
+          const r = blockRadius(b)
+          const x = (Math.random() * 2 - 1) * Math.max(box.bx - r - 0.6, 0.5)
+          const z = (Math.random() * 2 - 1) * Math.max(box.bz - r - 0.6, 0.5)
+          body.setTranslation({ x, y: 1.2 + Math.random() * 2.4, z }, true)
+          const e = new THREE.Euler(
+            Math.random() * Math.PI * 2,
+            Math.random() * Math.PI * 2,
+            Math.random() * Math.PI * 2,
+          )
+          const q = new THREE.Quaternion().setFromEuler(e)
+          body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
+          body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+          body.setAngvel(
+            { x: (Math.random() - 0.5) * 0.5, y: (Math.random() - 0.5) * 0.5, z: (Math.random() - 0.5) * 0.5 },
+            true,
+          )
+        }
+      }
+    }
 
     TOTEM_LINKS.forEach((link, i) => {
       const child = bodies.current[link.id]
@@ -1468,6 +1506,51 @@ function MagnetController({
         }
       }
     })
+
+    // edge force-field: in zero-g there's no floor/walls to lean on, so softly
+    // repel every piece back inward as it nears the screen bounds (and keep it
+    // in a sensible depth band) – nothing can drift off-screen.
+    const { bx, bz } = box
+    for (const b of BLOCKS) {
+      const body = bodies.current[b.id]
+      if (!body || body === dragged) continue
+      const t = body.translation()
+      const lv = body.linvel()
+      const r = blockRadius(b)
+      const lx = Math.max(bx - r, 0.5)
+      const lz = Math.max(bz - r, 0.5)
+      let nx = lv.x
+      let ny = lv.y
+      let nz = lv.z
+      let hit = false
+      // push inward proportional to how far past the soft limit the piece is,
+      // and damp the outward velocity so it settles instead of bouncing forever
+      if (t.x > lx) {
+        nx = Math.min(nx, 0) - (t.x - lx) * 6
+        hit = true
+      } else if (t.x < -lx) {
+        nx = Math.max(nx, 0) + (-lx - t.x) * 6
+        hit = true
+      }
+      if (t.z > lz) {
+        nz = Math.min(nz, 0) - (t.z - lz) * 6
+        hit = true
+      } else if (t.z < -lz) {
+        nz = Math.max(nz, 0) + (-lz - t.z) * 6
+        hit = true
+      }
+      // keep pieces in a depth band so they don't float toward / through the camera
+      const yLo = r + 0.1
+      const yHi = 5
+      if (t.y > yHi) {
+        ny = Math.min(ny, 0) - (t.y - yHi) * 6
+        hit = true
+      } else if (t.y < yLo) {
+        ny = Math.max(ny, 0) + (yLo - t.y) * 6
+        hit = true
+      }
+      if (hit) body.setLinvel({ x: nx, y: ny, z: nz }, true)
+    }
 
     if (!revealRef.current) {
       if (connectedCount === TOTEM_LINKS.length) {
@@ -2587,10 +2670,13 @@ function SceneContents({
 
       {/* static world: floor + tall invisible containment walls */}
       <RigidBody type="fixed" colliders={false} friction={0.7} restitution={0.1}>
-        <CuboidCollider args={[60, 1, 60]} position={[0, -1, 0]} />
-        {colliderWalls.map((w, i) => (
-          <CuboidCollider key={i} args={w.half} position={w.pos} restitution={0.12} />
-        ))}
+        {/* the space level has no floor – pieces float freely (the magnet room's
+            own edge force-field keeps them on screen) */}
+        {!env.magnet && <CuboidCollider args={[60, 1, 60]} position={[0, -1, 0]} />}
+        {!env.magnet &&
+          colliderWalls.map((w, i) => (
+            <CuboidCollider key={i} args={w.half} position={w.pos} restitution={0.12} />
+          ))}
       </RigidBody>
 
       {/* environment-specific room: floor, walls, fill lighting */}
@@ -2606,7 +2692,7 @@ function SceneContents({
       {env.projection && <ProjectionController bodies={bodies} box={box} revealRef={revealRef} />}
 
       {/* magnet/totem puzzle: gentle pairwise snaps assemble a figure */}
-      {env.magnet && <MagnetController bodies={bodies} dragRef={drag} revealRef={revealRef} />}
+      {env.magnet && <MagnetController bodies={bodies} box={box} dragRef={drag} revealRef={revealRef} />}
 
       {/* blocks */}
       {BLOCKS.map((b) => (
