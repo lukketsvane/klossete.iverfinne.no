@@ -2,8 +2,8 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Canvas, useThree, useFrame } from "@react-three/fiber"
-import { ContactShadows, Html, useGLTF } from "@react-three/drei"
-import { EffectComposer, N8AO, SMAA, ToneMapping, Vignette } from "@react-three/postprocessing"
+import { ContactShadows, Html, MeshReflectorMaterial, useGLTF, useTexture } from "@react-three/drei"
+import { Bloom, EffectComposer, N8AO, SMAA, ToneMapping, Vignette } from "@react-three/postprocessing"
 import { ToneMappingMode } from "postprocessing"
 import {
   Physics,
@@ -14,7 +14,7 @@ import {
   type RapierRigidBody,
 } from "@react-three/rapier"
 import * as THREE from "three"
-import { RotateCcw, Ruler, Smartphone, Volume2, VolumeX } from "lucide-react"
+import { Layers, RotateCcw, Ruler, Smartphone, Volume2, VolumeX } from "lucide-react"
 import { playImpact, primeBlocks, setMuted, unlockAudio } from "@/lib/impact-sound"
 
 /* ------------------------------------------------------------------ */
@@ -297,11 +297,11 @@ function BlockBody({
       // restitution, and a uniform dense-hardwood density so mass scales with
       // volume (the cylinder lands heavier than the little cube). Low damping
       // keeps them lively rather than floating through air.
-      friction={0.6}
-      restitution={0.16}
+      friction={0.7}
+      restitution={0.12}
       density={6}
-      linearDamping={0.08}
-      angularDamping={0.4}
+      linearDamping={0.1}
+      angularDamping={0.55}
       canSleep={false}
       onCollisionEnter={handleImpact}
       ccd
@@ -335,9 +335,9 @@ function BlockBody({
 /* ------------------------------------------------------------------ */
 /*  Tilt controller – maps device orientation to gravity + light       */
 /* ------------------------------------------------------------------ */
-// Stronger-than-default gravity so the now-smaller blocks read as heavy solid
-// wood that drops and settles quickly instead of drifting down.
-const G = 28
+// Gravity tuned so blocks settle with weight but stay calm enough to stack
+// without bouncing themselves over (too strong made them impossible to build with).
+const G = 20
 
 // Default resting position of the warm key light. The camera looks straight
 // down with screen-up mapped to -z, so a light on the -z side reads as coming
@@ -372,6 +372,130 @@ function makeNoiseTexture(size = 128): THREE.DataTexture {
   tex.needsUpdate = true
   return tex
 }
+
+/* ------------------------------------------------------------------ */
+/*  Procedural tile textures (one cell per texture; tiled via repeat)  */
+/*  used by the gold-mirror and glass-block environments.              */
+/* ------------------------------------------------------------------ */
+
+// Thin bright grid lines on black – glowing seams / mortar (emissive map).
+function makeSeamTexture(size = 256, line = 0.045): THREE.DataTexture {
+  const data = new Uint8Array(size * size * 4)
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size
+      const v = y / size
+      const d = Math.min(u, 1 - u, v, 1 - v)
+      const on = d < line ? 255 : 0
+      const i = (y * size + x) * 4
+      data[i] = data[i + 1] = data[i + 2] = on
+      data[i + 3] = 255
+    }
+  }
+  const tex = new THREE.DataTexture(data, size, size)
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+  tex.colorSpace = THREE.SRGBColorSpace
+  tex.needsUpdate = true
+  return tex
+}
+
+// Pillowed-square normal map: each tile bulges like a glass brick, with a
+// mortar groove at the borders (where neighbouring tiles meet under repeat).
+function makeBrickNormalTexture(size = 256, bevel = 0.16, strength = 2.2): THREE.DataTexture {
+  const data = new Uint8Array(size * size * 4)
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size
+      const v = y / size
+      const dx = Math.min(u, 1 - u)
+      const dy = Math.min(v, 1 - v)
+      const sx = dx < bevel ? (1 - dx / bevel) * (u < 0.5 ? -1 : 1) : 0
+      const sy = dy < bevel ? (1 - dy / bevel) * (v < 0.5 ? -1 : 1) : 0
+      let nx = sx * strength
+      let ny = sy * strength
+      let nz = 1
+      const inv = 1 / Math.hypot(nx, ny, nz)
+      nx *= inv
+      ny *= inv
+      nz *= inv
+      const i = (y * size + x) * 4
+      data[i] = Math.round(nx * 127.5 + 127.5)
+      data[i + 1] = Math.round(ny * 127.5 + 127.5)
+      data[i + 2] = Math.round(nz * 127.5 + 127.5)
+      data[i + 3] = 255
+    }
+  }
+  const tex = new THREE.DataTexture(data, size, size)
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+  tex.needsUpdate = true
+  return tex
+}
+
+// Backlight glow for glass bricks: bright cell interior, darker at the mortar.
+function makeBrickGlowTexture(size = 256, bevel = 0.16): THREE.DataTexture {
+  const data = new Uint8Array(size * size * 4)
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size
+      const v = y / size
+      const d = Math.min(u, 1 - u, v, 1 - v)
+      const e = d < bevel ? 0.4 + 0.6 * (d / bevel) : 1
+      const val = Math.round(e * 255)
+      const i = (y * size + x) * 4
+      data[i] = data[i + 1] = data[i + 2] = val
+      data[i + 3] = 255
+    }
+  }
+  const tex = new THREE.DataTexture(data, size, size)
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+  tex.colorSpace = THREE.SRGBColorSpace
+  tex.needsUpdate = true
+  return tex
+}
+
+/* ------------------------------------------------------------------ */
+/*  Environments – cycle with number keys 1-9 (desktop) or a two-finger */
+/*  tap-and-hold (touch). Each swaps the room materials + lighting mood. */
+/* ------------------------------------------------------------------ */
+type EnvKind = "concrete" | "gold" | "glass"
+type EnvConfig = {
+  id: EnvKind
+  name: string
+  bg: string // canvas + page background
+  keyColor: string
+  keyIntensity: number
+  contact: { color: string; opacity: number } // grounding contact shadow
+  bloom: boolean
+}
+const ENVIRONMENTS: EnvConfig[] = [
+  {
+    id: "concrete",
+    name: "Concrete",
+    bg: "#cdc6b8",
+    keyColor: "#fff1df",
+    keyIntensity: 3.1,
+    contact: { color: "#332b20", opacity: 0.5 },
+    bloom: false,
+  },
+  {
+    id: "gold",
+    name: "Gold mirror",
+    bg: "#0c0a06",
+    keyColor: "#ffdca0",
+    keyIntensity: 2.4,
+    contact: { color: "#000000", opacity: 0.35 },
+    bloom: true,
+  },
+  {
+    id: "glass",
+    name: "Glass blocks",
+    bg: "#eef2f6",
+    keyColor: "#ffffff",
+    keyIntensity: 2.0,
+    contact: { color: "#3a4452", opacity: 0.28 },
+    bloom: true,
+  },
+]
 
 function TiltController({
   tiltRef,
@@ -449,31 +573,246 @@ type DragState = {
   radius: number // horizontal footprint, used to keep the block off the walls
 }
 
-const MIN_LIFT = 0.55 // how high the grab point floats while you slide it
-const MAX_LIFT = WALL_VIS_HEIGHT - 0.6 // never lift above the tray rim
-const THROW_MAX = 3.4 // hard clamp on release speed – a gentle set-down, never a fling
+const MIN_LIFT = 1.35 // grabbed blocks float well clear of the floor so you can carry them OVER others and stack
+const MAX_LIFT = WALL_VIS_HEIGHT - 0.4 // never lift above the tray rim
+const THROW_MAX = 3.0 // hard clamp on release speed – a gentle set-down, never a fling
 const ESCAPE_MARGIN = 0.4 // how far past a wall a body must be before we rescue it
 
 /* Soft "grab spring": the block is held by the exact point you grabbed, via a
    damped spring (PD controller) applied at that point. Because the pull acts at
    the grab point while gravity pulls the centre of mass, the piece hangs and
-   swings from your cursor like it's on a string. Force and speed are clamped
-   low, so the blocks always feel heavy and can never be hurled. */
-const DRAG_K = 150 // spring stiffness (how eagerly the grab point chases the cursor)
-const DRAG_C = 25 // damping (~critical, kills wobble)
-const DRAG_ERR_MAX = 1.1 // cap on position error -> caps the pull force
-const DRAG_ACCEL_MAX = 130 // hard ceiling on grab acceleration -> can't yank hard
-const MAX_DRAG_SPEED = 4.5 // linear speed cap while held
+   swings from your cursor like it's on a string. It's responsive enough to
+   position and stack precisely, but the RELEASE speed is clamped low so a flick
+   can never become a fling. */
+const DRAG_K = 230 // spring stiffness (how eagerly the grab point chases the cursor)
+const DRAG_C = 30 // damping (~critical, kills wobble)
+const DRAG_ERR_MAX = 1.4 // cap on position error -> caps the pull force
+const DRAG_ACCEL_MAX = 260 // ceiling on grab acceleration (enough authority to place, not to yank)
+const MAX_DRAG_SPEED = 7.5 // linear speed cap while held – responsive for building
 const MAX_DRAG_ANGSPEED = 7 // spin cap while held
 const LIGHT_RADIUS = 14 // how far the key light orbits when you shift+right-drag it
 
+/* ------------------------------------------------------------------ */
+/*  Room environments – floor + walls + fill lighting, swapped by env   */
+/* ------------------------------------------------------------------ */
+const FLOOR = 120
+
+type RoomProps = {
+  env: EnvConfig
+  box: Box
+  visibleWalls: Wall[]
+  shadowSpan: number
+  roughMap: THREE.Texture
+}
+
+function Room(props: RoomProps) {
+  if (props.env.id === "gold") return <GoldRoom {...props} />
+  if (props.env.id === "glass") return <GlassRoom {...props} />
+  return <ConcreteRoom {...props} />
+}
+
+// 1 — real concrete: photographed albedo + normal + roughness maps.
+function ConcreteRoom({ visibleWalls }: RoomProps) {
+  const [albedo, normal, rough] = useTexture([
+    "/textures/concrete/concrete_albedo.png",
+    "/textures/concrete/concrete_normal.png",
+    "/textures/concrete/concrete_roughness.png",
+  ])
+  useMemo(() => {
+    albedo.colorSpace = THREE.SRGBColorSpace
+    for (const t of [albedo, normal, rough]) {
+      t.wrapS = t.wrapT = THREE.RepeatWrapping
+      t.repeat.set(10, 10)
+      t.anisotropy = 8
+      t.needsUpdate = true
+    }
+  }, [albedo, normal, rough])
+
+  return (
+    <>
+      {/* cool RIM from behind to separate edges from the floor */}
+      <directionalLight position={[7, 6, -11]} intensity={1.2} color="#b9d0ff" />
+      {/* warm practical – pulled toward centre and dimmed so it stops blowing out
+          the left wall */}
+      <pointLight position={[-1.0, 6, -0.5]} intensity={12} distance={16} decay={2} color="#ffce92" />
+      {/* cool motivated fill opposite the key */}
+      <pointLight position={[5.0, 9, 6.0]} intensity={26} distance={26} decay={2} color="#a6beff" />
+      {/* faint floor bounce */}
+      <pointLight position={[0, 0.7, 0]} intensity={5} distance={9} decay={2} color="#ffe7c4" />
+
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
+        <planeGeometry args={[FLOOR, FLOOR]} />
+        <meshPhysicalMaterial
+          map={albedo}
+          normalMap={normal}
+          normalScale={new THREE.Vector2(0.7, 0.7)}
+          roughnessMap={rough}
+          roughness={1}
+          metalness={0}
+          sheen={0.15}
+          sheenRoughness={0.9}
+          sheenColor="#cfc6b4"
+        />
+      </mesh>
+
+      {visibleWalls.map((w, i) => (
+        <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
+          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
+          <meshStandardMaterial
+            map={albedo}
+            normalMap={normal}
+            normalScale={new THREE.Vector2(0.5, 0.5)}
+            roughnessMap={rough}
+            roughness={1}
+            metalness={0}
+            color="#cfc7b6"
+          />
+        </mesh>
+      ))}
+    </>
+  )
+}
+
+// 2 — gold mirror box: a real reflective floor + glowing gridded gold walls.
+function GoldRoom({ visibleWalls }: RoomProps) {
+  const seam = useMemo(() => makeSeamTexture(), [])
+  const floorSeam = useMemo(() => {
+    const t = seam.clone()
+    t.repeat.set(22, 22)
+    t.needsUpdate = true
+    return t
+  }, [seam])
+  const wallSeam = useMemo(() => {
+    const t = seam.clone()
+    t.repeat.set(8, 3)
+    t.needsUpdate = true
+    return t
+  }, [seam])
+
+  return (
+    <>
+      <ambientLight intensity={0.12} color="#ffdba0" />
+      <pointLight position={[0, 8, 0]} intensity={28} distance={30} decay={2} color="#ffd58a" />
+      <pointLight position={[-4, 5, 4]} intensity={18} distance={22} decay={2} color="#ffba5a" />
+
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
+        <planeGeometry args={[FLOOR, FLOOR]} />
+        <MeshReflectorMaterial
+          resolution={1024}
+          mixBlur={1}
+          mixStrength={3}
+          blur={[300, 110]}
+          roughness={0.22}
+          depthScale={0}
+          metalness={0.9}
+          color="#8a6a2c"
+          mirror={0.85}
+        />
+      </mesh>
+      {/* glowing seam grid floating just above the mirror */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.012, 0]}>
+        <planeGeometry args={[FLOOR, FLOOR]} />
+        <meshBasicMaterial map={floorSeam} transparent blending={THREE.AdditiveBlending} color="#ffd98a" depthWrite={false} />
+      </mesh>
+
+      {visibleWalls.map((w, i) => (
+        <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
+          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
+          <meshStandardMaterial
+            color="#6f5420"
+            metalness={0.65}
+            roughness={0.32}
+            emissive="#ffcf7a"
+            emissiveMap={wallSeam}
+            emissiveIntensity={2.2}
+          />
+        </mesh>
+      ))}
+    </>
+  )
+}
+
+// 3 — backlit frosted glass-block room: pillowed bricks glowing from within.
+function GlassRoom({ visibleWalls }: RoomProps) {
+  const brickN = useMemo(() => makeBrickNormalTexture(), [])
+  const brickGlow = useMemo(() => makeBrickGlowTexture(), [])
+  const floorN = useMemo(() => {
+    const t = brickN.clone()
+    t.repeat.set(7, 7)
+    t.needsUpdate = true
+    return t
+  }, [brickN])
+  const floorGlow = useMemo(() => {
+    const t = brickGlow.clone()
+    t.repeat.set(7, 7)
+    t.needsUpdate = true
+    return t
+  }, [brickGlow])
+  const wallN = useMemo(() => {
+    const t = brickN.clone()
+    t.repeat.set(6, 2)
+    t.needsUpdate = true
+    return t
+  }, [brickN])
+  const wallGlow = useMemo(() => {
+    const t = brickGlow.clone()
+    t.repeat.set(6, 2)
+    t.needsUpdate = true
+    return t
+  }, [brickGlow])
+
+  return (
+    <>
+      <ambientLight intensity={0.9} color="#eef4ff" />
+      <hemisphereLight intensity={0.6} color="#ffffff" groundColor="#c9d6e6" />
+      <pointLight position={[0, 5, 0]} intensity={20} distance={30} decay={2} color="#ffffff" />
+
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
+        <planeGeometry args={[FLOOR, FLOOR]} />
+        <meshPhysicalMaterial
+          color="#e9f1f8"
+          roughness={0.18}
+          metalness={0}
+          clearcoat={1}
+          clearcoatRoughness={0.25}
+          normalMap={floorN}
+          normalScale={new THREE.Vector2(0.8, 0.8)}
+          emissive="#ffffff"
+          emissiveMap={floorGlow}
+          emissiveIntensity={0.7}
+        />
+      </mesh>
+
+      {visibleWalls.map((w, i) => (
+        <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
+          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
+          <meshPhysicalMaterial
+            color="#e9f1f8"
+            roughness={0.2}
+            metalness={0}
+            clearcoat={1}
+            clearcoatRoughness={0.3}
+            normalMap={wallN}
+            normalScale={new THREE.Vector2(0.7, 0.7)}
+            emissive="#ffffff"
+            emissiveMap={wallGlow}
+            emissiveIntensity={0.8}
+          />
+        </mesh>
+      ))}
+    </>
+  )
+}
+
 function SceneContents({
+  env,
   measureMode,
   selectedId,
   setSelectedId,
   registerReset,
   tiltRef,
 }: {
+  env: EnvConfig
   measureMode: boolean
   selectedId: string | null
   setSelectedId: (id: string | null) => void
@@ -731,14 +1070,13 @@ function SceneContents({
 
   return (
     <>
-      {/* ----- motivated lighting rig (no HDRI / no broad fill) ----- */}
-
-      {/* Soft warm KEY – the only shadow caster, read as an overhead practical. */}
+      {/* Soft KEY – the only shadow caster, aimed from the top of the page by
+          default and re-aimable with shift+right-drag. Colour/intensity per env. */}
       <directionalLight
         ref={lightRef}
         position={[KEY.x, KEY.y, KEY.z]}
-        intensity={3.1}
-        color="#fff1df"
+        intensity={env.keyIntensity}
+        color={env.keyColor}
         castShadow
         shadow-mapSize-width={4096}
         shadow-mapSize-height={4096}
@@ -752,62 +1090,29 @@ function SceneContents({
         shadow-normalBias={0.025}
       />
 
-      {/* Cool RIM / kicker from behind, grazing, to separate edges from floor. */}
-      <directionalLight position={[7, 6, -11]} intensity={1.25} color="#b9d0ff" />
-
-      {/* Warm PRACTICAL: a nearby lamp pool with physical inverse-square falloff. */}
-      <pointLight position={[-3.4, 3.0, -1.2]} intensity={26} distance={14} decay={2} color="#ffce92" />
-
-      {/* Cool motivated FILL opposite the key – localized (not a broad ambient);
-          the far side is intentionally left darker for negative-fill contrast. */}
-      <pointLight position={[5.6, 9, 6.5]} intensity={44} distance={26} decay={2} color="#a6beff" />
-
-      {/* Faint floor BOUNCE lifting the block undersides. */}
-      <pointLight position={[0, 0.7, 0]} intensity={7} distance={9} decay={2} color="#ffe7c4" />
-
-      {/* soft contact shadow that grounds the blocks; sized to the box so it
-          fills any screen and stays crisp instead of spread thin */}
+      {/* soft contact shadow that grounds the blocks; sized to the box */}
       <ContactShadows
         position={[0, 0.001, 0]}
         scale={shadowSpan * 2}
         resolution={2048}
         far={4}
-        blur={2.2}
-        opacity={0.5}
-        color="#332b20"
+        blur={2.4}
+        opacity={env.contact.opacity}
+        color={env.contact.color}
       />
 
       <TiltController tiltRef={tiltRef} />
 
       {/* static world: floor + tall invisible containment walls */}
-      <RigidBody type="fixed" colliders={false} friction={0.6} restitution={0.12}>
+      <RigidBody type="fixed" colliders={false} friction={0.7} restitution={0.1}>
         <CuboidCollider args={[60, 1, 60]} position={[0, -1, 0]} />
         {colliderWalls.map((w, i) => (
-          <CuboidCollider key={i} args={w.half} position={w.pos} restitution={0.15} />
+          <CuboidCollider key={i} args={w.half} position={w.pos} restitution={0.12} />
         ))}
       </RigidBody>
 
-      {/* visible floor – matte table surface with a touch of sheen + grain */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
-        <planeGeometry args={[120, 120]} />
-        <meshPhysicalMaterial
-          color="#efe9dd"
-          roughness={0.92}
-          roughnessMap={roughMap}
-          metalness={0}
-          sheen={0.2}
-          sheenRoughness={0.9}
-          sheenColor="#cfc6b4"
-        />
-      </mesh>
-
-      {/* visible (short) tray walls */}
-      {visibleWalls.map((w, i) => (
-        <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
-          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
-          <meshStandardMaterial color="#d8cfbd" roughness={0.85} roughnessMap={roughMap} metalness={0} />
-        </mesh>
-      ))}
+      {/* environment-specific room: floor, walls, fill lighting */}
+      <Room env={env} box={box} visibleWalls={visibleWalls} shadowSpan={shadowSpan} roughMap={roughMap} />
 
       {/* blocks */}
       {BLOCKS.map((b) => (
@@ -865,6 +1170,8 @@ export default function WoodenBlocks() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [tiltOn, setTiltOn] = useState(false)
   const [muted, setMutedState] = useState(false)
+  const [envIndex, setEnvIndex] = useState(0)
+  const env = ENVIRONMENTS[envIndex]
   const resetRef = useRef<() => void>(() => {})
   const tiltRef = useRef<TiltState>({ enabled: false, beta: 0, gamma: 0, sx: 0, sz: 0 })
   const iconRef = useRef<HTMLSpanElement>(null)
@@ -917,6 +1224,54 @@ export default function WoodenBlocks() {
     }
     window.addEventListener("pointerdown", unlock, { once: true })
     return () => window.removeEventListener("pointerdown", unlock)
+  }, [])
+
+  // Environment navigation: number keys 1-9 jump straight to an environment
+  // (desktop); a two-finger tap-and-hold cycles to the next one (touch).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key >= "1" && e.key <= "9") {
+        const idx = Number(e.key) - 1
+        if (idx < ENVIRONMENTS.length) setEnvIndex(idx)
+      }
+    }
+    let holdTimer: ReturnType<typeof setTimeout> | null = null
+    let start: { x: number; y: number } | null = null
+    const clearHold = () => {
+      if (holdTimer) clearTimeout(holdTimer)
+      holdTimer = null
+    }
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        start = { x: e.touches[0].clientX, y: e.touches[0].clientY }
+        clearHold()
+        holdTimer = setTimeout(() => setEnvIndex((i) => (i + 1) % ENVIRONMENTS.length), 450)
+      } else {
+        clearHold()
+      }
+    }
+    const onTouchMove = (e: TouchEvent) => {
+      if (!holdTimer || e.touches.length < 2 || !start) {
+        clearHold()
+        return
+      }
+      const moved = Math.hypot(e.touches[0].clientX - start.x, e.touches[0].clientY - start.y)
+      if (moved > 24) clearHold() // it's a pinch/drag, not a hold
+    }
+    const onTouchEnd = () => clearHold()
+    window.addEventListener("keydown", onKey)
+    window.addEventListener("touchstart", onTouchStart, { passive: true })
+    window.addEventListener("touchmove", onTouchMove, { passive: true })
+    window.addEventListener("touchend", onTouchEnd)
+    window.addEventListener("touchcancel", onTouchEnd)
+    return () => {
+      window.removeEventListener("keydown", onKey)
+      window.removeEventListener("touchstart", onTouchStart)
+      window.removeEventListener("touchmove", onTouchMove)
+      window.removeEventListener("touchend", onTouchEnd)
+      window.removeEventListener("touchcancel", onTouchEnd)
+      clearHold()
+    }
   }, [])
 
   // While tilt is on, lean the phone icon the same way gravity is pulling on
@@ -979,7 +1334,10 @@ export default function WoodenBlocks() {
   }, [tiltOn, onOrient])
 
   return (
-    <div className="relative h-dvh w-full overflow-hidden bg-[#f6f2ea]">
+    <div
+      className="relative h-dvh w-full overflow-hidden transition-colors duration-700"
+      style={{ backgroundColor: env.bg }}
+    >
       <Canvas
         shadows
         dpr={[1, 2]}
@@ -992,7 +1350,7 @@ export default function WoodenBlocks() {
         }}
         style={{ touchAction: "none" }}
       >
-        <color attach="background" args={["#f6f2ea"]} />
+        <color attach="background" args={[env.bg]} />
         <CameraRig />
         <Physics
           gravity={[0, -G, 0]}
@@ -1003,6 +1361,7 @@ export default function WoodenBlocks() {
         >
           <Suspense fallback={null}>
             <SceneContents
+              env={env}
               measureMode={measureMode}
               selectedId={selectedId}
               setSelectedId={setSelectedId}
@@ -1013,10 +1372,16 @@ export default function WoodenBlocks() {
         </Physics>
 
         {/* realism pass: ambient occlusion grounds the blocks, a gentle vignette
-            adds depth, ACES tone mapping seats the contrast, SMAA cleans edges */}
-        <EffectComposer multisampling={0}>
-          <N8AO aoRadius={1.4} intensity={2.6} distanceFalloff={1} halfRes color="#1c160e" />
-          <Vignette offset={0.32} darkness={0.42} />
+            adds depth, ACES tone mapping seats the contrast, SMAA cleans edges.
+            Bloom is added for the gold + glass environments to make seams glow. */}
+        <EffectComposer key={env.id} multisampling={0}>
+          <N8AO aoRadius={1.4} intensity={env.id === "glass" ? 1.4 : 2.6} distanceFalloff={1} halfRes color="#1c160e" />
+          {env.bloom ? (
+            <Bloom intensity={env.id === "gold" ? 0.7 : 0.5} luminanceThreshold={0.6} luminanceSmoothing={0.2} mipmapBlur />
+          ) : (
+            <></>
+          )}
+          <Vignette offset={0.32} darkness={env.id === "glass" ? 0.28 : 0.42} />
           <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
           <SMAA />
         </EffectComposer>
@@ -1032,6 +1397,17 @@ export default function WoodenBlocks() {
           uiShown ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
         }`}
       >
+        <button
+          type="button"
+          aria-label={`Environment: ${env.name} (press 1-${ENVIRONMENTS.length} or two-finger hold)`}
+          onClick={() => setEnvIndex((i) => (i + 1) % ENVIRONMENTS.length)}
+          className="pointer-events-auto relative flex h-11 w-11 items-center justify-center rounded-full text-foreground opacity-40 transition hover:opacity-90"
+        >
+          <Layers className="h-5 w-5" strokeWidth={2.4} />
+          <span className="absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-foreground text-[9px] font-bold text-background">
+            {envIndex + 1}
+          </span>
+        </button>
         <button
           type="button"
           aria-label={muted ? "Unmute impact sounds" : "Mute impact sounds"}
