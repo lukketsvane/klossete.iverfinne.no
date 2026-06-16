@@ -1365,10 +1365,10 @@ const TOTEM_LINKS: Link[] = [
   { id: "plank-short", parent: "plank-long", off: [1.62, 0, 0.81], rot: [0, Math.PI / 2, 0] }, // corner -> foot (across)
   { id: "cylinder", parent: "plank-short", off: [2.16, 0, 0], rot: [0, 0, Math.PI / 2] }, // foot tip (lying)
 ]
-const SNAP_RADIUS = 4.6 // a piece starts feeling its partner from well across the screen (easy)
-const CONNECT_DIST = 2.2 // counts as "snapped" within this (very forgiving)
-const MAG_PULL = 13 // proximity error -> velocity toward the snap pose (decisive)
-const MAG_RESPONSE = 0.32 // how fast that velocity is applied (snappy seating)
+const SNAP_RADIUS = 3.4 // within this a free piece feels a gentle pull toward its partner
+const LOCK_DIST = 1.7 // within this it CLICKS rigidly into place (kinematic) – guaranteed assembly
+const ATTRACT_PULL = 5 // gentle pull velocity toward the partner (no rotation fighting -> no flicker)
+const ATTRACT_EASE = 0.12 // soft application of that pull
 const SPIN_AXIS = new THREE.Vector3(0.28, 1, 0.18).normalize() // the solved L tumbles about this
 const SPIN_SPEED = 0.7 // rad/s of the victory spin
 
@@ -1411,6 +1411,7 @@ function MagnetController({
   const flashT = useRef(0)
   const dwell = useRef(0)
   const scattered = useRef(false)
+  const locked = useRef<Set<string>>(new Set()) // pieces clicked rigidly onto their partner
   // victory state: once the L is complete the pieces go kinematic and the whole
   // rigid assembly tumbles in place
   const win = useRef<{ active: boolean; t: number; center: THREE.Vector3; base: Map<string, WinPose> }>({
@@ -1424,6 +1425,7 @@ function MagnetController({
     revealRef.current = false
     // hand the pieces back to physics when leaving the level
     win.current.active = false
+    locked.current.clear()
     for (const b of BLOCKS) bodies.current[b.id]?.setBodyType(BODY_DYNAMIC, true)
   }, [revealRef, bodies])
 
@@ -1512,38 +1514,50 @@ function MagnetController({
       }
       const pp = parent.translation()
       const targetPos = new THREE.Vector3(pp.x + link.off[0], pp.y + link.off[1], pp.z + link.off[2])
+      const targetQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(...link.rot))
       const cp = child.translation()
-      const toTarget = targetPos.clone().sub(new THREE.Vector3(cp.x, cp.y, cp.z))
-      const dist = toTarget.length()
-      const connected = dist < CONNECT_DIST
-      if (connected) connectedCount++
+      const dist = Math.hypot(cp.x - targetPos.x, cp.y - targetPos.y, cp.z - targetPos.z)
+      const isLocked = locked.current.has(link.id)
 
-      // gentle magnetic pull on the child toward the snap pose (skip while it's
-      // the piece being dragged, so the cursor stays in full control)
-      if (dist < SNAP_RADIUS && child !== dragged) {
-        snapping.add(link.id) // let the magnet win over the edge field here
-        const k = 1 - dist / SNAP_RADIUS // firmer the closer it gets
-        let dvx = toTarget.x * MAG_PULL
-        let dvy = toTarget.y * MAG_PULL
-        let dvz = toTarget.z * MAG_PULL
+      if (child === dragged) {
+        // the user grabbed it: release any lock so they can freely reposition
+        if (isLocked) {
+          locked.current.delete(link.id)
+          child.setBodyType(BODY_DYNAMIC, true)
+        }
+      } else if (isLocked) {
+        // CLICKED ON: ride the partner rigidly (kinematic – no physics fighting)
+        child.setNextKinematicTranslation({ x: targetPos.x, y: targetPos.y, z: targetPos.z })
+        child.setNextKinematicRotation({ x: targetQ.x, y: targetQ.y, z: targetQ.z, w: targetQ.w })
+        snapping.add(link.id)
+        connectedCount++
+      } else if (dist < LOCK_DIST) {
+        // close enough -> click it rigidly into place
+        locked.current.add(link.id)
+        child.setBodyType(BODY_KINEMATIC_POSITION, true)
+        child.setNextKinematicTranslation({ x: targetPos.x, y: targetPos.y, z: targetPos.z })
+        child.setNextKinematicRotation({ x: targetQ.x, y: targetQ.y, z: targetQ.z, w: targetQ.w })
+        snapping.add(link.id)
+        connectedCount++
+      } else if (dist < SNAP_RADIUS) {
+        // gentle attract (position only – orientation is snapped on lock, so the
+        // dynamic body never fights its own rotation -> no flicker)
+        snapping.add(link.id)
+        const k = 1 - dist / SNAP_RADIUS
         const lv = child.linvel()
-        const a = MAG_RESPONSE * (0.35 + 0.65 * k)
+        const a = ATTRACT_EASE * (0.4 + 0.6 * k)
+        const dvx = (targetPos.x - cp.x) * ATTRACT_PULL
+        const dvy = (targetPos.y - cp.y) * ATTRACT_PULL
+        const dvz = (targetPos.z - cp.z) * ATTRACT_PULL
         child.setLinvel(
           { x: lv.x + (dvx - lv.x) * a, y: lv.y + (dvy - lv.y) * a, z: lv.z + (dvz - lv.z) * a },
           true,
         )
-        // ease orientation toward the fixed target pose
-        const targetQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(...link.rot))
-        const cr = child.rotation()
-        const cq = new THREE.Quaternion(cr.x, cr.y, cr.z, cr.w)
-        cq.slerp(targetQ, 0.1 + 0.18 * k)
-        child.setRotation({ x: cq.x, y: cq.y, z: cq.z, w: cq.w }, true)
-        child.setAngvel({ x: 0, y: 0, z: 0 }, true)
       }
 
       // tether: a glowing dashed line drawn once the two are within reach
       if (line) {
-        const show = dist < SNAP_RADIUS
+        const show = isLocked || dist < SNAP_RADIUS
         line.visible = show
         if (show) {
           const pos = line.geometry.attributes.position as THREE.BufferAttribute
@@ -1551,8 +1565,7 @@ function MagnetController({
           pos.setXYZ(1, pp.x, pp.y, pp.z) // its one partner
           pos.needsUpdate = true
           line.computeLineDistances()
-          const mat = line.material as THREE.LineDashedMaterial
-          mat.opacity = connected ? 0.95 : 0.35 + 0.5 * (1 - dist / SNAP_RADIUS)
+          ;(line.material as THREE.LineDashedMaterial).opacity = isLocked ? 0.95 : 0.3 + 0.5 * (1 - dist / SNAP_RADIUS)
         }
       }
     })
