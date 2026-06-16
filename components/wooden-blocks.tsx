@@ -38,6 +38,12 @@ type TiltState = {
 /*  Block catalogue – sizes are real millimetres scaled to scene units */
 /* ------------------------------------------------------------------ */
 const S = 0.036 // 1 mm -> scene units (blocks sized to sit smaller in the tray)
+// The GLB block meshes were authored to match colliders at this scale. The
+// visual is scaled by S / MESH_DESIGN_S so the mesh and its cuboid collider
+// always stay the same size – change S alone and they drift apart (blocks
+// float / interpenetrate), so the visual must scale with it.
+const MESH_DESIGN_S = 0.045
+const MESH_FIT = S / MESH_DESIGN_S
 
 type BlockMeshAsset = {
   url: string
@@ -237,7 +243,7 @@ function BlockMesh({
   }, [gltf.scene])
 
   return (
-    <group onPointerDown={onPointerDown}>
+    <group onPointerDown={onPointerDown} scale={MESH_FIT}>
       <primitive object={model} dispose={null} />
     </group>
   )
