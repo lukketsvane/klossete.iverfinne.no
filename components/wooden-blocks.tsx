@@ -3,8 +3,6 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Canvas, useThree, useFrame } from "@react-three/fiber"
 import { ContactShadows, Html, MeshReflectorMaterial, useGLTF, useTexture } from "@react-three/drei"
-import { Bloom, EffectComposer, N8AO, SMAA, ToneMapping, Vignette } from "@react-three/postprocessing"
-import { ToneMappingMode } from "postprocessing"
 import {
   Physics,
   RigidBody,
@@ -17,6 +15,8 @@ import * as THREE from "three"
 import { Layers, Smartphone, Volume2, VolumeX } from "lucide-react"
 import { audioReady, playBeep, playImpact, playTone, primeBlocks, setMuted, unlockAudio } from "@/lib/impact-sound"
 import { BLOCKS, MESH_FIT, blockBaseFreq, blockRadius, type Block } from "@/lib/blocks"
+import { CameraRig } from "@/components/engine/CameraRig"
+import { PostFx } from "@/components/engine/PostFx"
 import {
   CAM_FOV,
   FLOOR,
@@ -2638,29 +2638,6 @@ function SceneContents({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Top-down camera – looks straight down into the box, fits any aspect */
-/*  (uses the same boxLayout as the walls, so they always agree).       */
-/* ------------------------------------------------------------------ */
-function CameraRig() {
-  const camera = useThree((s) => s.camera)
-  const size = useThree((s) => s.size)
-
-  useEffect(() => {
-    const aspect = size.width / size.height
-    const { dist } = boxLayout(aspect, viewTarget(size.width, size.height))
-
-    const cam = camera as THREE.PerspectiveCamera
-    cam.up.set(0, 0, -1) // screen-up maps to -z
-    cam.position.set(0, dist, 0)
-    cam.lookAt(0, 0, 0)
-    cam.fov = CAM_FOV
-    cam.aspect = aspect
-    cam.updateProjectionMatrix()
-  }, [camera, size])
-
-  return null
-}
-
 /* ------------------------------------------------------------------ */
 /*  Public component                                                   */
 /* ------------------------------------------------------------------ */
@@ -2894,21 +2871,8 @@ export default function WoodenBlocks() {
           </Suspense>
         </Physics>
 
-        {/* realism pass: ambient occlusion grounds the blocks, a gentle vignette
-            adds depth, ACES tone mapping seats the contrast, SMAA cleans edges.
-            Bloom is added for the gold + glass environments to make seams glow. */}
-        <EffectComposer key={env.id} multisampling={0}>
-          <N8AO aoRadius={0.8} intensity={env.id === "glass" ? 1.4 : 1.3} distanceFalloff={1} halfRes color="#1c160e" />
-          <Bloom
-            intensity={env.id === "gold" ? 0.75 : env.id === "glass" ? 0.3 : 0}
-            luminanceThreshold={env.id === "glass" ? 0.9 : 0.55}
-            luminanceSmoothing={0.2}
-            mipmapBlur
-          />
-          <Vignette offset={0.35} darkness={env.id === "glass" ? 0.28 : 0.24} />
-          <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
-          <SMAA />
-        </EffectComposer>
+        {/* shared realism post-processing (AO, bloom, vignette, ACES, SMAA) */}
+        <PostFx envId={env.id} />
       </Canvas>
 
       {/* UI – auto-hiding control cluster (fades in when the pointer is near).
