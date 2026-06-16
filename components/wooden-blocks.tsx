@@ -635,11 +635,11 @@ const ENVIRONMENTS: EnvConfig[] = [
   {
     id: "magnet",
     name: "Magnets",
-    bg: "#05060c",
-    keyColor: "#dfe9ff",
-    keyIntensity: 1.7,
+    bg: "#04050a",
+    keyColor: "#fff3e0", // a hard, sharp sun
+    keyIntensity: 4.6,
     contact: { color: "#000000", opacity: 0.0 }, // floating in space – no floor shadow
-    bloom: true, // the magnetic tethers + solve flash glow
+    bloom: true, // the magnetic tethers + solve flash glow + the sun glare
     magnet: true,
   },
 ]
@@ -1578,9 +1578,15 @@ function MagnetRoom() {
   }, [])
   return (
     <>
-      <ambientLight intensity={0.12} color="#9fb0d8" />
-      <directionalLight position={[-5, 14, -6]} intensity={1.0} color="#dfe9ff" />
-      <pointLight position={[6, 6, 6]} intensity={18} distance={40} decay={2} color="#88a6ff" />
+      {/* hard sun: the shared key light does the lighting; here we keep only a
+          whisper of cool fill so the shadow side isn't pure black, and add a
+          bright bloom "sun" up in the corner for the glare */}
+      <ambientLight intensity={0.05} color="#2a3a5c" />
+      <pointLight position={[8, 4, 7]} intensity={3} distance={40} decay={2} color="#3b5a8a" />
+      <mesh position={[-15, 17, -13]}>
+        <sphereGeometry args={[2.2, 32, 32]} />
+        <meshBasicMaterial color="#fff4dc" toneMapped={false} />
+      </mesh>
       <points>
         <bufferGeometry>
           <bufferAttribute attach="attributes-position" args={[stars, 3]} count={stars.length / 3} itemSize={3} />
