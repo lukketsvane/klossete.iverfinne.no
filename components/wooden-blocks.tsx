@@ -338,17 +338,6 @@ function BlockBody({
       )}
 
       {showAfterimage && <Afterimage block={block} />}
-
-      {measureMode && selected && (
-        <Html position={[0, labelY, 0]} center distanceFactor={10} zIndexRange={[100, 0]}>
-          <div className="pointer-events-none select-none whitespace-nowrap rounded-md border border-black/5 bg-background/95 px-2.5 py-1.5 text-center shadow-lg">
-            <span className="block text-[9px] font-bold uppercase tracking-wide text-muted-foreground">
-              {block.name}
-            </span>
-            <span className="text-xs font-medium text-foreground">{block.dims}</span>
-          </div>
-        </Html>
-      )}
     </RigidBody>
   )
 }
@@ -364,7 +353,7 @@ const G = 20
 // down with screen-up mapped to -z, so a light on the -z side reads as coming
 // from the TOP of the page (shadows fall down-screen). A small -x bias keeps a
 // touch of form. Shift+right-drag re-aims it; tilt swings it around this anchor.
-const KEY = { x: -2.5, y: 17, z: -9 }
+const KEY = { x: 1.5, y: 26, z: 0.5 }
 
 // A subtle low-contrast value-noise texture used to break the perfectly-flat
 // roughness of the floor and tray walls (material imperfection).
@@ -1506,14 +1495,11 @@ function ConcreteRoom({ visibleWalls }: RoomProps) {
 
   return (
     <>
-      {/* even, soft ambient so nothing is crushed – no near-floor point lights
-          (those were blowing out a hotspot on the left/centre of the floor) */}
-      <ambientLight intensity={0.22} color="#f3ead9" />
-      {/* cool RIM from behind to separate edges from the floor */}
-      <directionalLight position={[7, 6, -11]} intensity={1.1} color="#b9d0ff" />
-      {/* high, broad cool fill opposite the key – placed up high so it grades the
-          floor smoothly instead of pooling into a bright spot */}
-      <pointLight position={[3.5, 13, 5.0]} intensity={34} distance={40} decay={2} color="#bcd0ff" />
+      {/* Keep it simple: an overhead key (shared) does the work. Just a touch of
+          even ambient so undersides aren't crushed – minimal indirect light. */}
+      <ambientLight intensity={0.26} color="#f1ece2" />
+      {/* very gentle cool fill, high up, so the shadow side isn't pure black */}
+      <pointLight position={[3, 16, 3]} intensity={12} distance={42} decay={2} color="#cdd8ea" />
 
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
         <planeGeometry args={[FLOOR, FLOOR]} />
@@ -2128,8 +2114,8 @@ function SceneContents({
         intensity={env.keyIntensity}
         color={env.keyColor}
         castShadow
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
+        shadow-mapSize-width={4096}
+        shadow-mapSize-height={4096}
         shadow-camera-near={1}
         shadow-camera-far={70}
         shadow-camera-left={-shadowSpan}
@@ -2137,7 +2123,7 @@ function SceneContents({
         shadow-camera-top={shadowSpan}
         shadow-camera-bottom={-shadowSpan}
         shadow-bias={-0.00015}
-        shadow-normalBias={0.025}
+        shadow-normalBias={0.04}
       />
 
       {/* soft contact shadow that grounds the blocks; sized to the box */}
@@ -2458,14 +2444,14 @@ export default function WoodenBlocks() {
             adds depth, ACES tone mapping seats the contrast, SMAA cleans edges.
             Bloom is added for the gold + glass environments to make seams glow. */}
         <EffectComposer key={env.id} multisampling={0}>
-          <N8AO aoRadius={1.4} intensity={env.id === "glass" ? 1.4 : 2.6} distanceFalloff={1} halfRes color="#1c160e" />
+          <N8AO aoRadius={0.8} intensity={env.id === "glass" ? 1.4 : 1.3} distanceFalloff={1} halfRes color="#1c160e" />
           <Bloom
             intensity={env.id === "gold" ? 0.75 : env.id === "glass" ? 0.3 : 0}
             luminanceThreshold={env.id === "glass" ? 0.9 : 0.55}
             luminanceSmoothing={0.2}
             mipmapBlur
           />
-          <Vignette offset={0.32} darkness={env.id === "glass" ? 0.28 : 0.42} />
+          <Vignette offset={0.35} darkness={env.id === "glass" ? 0.28 : 0.24} />
           <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
           <SMAA />
         </EffectComposer>
@@ -2489,9 +2475,6 @@ export default function WoodenBlocks() {
           className="pointer-events-auto relative flex h-11 w-11 items-center justify-center rounded-full opacity-40 transition hover:opacity-90"
         >
           <Layers className="h-5 w-5" strokeWidth={2.4} />
-          <span className="absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-foreground text-[9px] font-bold text-background">
-            {envIndex + 1}
-          </span>
         </button>
         <button
           type="button"
