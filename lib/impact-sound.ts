@@ -122,10 +122,29 @@ export function playImpact(id: string, strength: number) {
   lp.Q.value = 0.6
 
   const g = c.createGain()
-  g.gain.value = Math.min(1, 0.12 + v * 0.95)
+  // slightly muted – a soft wooden knock, not a sharp clack
+  g.gain.value = Math.min(0.6, 0.06 + v * 0.6)
 
   src.connect(lp).connect(g).connect(master)
   src.start()
+}
+
+/** Short telegraph beep for the Morse-code celebration. */
+export function playBeep() {
+  if (muted) return
+  const c = ensureCtx()
+  if (!c || !master || c.state !== "running") return
+  const now = c.currentTime
+  const o = c.createOscillator()
+  o.type = "square"
+  o.frequency.value = 660
+  const g = c.createGain()
+  g.gain.setValueAtTime(0.0001, now)
+  g.gain.exponentialRampToValueAtTime(0.16, now + 0.004)
+  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.13)
+  o.connect(g).connect(master)
+  o.start(now)
+  o.stop(now + 0.15)
 }
 
 /**

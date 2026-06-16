@@ -15,7 +15,7 @@ import {
 } from "@react-three/rapier"
 import * as THREE from "three"
 import { Layers, Smartphone, Volume2, VolumeX } from "lucide-react"
-import { audioReady, playImpact, playTone, primeBlocks, setMuted, unlockAudio } from "@/lib/impact-sound"
+import { audioReady, playBeep, playImpact, playTone, primeBlocks, setMuted, unlockAudio } from "@/lib/impact-sound"
 
 /* ------------------------------------------------------------------ */
 /*  Rapier body-type constants (avoid importing the wasm enum)         */
@@ -251,6 +251,7 @@ function BlockBody({
   bodyRef,
   onGrab,
   onImpact,
+  knock,
   showAfterimage,
   measureMode,
   selected,
@@ -260,6 +261,7 @@ function BlockBody({
   bodyRef: (b: RapierRigidBody | null) => void
   onGrab: (body: RapierRigidBody, point: THREE.Vector3, block: Block) => void
   onImpact: (x: number, z: number, strength: number) => void
+  knock: boolean // play the wooden clack? (off in the music-tile env)
   showAfterimage: boolean
   measureMode: boolean
   selected: boolean
@@ -294,9 +296,9 @@ function BlockBody({
     }
     const strength = THREE.MathUtils.clamp((speed - 0.45) / 7, 0, 1)
     if (strength > 0) {
-      playImpact(block.id, strength)
+      if (knock) playImpact(block.id, strength) // wooden clack (silenced in the music env)
       const t = a.translation()
-      onImpact(t.x, t.z, strength) // light up the tile it struck
+      onImpact(t.x, t.z, strength) // light up / play the tile it struck
       impactHaptic(strength) // and let you feel the knock
     }
   }
@@ -973,6 +975,7 @@ function PuzzleController({
   const zones = useMemo(() => puzzleZones(box), [box.bx, box.bz])
   const win = useRef({ won: false, t: 0, brightness: 0 })
   const dwell = useRef(0)
+  const prevOn = useRef(false)
   const groups = useRef<(THREE.Group | null)[]>([])
 
   useEffect(() => {
@@ -1001,7 +1004,14 @@ function PuzzleController({
           Math.abs(t.z - z.z) < z.tolZ &&
           t.y < z.restY + 0.6 // resting, not lifted
         const settled = Math.hypot(lv.x, lv.y, lv.z) < 0.7
-        if (!(onZone && settled)) {
+        // the cylinder only counts if it's standing TALL on its circle
+        let upright = true
+        if (z.shape === "cylinder") {
+          const r = body.rotation()
+          const up = new THREE.Vector3(0, 1, 0).applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w))
+          upright = up.y > 0.82
+        }
+        if (!(onZone && settled && upright)) {
           all = false
           break
         }
@@ -1030,6 +1040,8 @@ function PuzzleController({
         }
         acc += p.units
       }
+      if (on && !prevOn.current) playBeep() // telegraph beep on each Morse pulse
+      prevOn.current = on
       W.brightness += ((on ? 1 : 0) - W.brightness) * 0.55
       // shake the blocks while lit, hold them on their zones
       zones.forEach((z) => {
@@ -1049,8 +1061,8 @@ function PuzzleController({
       if (!g) return
       const light = g.children[0] as THREE.PointLight
       const halo = g.children[1] as THREE.Mesh
-      if (light) light.intensity = W.brightness * 140
-      if (halo) (halo.material as THREE.MeshBasicMaterial).opacity = W.brightness * 0.9
+      if (light) light.intensity = W.brightness * 95
+      if (halo) (halo.material as THREE.MeshBasicMaterial).opacity = W.brightness * 0.5
     })
   })
 
@@ -1809,17 +1821,19 @@ function SceneContents({
       // grab point expressed relative to the body centre, in body-local space,
       // so we can track exactly where it has swung to each frame
       const localAnchor = point.clone().sub(center).applyQuaternion(q.clone().invert())
-      const liftY = THREE.MathUtils.clamp(point.y, MIN_LIFT, MAX_LIFT)
+      // start at the height you actually grabbed (low) – it eases up to carry
+      // height after a short delay rather than snapping up instantly
+      const grabY = THREE.MathUtils.clamp(point.y, 0.2, MAX_LIFT)
       body.wakeUp()
       body.setLinvel({ x: 0, y: 0, z: 0 }, true)
       body.setAngvel({ x: 0, y: 0, z: 0 }, true)
       drag.current = {
         body,
         block,
-        plane: new THREE.Plane(new THREE.Vector3(0, 1, 0), -liftY),
+        plane: new THREE.Plane(new THREE.Vector3(0, 1, 0), -grabY),
         localAnchor,
-        liftY,
-        baseLift: liftY,
+        liftY: grabY,
+        baseLift: grabY,
         grabTime: performance.now(),
         radius: blockRadius(block),
       }
@@ -1985,13 +1999,17 @@ function SceneContents({
     if (!d) return
     const dt = THREE.MathUtils.clamp(delta, 1 / 240, 1 / 30)
 
-    // chess-piece pickup: keep holding without letting go and the block rises
-    // all the way up toward the camera, so you can bring it right up close.
     const held = (performance.now() - d.grabTime) / 1000
-    const closeMax = Math.max(d.baseLift, camera.position.y - 5)
-    const rise = THREE.MathUtils.smoothstep(held, 0.55, 3.2)
-    const targetLift = THREE.MathUtils.lerp(d.baseLift, closeMax, rise)
-    d.liftY += (targetLift - d.liftY) * 0.06
+    const carry = MIN_LIFT
+    const closeMax = Math.max(carry, camera.position.y - 5)
+    // 1) brief delay, then ease up to carry height – the "fully picked up" beat
+    const pickup = THREE.MathUtils.smoothstep(held, 0.22, 0.7)
+    const carryLift = THREE.MathUtils.lerp(d.baseLift, carry, pickup)
+    // 2) keep holding without letting go and it floats all the way up close,
+    //    like lifting a chess piece off the board to inspect it
+    const rise = THREE.MathUtils.smoothstep(held, 1.3, 4.0)
+    const targetLift = THREE.MathUtils.lerp(carryLift, closeMax, rise)
+    d.liftY += (targetLift - d.liftY) * 0.12
     d.plane.constant = -d.liftY
 
     // where the cursor wants the grab point to be (a point on the lift plane,
@@ -2137,6 +2155,7 @@ function SceneContents({
           bodyRef={(r) => (bodies.current[b.id] = r)}
           onGrab={onGrab}
           onImpact={onBlockImpact}
+          knock={!reactive}
           showAfterimage={env.fourthSide === true}
           measureMode={measureMode}
           selected={selectedId === b.id}
