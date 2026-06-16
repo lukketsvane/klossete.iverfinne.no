@@ -2,7 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Canvas, useThree, useFrame } from "@react-three/fiber"
-import { Environment, ContactShadows, Html, useGLTF, useProgress } from "@react-three/drei"
+import { ContactShadows, Html, SoftShadows, useGLTF, useProgress } from "@react-three/drei"
 import {
   Physics,
   RigidBody,
@@ -303,6 +303,38 @@ function BlockBody({
 // wood that drops and settles quickly instead of drifting down.
 const G = 28
 
+// Resting position of the warm key light (the tilt controller swings it around
+// this anchor as the device tilts).
+const KEY = { x: -7, y: 18, z: 8 }
+
+// A subtle low-contrast value-noise texture used to break the perfectly-flat
+// roughness of the floor and tray walls (material imperfection).
+function makeNoiseTexture(size = 128): THREE.DataTexture {
+  const data = new Uint8Array(size * size * 4)
+  // two-octave smoothed noise for a gentle, non-uniform grain
+  const coarse = new Float32Array(size * size)
+  for (let i = 0; i < coarse.length; i++) coarse[i] = Math.random()
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = y * size + x
+      const xr = (x + 1) % size
+      const yd = ((y + 1) % size) * size
+      const smooth = (coarse[i] + coarse[y * size + xr] + coarse[yd + x] + coarse[yd + xr]) / 4
+      const v = 205 + (smooth * 0.6 + Math.random() * 0.4) * 50
+      data[i * 4] = v
+      data[i * 4 + 1] = v
+      data[i * 4 + 2] = v
+      data[i * 4 + 3] = 255
+    }
+  }
+  const tex = new THREE.DataTexture(data, size, size)
+  tex.wrapS = THREE.RepeatWrapping
+  tex.wrapT = THREE.RepeatWrapping
+  tex.repeat.set(6, 6)
+  tex.needsUpdate = true
+  return tex
+}
+
 function TiltController({
   tiltRef,
   lightRef,
@@ -365,7 +397,7 @@ function TiltController({
 
     // the key light swings with the tilt so highlights + shadows shift live
     if (lightRef.current) {
-      lightRef.current.position.set(2 + sRight * 8, 18, 3 + sDown * 8)
+      lightRef.current.position.set(KEY.x + sRight * 8, KEY.y, KEY.z + sDown * 8)
     }
   })
 
@@ -412,6 +444,8 @@ function SceneContents({
   // shadows (cast + contact) are sized to the current box so they cover the
   // whole tray and stay sharp on any window/aspect
   const shadowSpan = Math.max(box.bx, box.bz) + 1.5
+  // subtle surface imperfection for the floor + walls
+  const roughMap = useMemo(() => makeNoiseTexture(), [])
   const lightRef = useRef<THREE.DirectionalLight>(null)
   const bodies = useRef<Record<string, RapierRigidBody | null>>({})
   const drag = useRef<DragState | null>(null)
@@ -556,26 +590,41 @@ function SceneContents({
 
   return (
     <>
-      {/* lighting – key light close to overhead so each block's cast shadow
-          sits right under it, and a high-res shadow map tightened to the box */}
-      <ambientLight intensity={0.5} />
+      {/* ----- motivated lighting rig (no HDRI / no broad fill) ----- */}
+      {/* PCSS so the key shadow softens with distance like a real area source */}
+      <SoftShadows size={26} samples={16} focus={0.85} />
+
+      {/* Soft warm KEY – the only shadow caster, read as an overhead practical. */}
       <directionalLight
         ref={lightRef}
-        position={[1.5, 24, 2]}
-        intensity={2.7}
+        position={[KEY.x, KEY.y, KEY.z]}
+        intensity={3.1}
+        color="#fff1df"
         castShadow
         shadow-mapSize-width={4096}
         shadow-mapSize-height={4096}
         shadow-camera-near={1}
-        shadow-camera-far={60}
+        shadow-camera-far={70}
         shadow-camera-left={-shadowSpan}
         shadow-camera-right={shadowSpan}
         shadow-camera-top={shadowSpan}
         shadow-camera-bottom={-shadowSpan}
         shadow-bias={-0.00015}
-        shadow-normalBias={0.02}
+        shadow-normalBias={0.025}
       />
-      <Environment preset="apartment" environmentIntensity={0.35} />
+
+      {/* Cool RIM / kicker from behind, grazing, to separate edges from floor. */}
+      <directionalLight position={[7, 6, -11]} intensity={1.25} color="#b9d0ff" />
+
+      {/* Warm PRACTICAL: a nearby lamp pool with physical inverse-square falloff. */}
+      <pointLight position={[-3.4, 3.0, -1.2]} intensity={26} distance={14} decay={2} color="#ffce92" />
+
+      {/* Cool motivated FILL opposite the key – localized (not a broad ambient);
+          the far side is intentionally left darker for negative-fill contrast. */}
+      <pointLight position={[5.6, 9, 6.5]} intensity={44} distance={26} decay={2} color="#a6beff" />
+
+      {/* Faint floor BOUNCE lifting the block undersides. */}
+      <pointLight position={[0, 0.7, 0]} intensity={7} distance={9} decay={2} color="#ffe7c4" />
 
       {/* soft contact shadow that grounds the blocks; sized to the box so it
           fills any screen and stays crisp instead of spread thin */}
@@ -599,17 +648,25 @@ function SceneContents({
         ))}
       </RigidBody>
 
-      {/* visible floor */}
+      {/* visible floor – matte table surface with a touch of sheen + grain */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
         <planeGeometry args={[120, 120]} />
-        <meshStandardMaterial color="#f1ece2" roughness={0.95} metalness={0} />
+        <meshPhysicalMaterial
+          color="#efe9dd"
+          roughness={0.92}
+          roughnessMap={roughMap}
+          metalness={0}
+          sheen={0.2}
+          sheenRoughness={0.9}
+          sheenColor="#cfc6b4"
+        />
       </mesh>
 
       {/* visible (short) tray walls */}
       {visibleWalls.map((w, i) => (
         <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
           <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
-          <meshStandardMaterial color="#d8cfbd" roughness={0.9} metalness={0} />
+          <meshStandardMaterial color="#d8cfbd" roughness={0.85} roughnessMap={roughMap} metalness={0} />
         </mesh>
       ))}
 
@@ -754,7 +811,7 @@ export default function WoodenBlocks() {
         camera={{ position: [0, 30, 0], fov: CAM_FOV, near: 0.1, far: 200 }}
         onCreated={({ gl }) => {
           gl.toneMapping = THREE.ACESFilmicToneMapping
-          gl.toneMappingExposure = 1.05
+          gl.toneMappingExposure = 1.12
           gl.domElement.style.cursor = "grab"
         }}
         style={{ touchAction: "none" }}
