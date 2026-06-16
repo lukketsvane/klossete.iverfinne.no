@@ -52,10 +52,26 @@ function loadSamples() {
   })
 }
 
+// Must be called from a real user gesture. iOS/Safari keeps the AudioContext
+// "suspended" until a sound is actually started inside a gesture, so we resume
+// AND start a one-sample silent buffer to fully unlock playback.
 export function unlockAudio() {
   const c = ensureCtx()
-  if (c && c.state === "suspended") void c.resume()
+  if (!c) return
+  if (c.state === "suspended") void c.resume()
+  try {
+    const buf = c.createBuffer(1, 1, c.sampleRate)
+    const src = c.createBufferSource()
+    src.buffer = buf
+    src.connect(c.destination)
+    src.start(0)
+  } catch {}
   loadSamples()
+}
+
+/** True once the audio context is actually running (so callers can stop retrying). */
+export function audioReady(): boolean {
+  return !!ctx && ctx.state === "running"
 }
 
 export function setMuted(value: boolean) {
@@ -110,4 +126,44 @@ export function playImpact(id: string, strength: number) {
 
   src.connect(lp).connect(g).connect(master)
   src.start()
+}
+
+/**
+ * Play a soft mallet/bell tone – used by the "music tile" floor.
+ * @param freq     fundamental frequency (Hz)
+ * @param strength 0..1 – how hard the tile was struck
+ */
+export function playTone(freq: number, strength: number) {
+  if (muted) return
+  const c = ensureCtx()
+  if (!c || !master || c.state !== "running") return
+
+  const now = c.currentTime
+  const v = clamp(strength, 0, 1)
+  if (v < 0.02) return
+
+  // bell-ish mallet: a fundamental plus a quiet inharmonic partial, struck with
+  // a fast attack and a soft exponential decay
+  const env = c.createGain()
+  env.gain.setValueAtTime(0.0001, now)
+  env.gain.exponentialRampToValueAtTime(Math.min(0.5, 0.1 + v * 0.45), now + 0.006)
+  env.gain.exponentialRampToValueAtTime(0.0001, now + 1.1)
+
+  const o1 = c.createOscillator()
+  o1.type = "sine"
+  o1.frequency.value = freq
+
+  const o2 = c.createOscillator()
+  o2.type = "sine"
+  o2.frequency.value = freq * 2.76 // inharmonic shimmer
+  const o2g = c.createGain()
+  o2g.gain.value = 0.18
+
+  o1.connect(env)
+  o2.connect(o2g).connect(env)
+  env.connect(master)
+  o1.start(now)
+  o2.start(now)
+  o1.stop(now + 1.15)
+  o2.stop(now + 1.15)
 }

@@ -15,7 +15,7 @@ import {
 } from "@react-three/rapier"
 import * as THREE from "three"
 import { Layers, Smartphone, Volume2, VolumeX } from "lucide-react"
-import { playImpact, primeBlocks, setMuted, unlockAudio } from "@/lib/impact-sound"
+import { audioReady, playImpact, playTone, primeBlocks, setMuted, unlockAudio } from "@/lib/impact-sound"
 
 /* ------------------------------------------------------------------ */
 /*  Rapier body-type constants (avoid importing the wasm enum)         */
@@ -655,7 +655,8 @@ function ImpactGlows({
       const s = tile * 0.96
       m.scale.set(s, s, s)
       const mat = m.material as THREE.MeshBasicMaterial
-      mat.opacity = Math.min(1.4, g.strength * 1.4) * g.life * g.life
+      // dim: the tiles are mainly an instrument now, the glow is just a soft cue
+      mat.opacity = Math.min(0.5, 0.12 + g.strength * 0.45) * g.life * g.life
     }
   })
   return (
@@ -1942,15 +1943,32 @@ export default function WoodenBlocks() {
     return () => window.removeEventListener("pointermove", onMove)
   }, [revealUI, scheduleHide])
 
-  // Browsers only let audio start from a user gesture – unlock and pre-render
-  // each block's impact sound on the first touch.
+  // Browsers only let audio start from a user gesture. iOS is especially fussy –
+  // the first tap often doesn't take, so we retry on several gesture types
+  // (touchend is the reliable one on iOS) until the context is actually running.
   useEffect(() => {
     const unlock = () => {
       unlockAudio()
       primeBlocks(BLOCKS.map((b) => ({ id: b.id, freq: blockBaseFreq(b) })))
+      if (audioReady()) cleanup()
     }
-    window.addEventListener("pointerdown", unlock, { once: true })
-    return () => window.removeEventListener("pointerdown", unlock)
+    const cleanup = () => {
+      window.removeEventListener("pointerdown", unlock)
+      window.removeEventListener("touchstart", unlock)
+      window.removeEventListener("touchend", unlock)
+      window.removeEventListener("click", unlock)
+    }
+    window.addEventListener("pointerdown", unlock, { passive: true })
+    window.addEventListener("touchstart", unlock, { passive: true })
+    window.addEventListener("touchend", unlock, { passive: true })
+    window.addEventListener("click", unlock, { passive: true })
+    return cleanup
+  }, [])
+
+  // Open on a RANDOM environment each visit. Done in an effect (not in useState)
+  // so server + client first render agree – no hydration mismatch.
+  useEffect(() => {
+    setEnvIndex(Math.floor(Math.random() * ENVIRONMENTS.length))
   }, [])
 
   // Environment navigation: number keys 1-9 jump straight to an environment
