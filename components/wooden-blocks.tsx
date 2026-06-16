@@ -757,7 +757,9 @@ type DragState = {
   block: Block
   plane: THREE.Plane // horizontal plane at the lift height
   localAnchor: THREE.Vector3 // grab point relative to the body centre, in body-local space
-  liftY: number
+  liftY: number // current carry height (ramps up the longer you hold)
+  baseLift: number // height at the moment of grab
+  grabTime: number // performance.now() when grabbed – drives the "lift close" ramp
   radius: number // horizontal footprint, used to keep the block off the walls
 }
 
@@ -796,6 +798,15 @@ type RoomProps = {
 // glass floor is tiled into chunky ~1.9-unit bricks; the glow snaps to this grid
 const GLASS_FLOOR_REPEAT = 64
 const GLASS_TILE = FLOOR / GLASS_FLOOR_REPEAT
+// the reactive tiles are a musical instrument: C-major-pentatonic across the
+// grid (column = note, row = octave) so the floor always sounds consonant
+const PENTA = [0, 2, 4, 7, 9]
+function tileFreq(x: number, z: number) {
+  const col = Math.round(x / GLASS_TILE)
+  const row = Math.round(z / GLASS_TILE)
+  const semis = PENTA[((col % 5) + 5) % 5] + 12 * (((row % 3) + 3) % 3)
+  return 261.63 * Math.pow(2, semis / 12) // relative to C4
+}
 
 function Room(props: RoomProps) {
   if (props.env.id === "gold") return <GoldRoom {...props} />
@@ -1495,6 +1506,15 @@ function SceneContents({
     glowPool.current[i] = { x, z, strength, life: 1, dur: 0.55 }
     glowCursor.current++
   }, [])
+  // a block striking a reactive floor lights a (dim) tile AND plays its note
+  const reactive = env.reactive === true
+  const onBlockImpact = useCallback(
+    (x: number, z: number, strength: number) => {
+      pushGlow(x, z, strength)
+      if (reactive) playTone(tileFreq(x, z), strength)
+    },
+    [pushGlow, reactive],
+  )
 
   /* ---- keep the shadow camera in sync when the box resizes ---- */
   useEffect(() => {
@@ -1541,6 +1561,8 @@ function SceneContents({
         plane: new THREE.Plane(new THREE.Vector3(0, 1, 0), -liftY),
         localAnchor,
         liftY,
+        baseLift: liftY,
+        grabTime: performance.now(),
         radius: blockRadius(block),
       }
       grabbingRef.current = true
@@ -1705,6 +1727,15 @@ function SceneContents({
     if (!d) return
     const dt = THREE.MathUtils.clamp(delta, 1 / 240, 1 / 30)
 
+    // chess-piece pickup: keep holding without letting go and the block rises
+    // all the way up toward the camera, so you can bring it right up close.
+    const held = (performance.now() - d.grabTime) / 1000
+    const closeMax = Math.max(d.baseLift, camera.position.y - 5)
+    const rise = THREE.MathUtils.smoothstep(held, 0.55, 3.2)
+    const targetLift = THREE.MathUtils.lerp(d.baseLift, closeMax, rise)
+    d.liftY += (targetLift - d.liftY) * 0.06
+    d.plane.constant = -d.liftY
+
     // where the cursor wants the grab point to be (a point on the lift plane,
     // clamped inside the tray so it can't be pulled through a wall)
     raycaster.setFromCamera(pointerNdc.current, camera)
@@ -1844,7 +1875,7 @@ function SceneContents({
           block={b}
           bodyRef={(r) => (bodies.current[b.id] = r)}
           onGrab={onGrab}
-          onImpact={pushGlow}
+          onImpact={onBlockImpact}
           showAfterimage={env.fourthSide === true}
           measureMode={measureMode}
           selected={selectedId === b.id}
