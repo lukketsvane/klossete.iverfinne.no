@@ -21,6 +21,7 @@ import { audioReady, playImpact, playTone, primeBlocks, setMuted, unlockAudio } 
 /*  Rapier body-type constants (avoid importing the wasm enum)         */
 /* ------------------------------------------------------------------ */
 const BODY_DYNAMIC = 0
+const BODY_KINEMATIC_POSITION = 2
 
 /* ------------------------------------------------------------------ */
 /*  Shared device-tilt state (written by DOM listener, read in 3D)     */
@@ -468,7 +469,7 @@ function makeBrickGlowTexture(size = 256, bevel = 0.16): THREE.DataTexture {
 /*  Environments – cycle with number keys 1-9 (desktop) or a two-finger */
 /*  tap-and-hold (touch). Each swaps the room materials + lighting mood. */
 /* ------------------------------------------------------------------ */
-type EnvKind = "concrete" | "gold" | "glass" | "playmat" | "video" | "peel" | "texturemiss" | "fourthside"
+type EnvKind = "concrete" | "gold" | "glass" | "playmat" | "video" | "peel" | "texturemiss" | "fourthside" | "klossete"
 type EnvConfig = {
   id: EnvKind
   name: string
@@ -479,6 +480,7 @@ type EnvConfig = {
   bloom: boolean
   reactive?: boolean // tiles flash with light where a block hits (brightness ~ force)
   fourthSide?: boolean // wraps each block in glowing wireframe "4D" shells
+  puzzle?: boolean // sort each block onto its zone -> they blink "KLOSSETE" in Morse
 }
 const ENVIRONMENTS: EnvConfig[] = [
   {
@@ -554,6 +556,16 @@ const ENVIRONMENTS: EnvConfig[] = [
     contact: { color: "#0b2f3a", opacity: 0.55 }, // cold, sharp 2D projection on the floor
     bloom: true, // makes the wireframe shells glow like TRON
     fourthSide: true,
+  },
+  {
+    id: "klossete",
+    name: "klossete",
+    bg: "#0e0f13",
+    keyColor: "#ffffff",
+    keyIntensity: 1.6,
+    contact: { color: "#000000", opacity: 0.4 },
+    bloom: true, // the win flash blooms like real lightbulbs
+    puzzle: true,
   },
 ]
 
@@ -808,6 +820,74 @@ function tileFreq(x: number, z: number) {
   return 261.63 * Math.pow(2, semis / 12) // relative to C4
 }
 
+/* ---- Morse: blink "KLOSSETE" on the winning blocks ---- */
+const MORSE: Record<string, string> = { K: "-.-", L: ".-..", O: "---", S: "...", E: ".", T: "-" }
+type Pulse = { on: boolean; units: number }
+function morsePulses(text: string): Pulse[] {
+  const out: Pulse[] = []
+  const letters = text.toUpperCase().split("")
+  letters.forEach((ch, li) => {
+    const code = MORSE[ch]
+    if (!code) return
+    code.split("").forEach((sym, si) => {
+      out.push({ on: true, units: sym === "-" ? 3 : 1 })
+      if (si < code.length - 1) out.push({ on: false, units: 1 }) // intra-letter gap
+    })
+    out.push({ on: false, units: li < letters.length - 1 ? 3 : 7 }) // letter / word gap
+  })
+  return out
+}
+const KLOSSE_PULSES = morsePulses("KLOSSETE")
+const KLOSSE_TOTAL = KLOSSE_PULSES.reduce((s, p) => s + p.units, 0)
+const MORSE_UNIT = 0.16 // seconds per Morse unit
+
+/* ---- klossete sorting puzzle: a home zone per block ---- */
+type Zone = {
+  id: string
+  color: string
+  shape: "box" | "cylinder"
+  x: number
+  z: number
+  hx: number
+  hz: number
+  radius: number
+  restY: number
+  tolX: number
+  tolZ: number
+}
+function puzzleZones(box: Box): Zone[] {
+  const layout: { id: string; nx: number; nz: number }[] = [
+    { id: "cube", nx: -0.5, nz: -0.55 },
+    { id: "orange", nx: 0.5, nz: -0.55 },
+    { id: "plank-long", nx: 0, nz: 0 },
+    { id: "plank-short", nx: -0.5, nz: 0.6 },
+    { id: "cylinder", nx: 0.5, nz: 0.6 },
+  ]
+  return layout.flatMap((L) => {
+    const b = BLOCKS.find((bb) => bb.id === L.id)
+    if (!b) return []
+    const isCyl = b.shape === "cylinder"
+    const hx = isCyl ? b.radius : b.half[0]
+    const hz = isCyl ? b.radius : b.half[2]
+    const restY = isCyl ? b.halfHeight : b.half[1]
+    return [
+      {
+        id: L.id,
+        color: b.color,
+        shape: b.shape,
+        x: L.nx * box.bx,
+        z: L.nz * box.bz,
+        hx,
+        hz,
+        radius: isCyl ? b.radius : 0,
+        restY,
+        tolX: hx + 0.7,
+        tolZ: hz + 0.7,
+      } satisfies Zone,
+    ]
+  })
+}
+
 function Room(props: RoomProps) {
   if (props.env.id === "gold") return <GoldRoom {...props} />
   if (props.env.id === "glass") return <GlassRoom {...props} />
@@ -816,7 +896,176 @@ function Room(props: RoomProps) {
   if (props.env.id === "peel") return <PeelRoom {...props} />
   if (props.env.id === "texturemiss") return <TextureMissRoom {...props} />
   if (props.env.id === "fourthside") return <FourthRoom {...props} />
+  if (props.env.id === "klossete") return <KlosseRoom {...props} />
   return <ConcreteRoom {...props} />
+}
+
+// 9 — klossete sorting puzzle: dark mat with a coloured home zone per block.
+function KlosseRoom({ box, visibleWalls }: RoomProps) {
+  const zones = useMemo(() => puzzleZones(box), [box.bx, box.bz])
+  return (
+    <>
+      <ambientLight intensity={0.5} color="#eef1f7" />
+      <directionalLight position={[4, 10, -4]} intensity={0.5} color="#ffffff" />
+      <pointLight position={[0, 9, 4]} intensity={14} distance={30} decay={2} color="#cfe0ff" />
+
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
+        <planeGeometry args={[box.bx * 2, box.bz * 2]} />
+        <meshStandardMaterial color="#15171d" roughness={0.92} metalness={0} />
+      </mesh>
+
+      {zones.map((z) => (
+        <group key={z.id} position={[z.x, 0.012, z.z]} rotation={[-Math.PI / 2, 0, 0]}>
+          {z.shape === "cylinder" ? (
+            <>
+              <mesh>
+                <circleGeometry args={[z.radius + 0.28, 40]} />
+                <meshBasicMaterial color={z.color} transparent opacity={0.38} />
+              </mesh>
+              <lineSegments>
+                <edgesGeometry args={[new THREE.CircleGeometry(z.radius + 0.28, 40)]} />
+                <lineBasicMaterial color={z.color} transparent opacity={0.9} toneMapped={false} />
+              </lineSegments>
+            </>
+          ) : (
+            <>
+              <mesh>
+                <planeGeometry args={[(z.hx + 0.28) * 2, (z.hz + 0.28) * 2]} />
+                <meshBasicMaterial color={z.color} transparent opacity={0.38} />
+              </mesh>
+              <lineSegments>
+                <edgesGeometry args={[new THREE.PlaneGeometry((z.hx + 0.28) * 2, (z.hz + 0.28) * 2)]} />
+                <lineBasicMaterial color={z.color} transparent opacity={0.9} toneMapped={false} />
+              </lineSegments>
+            </>
+          )}
+        </group>
+      ))}
+
+      {visibleWalls.map((w, i) => (
+        <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
+          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
+          <meshStandardMaterial color="#1b1e25" roughness={0.9} metalness={0} />
+        </mesh>
+      ))}
+    </>
+  )
+}
+
+// Win detection + the Morse "lightbulb" celebration. Lives where it can see the
+// rigid bodies; renders a flashing light + halo per block.
+function PuzzleController({
+  bodies,
+  box,
+  lockRef,
+}: {
+  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  box: Box
+  lockRef: React.MutableRefObject<boolean>
+}) {
+  const zones = useMemo(() => puzzleZones(box), [box.bx, box.bz])
+  const win = useRef({ won: false, t: 0, brightness: 0 })
+  const dwell = useRef(0)
+  const groups = useRef<(THREE.Group | null)[]>([])
+
+  useEffect(() => {
+    // leaving the puzzle: unlock + hand the blocks back to physics
+    return () => {
+      lockRef.current = false
+      for (const z of zones) bodies.current[z.id]?.setBodyType(BODY_DYNAMIC, true)
+    }
+  }, [zones, bodies, lockRef])
+
+  useFrame((_s, dt) => {
+    const W = win.current
+
+    if (!W.won) {
+      let all = true
+      for (const z of zones) {
+        const body = bodies.current[z.id]
+        if (!body) {
+          all = false
+          break
+        }
+        const t = body.translation()
+        const lv = body.linvel()
+        const onZone =
+          Math.abs(t.x - z.x) < z.tolX &&
+          Math.abs(t.z - z.z) < z.tolZ &&
+          t.y < z.restY + 0.6 // resting, not lifted
+        const settled = Math.hypot(lv.x, lv.y, lv.z) < 0.7
+        if (!(onZone && settled)) {
+          all = false
+          break
+        }
+      }
+      if (all) {
+        dwell.current += dt
+        if (dwell.current > 0.45) {
+          W.won = true
+          W.t = 0
+          lockRef.current = true
+          for (const z of zones) bodies.current[z.id]?.setBodyType(BODY_KINEMATIC_POSITION, true)
+        }
+      } else {
+        dwell.current = 0
+      }
+    } else {
+      // Morse blink
+      W.t += dt
+      const tu = (W.t / MORSE_UNIT) % KLOSSE_TOTAL
+      let acc = 0
+      let on = false
+      for (const p of KLOSSE_PULSES) {
+        if (tu >= acc && tu < acc + p.units) {
+          on = p.on
+          break
+        }
+        acc += p.units
+      }
+      W.brightness += ((on ? 1 : 0) - W.brightness) * 0.55
+      // shake the blocks while lit, hold them on their zones
+      zones.forEach((z) => {
+        const body = bodies.current[z.id]
+        if (!body) return
+        const sh = W.brightness * 0.05
+        body.setNextKinematicTranslation({
+          x: z.x + (Math.random() - 0.5) * sh,
+          y: z.restY + 0.02 + Math.abs(Math.random()) * sh * 0.5,
+          z: z.z + (Math.random() - 0.5) * sh,
+        })
+      })
+    }
+
+    // drive the lightbulbs
+    groups.current.forEach((g) => {
+      if (!g) return
+      const light = g.children[0] as THREE.PointLight
+      const halo = g.children[1] as THREE.Mesh
+      if (light) light.intensity = W.brightness * 140
+      if (halo) (halo.material as THREE.MeshBasicMaterial).opacity = W.brightness * 0.9
+    })
+  })
+
+  return (
+    <>
+      {zones.map((z, i) => (
+        <group
+          key={z.id}
+          position={[z.x, z.restY, z.z]}
+          ref={(el) => {
+            groups.current[i] = el
+          }}
+        >
+          <pointLight intensity={0} distance={14} decay={2} color="#fffbe8" />
+          <mesh scale={Math.max(z.hx, z.hz, z.radius) * 2.4}>
+            <sphereGeometry args={[1, 16, 16]} />
+            <meshBasicMaterial color="#fffdf2" transparent opacity={0} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
+          </mesh>
+        </group>
+      ))}
+    </>
+  )
 }
 
 // 8 — The Fourth Side room: cold TRON grid floor + walls.
@@ -1494,6 +1743,7 @@ function SceneContents({
   const lightCur = useRef(new THREE.Vector3(KEY.x, KEY.y, KEY.z))
   const bodies = useRef<Record<string, RapierRigidBody | null>>({})
   const drag = useRef<DragState | null>(null)
+  const puzzleLock = useRef(false) // blocks become impervious during the win celebration
   const lightDragging = useRef(false)
   const pointerNdc = useRef(new THREE.Vector2())
   const raycaster = useMemo(() => new THREE.Raycaster(), [])
