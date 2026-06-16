@@ -2,7 +2,9 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Canvas, useThree, useFrame } from "@react-three/fiber"
-import { ContactShadows, Html, SoftShadows, useGLTF, useProgress } from "@react-three/drei"
+import { ContactShadows, Html, SoftShadows, useGLTF } from "@react-three/drei"
+import { EffectComposer, N8AO, SMAA, ToneMapping, Vignette } from "@react-three/postprocessing"
+import { ToneMappingMode } from "postprocessing"
 import {
   Physics,
   RigidBody,
@@ -69,11 +71,11 @@ type RawBlock = {
 }
 
 const RAW_BLOCKS: RawBlock[] = [
-  { id: "block-1", name: "Wooden Block 1", model: "/models/block_01.glb", size: [0.275, 0.238, 0.267], center: [0, 0.119, 0], target: 1.7, xz: [-1.48, -2.96] },
-  { id: "block-2", name: "Wooden Block 2", model: "/models/block_02.glb", size: [0.365, 0.363, 0.237], center: [0, 0.181, 0], target: 2.1, xz: [-0.7, 0.4] },
-  { id: "block-3", name: "Wooden Block 3", model: "/models/block_03.glb", size: [0.37, 0.218, 0.21], center: [0, 0.109, 0], target: 2.4, xz: [0.3, 3.1] },
-  { id: "block-4", name: "Wooden Block 4", model: "/models/block_04.glb", size: [0.207, 0.463, 0.206], center: [0, 0.231, 0], target: 2.7, xz: [1.4, -1.4] },
-  { id: "block-5", name: "Wooden Block 5", model: "/models/block_05.glb", size: [0.298, 0.226, 0.226], center: [0, 0.113, 0], target: 1.9, xz: [1.2, 1.9] },
+  { id: "green", name: "Green Block", model: "/models/block1_green.glb", size: [0.275, 0.238, 0.266], center: [0, 0, 0], target: 1.7, xz: [-1.48, -2.96] },
+  { id: "teal", name: "Teal Block", model: "/models/block2_teal.glb", size: [0.365, 0.363, 0.237], center: [0, 0, 0], target: 2.1, xz: [-0.7, 0.4] },
+  { id: "orange", name: "Orange Block", model: "/models/block3_orange.glb", size: [0.369, 0.218, 0.21], center: [0, 0, 0], target: 2.4, xz: [0.3, 3.1] },
+  { id: "cylinder", name: "Cylinder", model: "/models/block4_cylinder.glb", size: [0.207, 0.469, 0.153], center: [0, 0, 0], target: 2.7, xz: [1.4, -1.4] },
+  { id: "cube", name: "Small Cube", model: "/models/block5_smallcube.glb", size: [0.327, 0.264, 0.197], center: [0, 0, 0], target: 1.7, xz: [1.2, 1.9] },
 ]
 
 function prepareBlock(r: RawBlock): Block {
@@ -194,18 +196,6 @@ function BlockModel({
     return { obj: clone, scale: s, offset: off }
   }, [scene, half])
   return <primitive object={obj} scale={scale} position={offset} onPointerDown={onPointerDown} />
-}
-
-// Loading overlay shown while the (large) meshes download.
-function BlocksLoader() {
-  const { progress } = useProgress()
-  return (
-    <Html center>
-      <div className="pointer-events-none select-none whitespace-nowrap rounded-full bg-background/90 px-3 py-1.5 text-xs font-medium text-foreground/70 shadow">
-        Loading blocks… {Math.round(progress)}%
-      </div>
-    </Html>
-  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -671,7 +661,7 @@ function SceneContents({
       ))}
 
       {/* blocks (detailed meshes load lazily) */}
-      <Suspense fallback={<BlocksLoader />}>
+      <Suspense fallback={null}>
         {BLOCKS.map((b) => (
           <BlockBody
             key={b.id}
@@ -810,8 +800,8 @@ export default function WoodenBlocks() {
         gl={{ antialias: true, preserveDrawingBuffer: false }}
         camera={{ position: [0, 30, 0], fov: CAM_FOV, near: 0.1, far: 200 }}
         onCreated={({ gl }) => {
-          gl.toneMapping = THREE.ACESFilmicToneMapping
-          gl.toneMappingExposure = 1.12
+          // tone mapping is handled by the post-processing ToneMapping effect
+          gl.toneMapping = THREE.NoToneMapping
           gl.domElement.style.cursor = "grab"
         }}
         style={{ touchAction: "none" }}
@@ -833,6 +823,15 @@ export default function WoodenBlocks() {
             tiltRef={tiltRef}
           />
         </Physics>
+
+        {/* realism pass: ambient occlusion grounds the blocks, a gentle vignette
+            adds depth, ACES tone mapping seats the contrast, SMAA cleans edges */}
+        <EffectComposer multisampling={0}>
+          <N8AO aoRadius={1.4} intensity={2.6} distanceFalloff={1} halfRes color="#1c160e" />
+          <Vignette offset={0.32} darkness={0.42} />
+          <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
+          <SMAA />
+        </EffectComposer>
       </Canvas>
 
       {/* UI */}
