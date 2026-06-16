@@ -310,8 +310,8 @@ function BlockBody({
       friction={0.7}
       restitution={0.12}
       density={6}
-      linearDamping={0.1}
-      angularDamping={0.55}
+      linearDamping={0.12}
+      angularDamping={0.7}
       canSleep={false}
       onCollisionEnter={handleImpact}
       ccd
@@ -786,12 +786,12 @@ const ESCAPE_MARGIN = 0.4 // how far past a wall a body must be before we rescue
    swings from your cursor like it's on a string. It's responsive enough to
    position and stack precisely, but the RELEASE speed is clamped low so a flick
    can never become a fling. */
-const DRAG_K = 245 // spring stiffness (how eagerly the grab point chases the cursor)
-const DRAG_C = 31 // damping (~critical, kills wobble)
-const DRAG_ERR_MAX = 1.6 // cap on position error -> caps the pull force
-const DRAG_ACCEL_MAX = 340 // ceiling on grab acceleration (more authority to place + flick)
-const MAX_DRAG_SPEED = 9.5 // linear speed cap while held – responsive for building
-const MAX_DRAG_ANGSPEED = 9 // spin cap while held
+const DRAG_K = 185 // spring stiffness (how eagerly the grab point chases the cursor)
+const DRAG_C = 44 // damping (over-critical -> smooth, no shake/jitter while held)
+const DRAG_ERR_MAX = 1.5 // cap on position error -> caps the pull force
+const DRAG_ACCEL_MAX = 230 // ceiling on grab acceleration
+const MAX_DRAG_SPEED = 7 // linear speed cap while held – responsive but steady
+const MAX_DRAG_ANGSPEED = 4.5 // spin cap while held (lower = calmer)
 const LIGHT_RADIUS = 14 // how far the key light orbits when you shift+right-drag it
 
 /* ------------------------------------------------------------------ */
@@ -1793,6 +1793,7 @@ function SceneContents({
   // hangs and swings from the cursor under gravity instead of teleporting.
   const onGrab = useCallback(
     (body: RapierRigidBody, point: THREE.Vector3, block: Block) => {
+      if (puzzleLock.current) return // impervious while the blocks celebrate
       gl.domElement.style.cursor = "grabbing"
       const t = body.translation()
       const r = body.rotation()
@@ -2117,6 +2118,9 @@ function SceneContents({
 
       {/* reactive floor: tiles flash where blocks strike, brightness ~ force */}
       <ImpactGlows poolRef={glowPool} active={!!env.reactive} tile={GLASS_TILE} />
+
+      {/* klossete sorting puzzle: win detection + Morse lightbulb celebration */}
+      {env.puzzle && <PuzzleController bodies={bodies} box={box} lockRef={puzzleLock} />}
 
       {/* blocks */}
       {BLOCKS.map((b) => (
