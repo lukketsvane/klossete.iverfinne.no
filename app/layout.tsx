@@ -10,7 +10,7 @@ const geistMono = Geist_Mono({
 })
 
 export const metadata: Metadata = {
-  title: 'Realistic Wooden Blocks',
+  title: 'kl.oss.ete',
   description: 'An interactive physics sandbox of realistic wooden building blocks. Drag, slide and throw the blocks around.',
   generator: 'v0.app',
   icons: {
