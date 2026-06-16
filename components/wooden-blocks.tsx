@@ -255,8 +255,9 @@ function BlockMesh({
     })
     return map
   }, [model])
+  // fully invisible (but still grabbable) stand-in for the projection room
   const flatMat = useMemo(
-    () => new THREE.MeshStandardMaterial({ color: "#2f323a", roughness: 1, metalness: 0 }),
+    () => new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
     [],
   )
   const state = useRef<"flat" | "real" | null>(null)
@@ -264,10 +265,13 @@ function BlockMesh({
     const want = flat && !revealRef?.current ? "flat" : "real"
     if (want === state.current) return
     state.current = want
+    const real = want === "real"
     model.traverse((o) => {
       const m = o as THREE.Mesh
       if (!m.isMesh) return
-      m.material = want === "flat" ? flatMat : originals.get(m) ?? m.material
+      m.material = real ? originals.get(m) ?? m.material : flatMat
+      m.castShadow = real // invisible pieces must not cast ghost shadows
+      m.receiveShadow = real
     })
   })
 
@@ -841,16 +845,15 @@ const ESCAPE_MARGIN = 0.4 // how far past a wall a body must be before we rescue
 
 /* Soft "grab spring": the block is held by the exact point you grabbed, via a
    damped spring (PD controller) applied at that point. Because the pull acts at
-   the grab point while gravity pulls the centre of mass, the piece hangs and
-   swings from your cursor like it's on a string. It's responsive enough to
-   position and stack precisely, but the RELEASE speed is clamped low so a flick
-   can never become a fling. */
-const DRAG_K = 95 // spring stiffness (lower -> calmer, no buzzy chase)
-const DRAG_C = 38 // damping (well over critical for this K -> dead smooth, no shake)
-const DRAG_ERR_MAX = 1.5 // cap on position error -> caps the pull force
-const DRAG_ACCEL_MAX = 140 // ceiling on grab acceleration
-const MAX_DRAG_SPEED = 6 // linear speed cap while held – responsive but steady
-const MAX_DRAG_ANGSPEED = 2.4 // spin cap while held (lower = calmer dangle, less shake)
+   the grab point toward the cursor with a FIRST-ORDER velocity servo (it sets
+   the body's velocity straight toward the target rather than accumulating
+   spring impulses), so it can never overshoot or oscillate -> no shake. Spin is
+   damped hard each frame so a carried piece stays steady, and the RELEASE speed
+   is clamped low so a flick can never become a fling. */
+const GRAB_RATE = 9 // grab-point error -> desired carry velocity (1/s)
+const GRAB_RESPONSE = 0.35 // how fast the velocity eases to target each frame (no snap)
+const MAX_DRAG_SPEED = 7 // carry speed cap – responsive but steady
+const GRAB_ANG_DAMP = 0.78 // per-frame angular damping while held -> kills wobble/shake
 const LIGHT_RADIUS = 14 // how far the key light orbits when you shift+right-drag it
 
 /* ------------------------------------------------------------------ */
@@ -2267,44 +2270,42 @@ function SceneContents({
     target.z = THREE.MathUtils.clamp(target.z, -lz, lz)
     target.y = d.liftY
 
-    // current world position + velocity of the grab point
+    // --- velocity servo: drive the grabbed point to the cursor ---
+    // First-order (critically damped) so it can never overshoot or oscillate,
+    // and we steer the body's VELOCITY rather than punching a point-impulse, so
+    // there's no torque to set the piece shaking. Spin is damped hard so a
+    // carried piece stays steady.
     const t = d.body.translation()
     const r = d.body.rotation()
     const q = new THREE.Quaternion(r.x, r.y, r.z, r.w)
-    const rWorld = d.localAnchor.clone().applyQuaternion(q) // offset from centre
-    const anchor = new THREE.Vector3(t.x, t.y, t.z).add(rWorld)
-    const lv = d.body.linvel()
-    const av = d.body.angvel()
-    const pointVel = new THREE.Vector3(av.x, av.y, av.z).cross(rWorld).add(
-      new THREE.Vector3(lv.x, lv.y, lv.z),
-    )
+    const rWorld = d.localAnchor.clone().applyQuaternion(q) // grab offset from centre
+    const anchorX = t.x + rWorld.x
+    const anchorY = t.y + rWorld.y
+    const anchorZ = t.z + rWorld.z
 
-    // damped spring (PD), with the error and acceleration both clamped so you
-    // can never apply a large force -> the pieces feel heavy and unhurlable
-    const err = target.sub(anchor)
-    if (err.length() > DRAG_ERR_MAX) err.setLength(DRAG_ERR_MAX)
-    const accel = err.multiplyScalar(DRAG_K).addScaledVector(pointVel, -DRAG_C)
-    if (accel.length() > DRAG_ACCEL_MAX) accel.setLength(DRAG_ACCEL_MAX)
-    const m = d.body.mass() || 1
-    d.body.applyImpulseAtPoint(
-      { x: accel.x * m * dt, y: accel.y * m * dt, z: accel.z * m * dt },
-      { x: anchor.x, y: anchor.y, z: anchor.z },
+    // desired carry velocity = move the grab point toward the cursor target
+    let dvx = (target.x - anchorX) * GRAB_RATE
+    let dvy = (target.y - anchorY) * GRAB_RATE
+    let dvz = (target.z - anchorZ) * GRAB_RATE
+    const dsp = Math.hypot(dvx, dvy, dvz)
+    if (dsp > MAX_DRAG_SPEED) {
+      const k = MAX_DRAG_SPEED / dsp
+      dvx *= k
+      dvy *= k
+      dvz *= k
+    }
+
+    const lv = d.body.linvel()
+    d.body.setLinvel(
+      {
+        x: lv.x + (dvx - lv.x) * GRAB_RESPONSE,
+        y: lv.y + (dvy - lv.y) * GRAB_RESPONSE,
+        z: lv.z + (dvz - lv.z) * GRAB_RESPONSE,
+      },
       true,
     )
-
-    // hard speed caps while held – the dead giveaway of a weighty object
-    const lv2 = d.body.linvel()
-    const sp = Math.hypot(lv2.x, lv2.y, lv2.z)
-    if (sp > MAX_DRAG_SPEED) {
-      const k = MAX_DRAG_SPEED / sp
-      d.body.setLinvel({ x: lv2.x * k, y: lv2.y * k, z: lv2.z * k }, true)
-    }
-    const av2 = d.body.angvel()
-    const asp = Math.hypot(av2.x, av2.y, av2.z)
-    if (asp > MAX_DRAG_ANGSPEED) {
-      const k = MAX_DRAG_ANGSPEED / asp
-      d.body.setAngvel({ x: av2.x * k, y: av2.y * k, z: av2.z * k }, true)
-    }
+    const av = d.body.angvel()
+    d.body.setAngvel({ x: av.x * GRAB_ANG_DAMP, y: av.y * GRAB_ANG_DAMP, z: av.z * GRAB_ANG_DAMP }, true)
   })
 
   /* ---- safety net: rescue any body that ever leaves the box ---- */
