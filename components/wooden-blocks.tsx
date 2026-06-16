@@ -1,8 +1,8 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Canvas, useThree, useFrame } from "@react-three/fiber"
-import { ContactShadows, Html, RoundedBox, SoftShadows } from "@react-three/drei"
+import { ContactShadows, Html, useGLTF } from "@react-three/drei"
 import { EffectComposer, N8AO, SMAA, ToneMapping, Vignette } from "@react-three/postprocessing"
 import { ToneMappingMode } from "postprocessing"
 import {
@@ -21,7 +21,6 @@ import { playImpact, primeBlocks, setMuted, unlockAudio } from "@/lib/impact-sou
 /*  Rapier body-type constants (avoid importing the wasm enum)         */
 /* ------------------------------------------------------------------ */
 const BODY_DYNAMIC = 0
-const BODY_KINEMATIC_POSITION = 2
 
 /* ------------------------------------------------------------------ */
 /*  Shared device-tilt state (written by DOM listener, read in 3D)     */
@@ -39,40 +38,61 @@ type TiltState = {
 /* ------------------------------------------------------------------ */
 const S = 0.045 // 1 mm -> scene units (blocks sit comfortably inside the tray)
 
-type BoxBlock = {
+type BlockMeshAsset = {
+  url: string
+}
+
+type BlockBase = {
   id: string
   name: string
   color: string
-  shape: "box"
-  half: [number, number, number]
   dims: string
   pos: [number, number, number]
   rot?: [number, number, number]
+  mesh: BlockMeshAsset
 }
+
+type BoxBlock = {
+  shape: "box"
+  half: [number, number, number]
+} & BlockBase
 type CylBlock = {
-  id: string
-  name: string
-  color: string
   shape: "cylinder"
   radius: number
   halfHeight: number
-  dims: string
-  pos: [number, number, number]
-  rot?: [number, number, number]
-}
+} & BlockBase
 type Block = BoxBlock | CylBlock
+
+const MESHES = {
+  cube: {
+    url: "/block_lightblue_cube.glb",
+  },
+  orange: {
+    url: "/block_orange.glb",
+  },
+  blueLong: {
+    url: "/block_blue_02.glb",
+  },
+  blueShort: {
+    url: "/block_blue_01.glb",
+  },
+  cylinder: {
+    url: "/block_red_cylinder.glb",
+  },
+} satisfies Record<string, BlockMeshAsset>
 
 const REST = 0.06 // small gap above floor when spawning
 
 const BLOCKS: Block[] = [
   {
     id: "cube",
-    name: "Light-Blue Cube",
+    name: "Light Blue Cube",
     color: "#3f9ec9",
     shape: "box",
     half: [(30 * S) / 2, (30 * S) / 2, (30 * S) / 2],
     dims: "30 × 30 × 30 mm",
     pos: [-1.48, (30 * S) / 2 + REST, -2.96],
+    mesh: MESHES.cube,
   },
   {
     id: "orange",
@@ -83,26 +103,30 @@ const BLOCKS: Block[] = [
     half: [(45 * S) / 2, (24 * S) / 2, (45 * S) / 2],
     dims: "45 × 45 × 24 mm",
     pos: [-0.84, (24 * S) / 2 + REST, 0.26],
+    mesh: MESHES.orange,
   },
   {
     id: "plank-long",
-    name: "Blue Plank",
+    name: "Dark Blue Plank",
     color: "#2f63cc",
     shape: "box",
-    // 75 × 30 × 15, lying flat (75 along x, 30 along z, 15 high)
-    half: [(75 * S) / 2, (15 * S) / 2, (30 * S) / 2],
-    dims: "75 × 30 × 15 mm",
+    // 30 × 75 × 15, lying flat. Spawn rotated so the 75 mm length starts across the tray.
+    half: [(30 * S) / 2, (15 * S) / 2, (75 * S) / 2],
+    dims: "30 × 75 × 15 mm",
     pos: [0.19, (15 * S) / 2 + REST, 3.21],
+    rot: [0, Math.PI / 2, 0],
+    mesh: MESHES.blueLong,
   },
   {
     id: "plank-short",
-    name: "Blue Short Plank",
+    name: "Dark Blue Short",
     color: "#2f63cc",
     shape: "box",
-    // 60 × 30 × 15, lying flat (60 along z, 30 along x, 15 high)
+    // 30 × 60 × 15, lying flat (60 along z, 30 along x, 15 high)
     half: [(30 * S) / 2, (15 * S) / 2, (60 * S) / 2],
-    dims: "60 × 30 × 15 mm",
+    dims: "30 × 60 × 15 mm",
     pos: [1.29, (15 * S) / 2 + REST, -1.48],
+    mesh: MESHES.blueShort,
   },
   {
     id: "cylinder",
@@ -113,16 +137,9 @@ const BLOCKS: Block[] = [
     halfHeight: (60 * S) / 2,
     dims: "Ø 30 mm · H 60 mm",
     pos: [1.22, (60 * S) / 2 + REST, 1.93],
+    mesh: MESHES.cylinder,
   },
 ]
-
-const WOOD = {
-  roughness: 0.62,
-  metalness: 0.0,
-  clearcoat: 0.12,
-  clearcoatRoughness: 0.5,
-  sheen: 0.25,
-}
 
 /* ------------------------------------------------------------------ */
 /*  Camera + tray layout – the single source of truth                  */
@@ -192,6 +209,32 @@ function blockBaseFreq(b: Block) {
   return THREE.MathUtils.clamp(2600 / Math.sqrt(blockMaxMm(b)), 230, 680)
 }
 
+function BlockMesh({
+  block,
+  onPointerDown,
+}: {
+  block: Block
+  onPointerDown: (e: any) => void
+}) {
+  const gltf = useGLTF(block.mesh.url)
+  const model = useMemo(() => {
+    const clone = gltf.scene.clone(true)
+    clone.traverse((child) => {
+      const mesh = child as THREE.Mesh
+      if (!mesh.isMesh) return
+      mesh.castShadow = true
+      mesh.receiveShadow = true
+    })
+    return clone
+  }, [gltf.scene])
+
+  return (
+    <group onPointerDown={onPointerDown}>
+      <primitive object={model} dispose={null} />
+    </group>
+  )
+}
+
 /* ------------------------------------------------------------------ */
 /*  A single draggable / throwable block                               */
 /* ------------------------------------------------------------------ */
@@ -257,8 +300,8 @@ function BlockBody({
       friction={0.6}
       restitution={0.16}
       density={6}
-      linearDamping={0.05}
-      angularDamping={0.18}
+      linearDamping={0.08}
+      angularDamping={0.4}
       canSleep={false}
       onCollisionEnter={handleImpact}
       ccd
@@ -266,24 +309,12 @@ function BlockBody({
       {block.shape === "box" ? (
         <>
           <CuboidCollider args={block.half} />
-          <RoundedBox
-            args={[block.half[0] * 2, block.half[1] * 2, block.half[2] * 2]}
-            radius={Math.min(...block.half) * 0.12}
-            smoothness={4}
-            castShadow
-            receiveShadow
-            onPointerDown={handlePointerDown}
-          >
-            <meshPhysicalMaterial color={block.color} {...WOOD} />
-          </RoundedBox>
+          <BlockMesh block={block} onPointerDown={handlePointerDown} />
         </>
       ) : (
         <>
           <CylinderCollider args={[block.halfHeight, block.radius]} />
-          <mesh castShadow receiveShadow onPointerDown={handlePointerDown}>
-            <cylinderGeometry args={[block.radius, block.radius, block.halfHeight * 2, 48]} />
-            <meshPhysicalMaterial color={block.color} {...WOOD} />
-          </mesh>
+          <BlockMesh block={block} onPointerDown={handlePointerDown} />
         </>
       )}
 
@@ -308,9 +339,11 @@ function BlockBody({
 // wood that drops and settles quickly instead of drifting down.
 const G = 28
 
-// Resting position of the warm key light (the tilt controller swings it around
-// this anchor as the device tilts).
-const KEY = { x: -7, y: 18, z: 8 }
+// Default resting position of the warm key light. The camera looks straight
+// down with screen-up mapped to -z, so a light on the -z side reads as coming
+// from the TOP of the page (shadows fall down-screen). A small -x bias keeps a
+// touch of form. Shift+right-drag re-aims it; tilt swings it around this anchor.
+const KEY = { x: -2.5, y: 17, z: -9 }
 
 // A subtle low-contrast value-noise texture used to break the perfectly-flat
 // roughness of the floor and tray walls (material imperfection).
@@ -342,10 +375,8 @@ function makeNoiseTexture(size = 128): THREE.DataTexture {
 
 function TiltController({
   tiltRef,
-  lightRef,
 }: {
   tiltRef: React.MutableRefObject<TiltState>
-  lightRef: React.MutableRefObject<THREE.DirectionalLight | null>
 }) {
   const { world } = useRapier()
   const cur = useRef({ beta: 0, gamma: 0 })
@@ -399,11 +430,8 @@ function TiltController({
       world.gravity.y = v.y
       world.gravity.z = v.z
     }
-
-    // the key light swings with the tilt so highlights + shadows shift live
-    if (lightRef.current) {
-      lightRef.current.position.set(KEY.x + sRight * 8, KEY.y, KEY.z + sDown * 8)
-    }
+    // light positioning is owned by SceneContents (it blends the shift-drag
+    // base position with this tilt offset), so nothing to do here.
   })
 
   return null
@@ -414,18 +442,30 @@ function TiltController({
 /* ------------------------------------------------------------------ */
 type DragState = {
   body: RapierRigidBody
-  plane: THREE.Plane
-  offset: THREE.Vector3
-  last: THREE.Vector3
-  vel: THREE.Vector3
-  time: number
+  block: Block
+  plane: THREE.Plane // horizontal plane at the lift height
+  localAnchor: THREE.Vector3 // grab point relative to the body centre, in body-local space
+  liftY: number
   radius: number // horizontal footprint, used to keep the block off the walls
 }
 
-const MIN_LIFT = 0.35 // how high a grabbed block floats while you slide it
+const MIN_LIFT = 0.55 // how high the grab point floats while you slide it
 const MAX_LIFT = WALL_VIS_HEIGHT - 0.6 // never lift above the tray rim
-const THROW_MAX = 13 // clamp toss speed for a believable flick
+const THROW_MAX = 3.4 // hard clamp on release speed – a gentle set-down, never a fling
 const ESCAPE_MARGIN = 0.4 // how far past a wall a body must be before we rescue it
+
+/* Soft "grab spring": the block is held by the exact point you grabbed, via a
+   damped spring (PD controller) applied at that point. Because the pull acts at
+   the grab point while gravity pulls the centre of mass, the piece hangs and
+   swings from your cursor like it's on a string. Force and speed are clamped
+   low, so the blocks always feel heavy and can never be hurled. */
+const DRAG_K = 150 // spring stiffness (how eagerly the grab point chases the cursor)
+const DRAG_C = 25 // damping (~critical, kills wobble)
+const DRAG_ERR_MAX = 1.1 // cap on position error -> caps the pull force
+const DRAG_ACCEL_MAX = 130 // hard ceiling on grab acceleration -> can't yank hard
+const MAX_DRAG_SPEED = 4.5 // linear speed cap while held
+const MAX_DRAG_ANGSPEED = 7 // spin cap while held
+const LIGHT_RADIUS = 14 // how far the key light orbits when you shift+right-drag it
 
 function SceneContents({
   measureMode,
@@ -452,8 +492,14 @@ function SceneContents({
   // subtle surface imperfection for the floor + walls
   const roughMap = useMemo(() => makeNoiseTexture(), [])
   const lightRef = useRef<THREE.DirectionalLight>(null)
+  // user-set base position of the key light (driven by shift+right-drag) and a
+  // smoothed value we actually write to the light each frame
+  const lightBase = useRef(new THREE.Vector3(KEY.x, KEY.y, KEY.z))
+  const lightCur = useRef(new THREE.Vector3(KEY.x, KEY.y, KEY.z))
   const bodies = useRef<Record<string, RapierRigidBody | null>>({})
   const drag = useRef<DragState | null>(null)
+  const lightDragging = useRef(false)
+  const pointerNdc = useRef(new THREE.Vector2())
   const raycaster = useMemo(() => new THREE.Raycaster(), [])
 
   /* ---- keep the shadow camera in sync when the box resizes ---- */
@@ -479,88 +525,178 @@ function SceneContents({
   }, [registerReset])
 
   /* ---- grab ---- */
+  // The body stays DYNAMIC: we hold it by a spring at the grab point so it
+  // hangs and swings from the cursor under gravity instead of teleporting.
   const onGrab = useCallback(
     (body: RapierRigidBody, point: THREE.Vector3, block: Block) => {
       gl.domElement.style.cursor = "grabbing"
       const t = body.translation()
+      const r = body.rotation()
       const center = new THREE.Vector3(t.x, t.y, t.z)
+      const q = new THREE.Quaternion(r.x, r.y, r.z, r.w)
+      // grab point expressed relative to the body centre, in body-local space,
+      // so we can track exactly where it has swung to each frame
+      const localAnchor = point.clone().sub(center).applyQuaternion(q.clone().invert())
       const liftY = THREE.MathUtils.clamp(point.y, MIN_LIFT, MAX_LIFT)
-      body.setBodyType(BODY_KINEMATIC_POSITION, true)
+      body.wakeUp()
       body.setLinvel({ x: 0, y: 0, z: 0 }, true)
       body.setAngvel({ x: 0, y: 0, z: 0 }, true)
       drag.current = {
         body,
+        block,
         plane: new THREE.Plane(new THREE.Vector3(0, 1, 0), -liftY),
-        offset: center.sub(point),
-        last: new THREE.Vector3(point.x, liftY, point.z),
-        vel: new THREE.Vector3(),
-        time: performance.now(),
+        localAnchor,
+        liftY,
         radius: blockRadius(block),
       }
     },
     [gl],
   )
 
-  /* ---- pointer move / up on the canvas ---- */
+  /* ---- pointer tracking + light aim + release ---- */
+  // The block-drag spring runs in useFrame (below); here we just keep the
+  // latest cursor NDC, aim the light on shift+right-drag, and clamp on release.
   useEffect(() => {
     const el = gl.domElement
-    const ndc = new THREE.Vector2()
 
     const setNdc = (e: PointerEvent) => {
       const rect = el.getBoundingClientRect()
-      ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
-      ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+      pointerNdc.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
+      pointerNdc.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+    }
+
+    // place the key light wherever the cursor is: screen-right -> +x, screen-up
+    // -> -z, so dragging to the top of the page lights from the top.
+    const aimLight = () => {
+      const n = pointerNdc.current
+      lightBase.current.x = n.x * LIGHT_RADIUS
+      lightBase.current.z = -n.y * LIGHT_RADIUS
     }
 
     const onMove = (e: PointerEvent) => {
-      const d = drag.current
-      if (!d) return
       setNdc(e)
-      raycaster.setFromCamera(ndc, camera)
-      const hit = new THREE.Vector3()
-      if (!raycaster.ray.intersectPlane(d.plane, hit)) return
-      const target = hit.add(d.offset)
-      target.y = -d.plane.constant // keep at lift height
-      // hard-clamp inside the tray so a drag can never pull a block through a
-      // wall, accounting for the block's own footprint
-      const { bx, bz } = boxRef.current
-      const lx = Math.max(bx - d.radius, 0)
-      const lz = Math.max(bz - d.radius, 0)
-      target.x = THREE.MathUtils.clamp(target.x, -lx, lx)
-      target.z = THREE.MathUtils.clamp(target.z, -lz, lz)
-      const now = performance.now()
-      const dt = Math.max((now - d.time) / 1000, 1 / 240)
-      d.vel.copy(target).sub(d.last).multiplyScalar(1 / dt)
-      d.last.copy(target)
-      d.time = now
-      d.body.setNextKinematicTranslation({ x: target.x, y: target.y, z: target.z })
+      if (lightDragging.current) aimLight()
+    }
+
+    const onDown = (e: PointerEvent) => {
+      // shift + right (or middle) button drag re-aims the light source
+      if (e.shiftKey && (e.button === 2 || e.button === 1)) {
+        e.preventDefault()
+        setNdc(e)
+        lightDragging.current = true
+        aimLight()
+        try {
+          el.setPointerCapture(e.pointerId)
+        } catch {}
+      }
+    }
+
+    const onContext = (e: MouseEvent) => {
+      // keep the browser menu out of the way of shift+right-drag
+      if (e.shiftKey || lightDragging.current) e.preventDefault()
     }
 
     const onUp = () => {
+      lightDragging.current = false
       const d = drag.current
       if (!d) return
       el.style.cursor = "grab"
-      d.body.setBodyType(BODY_DYNAMIC, true)
-      // clamp throw speed for a believable toss
-      const v = d.vel.clone()
-      if (v.length() > THROW_MAX) v.setLength(THROW_MAX)
-      d.body.setLinvel({ x: v.x, y: v.y, z: v.z }, true)
-      d.body.setAngvel(
-        { x: (Math.random() - 0.5) * 3, y: (Math.random() - 0.5) * 3, z: (Math.random() - 0.5) * 3 },
-        true,
-      )
+      // gentle set-down: the body is already moving slowly (speed was capped
+      // while held); clamp once more so a release can never become a fling
+      const lv = d.body.linvel()
+      const v = new THREE.Vector3(lv.x, lv.y, lv.z)
+      if (v.length() > THROW_MAX) {
+        v.setLength(THROW_MAX)
+        d.body.setLinvel({ x: v.x, y: v.y, z: v.z }, true)
+      }
       drag.current = null
     }
 
     el.addEventListener("pointermove", onMove)
+    el.addEventListener("pointerdown", onDown)
+    el.addEventListener("contextmenu", onContext)
     window.addEventListener("pointerup", onUp)
     window.addEventListener("pointercancel", onUp)
     return () => {
       el.removeEventListener("pointermove", onMove)
+      el.removeEventListener("pointerdown", onDown)
+      el.removeEventListener("contextmenu", onContext)
       window.removeEventListener("pointerup", onUp)
       window.removeEventListener("pointercancel", onUp)
     }
   }, [camera, gl, raycaster, size.width, size.height])
+
+  /* ---- light rig: blend the shift-drag base position with the tilt offset ---- */
+  useFrame(() => {
+    const t = tiltRef.current
+    const ox = (t.enabled ? t.sx : 0) * 7
+    const oz = (t.enabled ? t.sz : 0) * 7
+    const tx = lightBase.current.x + ox
+    const ty = lightBase.current.y
+    const tz = lightBase.current.z + oz
+    lightCur.current.x += (tx - lightCur.current.x) * 0.12
+    lightCur.current.y += (ty - lightCur.current.y) * 0.12
+    lightCur.current.z += (tz - lightCur.current.z) * 0.12
+    lightRef.current?.position.copy(lightCur.current)
+  })
+
+  /* ---- held-block spring: hang & swing the grabbed piece from the cursor ---- */
+  useFrame((_state, delta) => {
+    const d = drag.current
+    if (!d) return
+    const dt = THREE.MathUtils.clamp(delta, 1 / 240, 1 / 30)
+
+    // where the cursor wants the grab point to be (a point on the lift plane,
+    // clamped inside the tray so it can't be pulled through a wall)
+    raycaster.setFromCamera(pointerNdc.current, camera)
+    const target = new THREE.Vector3()
+    if (!raycaster.ray.intersectPlane(d.plane, target)) return
+    const { bx, bz } = boxRef.current
+    const lx = Math.max(bx - d.radius, 0)
+    const lz = Math.max(bz - d.radius, 0)
+    target.x = THREE.MathUtils.clamp(target.x, -lx, lx)
+    target.z = THREE.MathUtils.clamp(target.z, -lz, lz)
+    target.y = d.liftY
+
+    // current world position + velocity of the grab point
+    const t = d.body.translation()
+    const r = d.body.rotation()
+    const q = new THREE.Quaternion(r.x, r.y, r.z, r.w)
+    const rWorld = d.localAnchor.clone().applyQuaternion(q) // offset from centre
+    const anchor = new THREE.Vector3(t.x, t.y, t.z).add(rWorld)
+    const lv = d.body.linvel()
+    const av = d.body.angvel()
+    const pointVel = new THREE.Vector3(av.x, av.y, av.z).cross(rWorld).add(
+      new THREE.Vector3(lv.x, lv.y, lv.z),
+    )
+
+    // damped spring (PD), with the error and acceleration both clamped so you
+    // can never apply a large force -> the pieces feel heavy and unhurlable
+    const err = target.sub(anchor)
+    if (err.length() > DRAG_ERR_MAX) err.setLength(DRAG_ERR_MAX)
+    const accel = err.multiplyScalar(DRAG_K).addScaledVector(pointVel, -DRAG_C)
+    if (accel.length() > DRAG_ACCEL_MAX) accel.setLength(DRAG_ACCEL_MAX)
+    const m = d.body.mass() || 1
+    d.body.applyImpulseAtPoint(
+      { x: accel.x * m * dt, y: accel.y * m * dt, z: accel.z * m * dt },
+      { x: anchor.x, y: anchor.y, z: anchor.z },
+      true,
+    )
+
+    // hard speed caps while held – the dead giveaway of a weighty object
+    const lv2 = d.body.linvel()
+    const sp = Math.hypot(lv2.x, lv2.y, lv2.z)
+    if (sp > MAX_DRAG_SPEED) {
+      const k = MAX_DRAG_SPEED / sp
+      d.body.setLinvel({ x: lv2.x * k, y: lv2.y * k, z: lv2.z * k }, true)
+    }
+    const av2 = d.body.angvel()
+    const asp = Math.hypot(av2.x, av2.y, av2.z)
+    if (asp > MAX_DRAG_ANGSPEED) {
+      const k = MAX_DRAG_ANGSPEED / asp
+      d.body.setAngvel({ x: av2.x * k, y: av2.y * k, z: av2.z * k }, true)
+    }
+  })
 
   /* ---- safety net: rescue any body that ever leaves the box ---- */
   // Belt-and-braces guarantee on top of the solid walls and drag clamp: if a
@@ -596,8 +732,6 @@ function SceneContents({
   return (
     <>
       {/* ----- motivated lighting rig (no HDRI / no broad fill) ----- */}
-      {/* PCSS so the key shadow softens with distance like a real area source */}
-      <SoftShadows size={26} samples={16} focus={0.85} />
 
       {/* Soft warm KEY – the only shadow caster, read as an overhead practical. */}
       <directionalLight
@@ -643,7 +777,7 @@ function SceneContents({
         color="#332b20"
       />
 
-      <TiltController tiltRef={tiltRef} lightRef={lightRef} />
+      <TiltController tiltRef={tiltRef} />
 
       {/* static world: floor + tall invisible containment walls */}
       <RigidBody type="fixed" colliders={false} friction={0.6} restitution={0.12}>
@@ -734,6 +868,45 @@ export default function WoodenBlocks() {
   const resetRef = useRef<() => void>(() => {})
   const tiltRef = useRef<TiltState>({ enabled: false, beta: 0, gamma: 0, sx: 0, sz: 0 })
   const iconRef = useRef<HTMLSpanElement>(null)
+
+  // The control cluster fades itself out when idle and fades back in when the
+  // pointer comes near the corner, so it stays out of the way of the toy.
+  const [uiShown, setUiShown] = useState(true)
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const revealUI = useCallback(() => {
+    if (hideTimer.current) clearTimeout(hideTimer.current)
+    hideTimer.current = null
+    setUiShown(true)
+  }, [])
+  const scheduleHide = useCallback(() => {
+    if (hideTimer.current) clearTimeout(hideTimer.current)
+    hideTimer.current = setTimeout(() => setUiShown(false), 2200)
+  }, [])
+  useEffect(() => {
+    scheduleHide() // visible on load, then fade out after a beat
+    return () => {
+      if (hideTimer.current) clearTimeout(hideTimer.current)
+    }
+  }, [scheduleHide])
+
+  // Reveal the cluster when the pointer enters the bottom-right corner, and
+  // re-arm the fade when it leaves – proximity, not a hover hit-test, so the
+  // hidden cluster can stay pointer-events-none and never swallow a drag.
+  const wasNear = useRef(false)
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const near = window.innerWidth - e.clientX < 160 && window.innerHeight - e.clientY < 280
+      if (near && !wasNear.current) {
+        wasNear.current = true
+        revealUI()
+      } else if (!near && wasNear.current) {
+        wasNear.current = false
+        scheduleHide()
+      }
+    }
+    window.addEventListener("pointermove", onMove)
+    return () => window.removeEventListener("pointermove", onMove)
+  }, [revealUI, scheduleHide])
 
   // Browsers only let audio start from a user gesture – unlock and pre-render
   // each block's impact sound on the first touch.
@@ -828,13 +1001,15 @@ export default function WoodenBlocks() {
           maxCcdSubsteps={4}
           interpolate
         >
-          <SceneContents
-            measureMode={measureMode}
-            selectedId={selectedId}
-            setSelectedId={setSelectedId}
-            registerReset={(fn) => (resetRef.current = fn)}
-            tiltRef={tiltRef}
-          />
+          <Suspense fallback={null}>
+            <SceneContents
+              measureMode={measureMode}
+              selectedId={selectedId}
+              setSelectedId={setSelectedId}
+              registerReset={(fn) => (resetRef.current = fn)}
+              tiltRef={tiltRef}
+            />
+          </Suspense>
         </Physics>
 
         {/* realism pass: ambient occlusion grounds the blocks, a gentle vignette
@@ -847,8 +1022,16 @@ export default function WoodenBlocks() {
         </EffectComposer>
       </Canvas>
 
-      {/* UI */}
-      <div className="pointer-events-none absolute bottom-7 right-7 z-10 flex flex-col gap-3">
+      {/* UI – auto-hiding control cluster (fades in when the pointer is near).
+          pointer-events follow visibility so the faded cluster never blocks the
+          canvas in the corner. */}
+      <div
+        onPointerEnter={revealUI}
+        onPointerLeave={scheduleHide}
+        className={`absolute bottom-5 right-5 z-10 flex flex-col gap-3 p-2 transition-opacity duration-700 ease-out ${
+          uiShown ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+        }`}
+      >
         <button
           type="button"
           aria-label={muted ? "Unmute impact sounds" : "Mute impact sounds"}
@@ -908,13 +1091,6 @@ export default function WoodenBlocks() {
         </button>
       </div>
 
-      <p className="pointer-events-none absolute left-1/2 top-6 z-10 -translate-x-1/2 text-balance text-center text-xs font-medium text-foreground/45">
-        {measureMode
-          ? "Tap a block to see its size"
-          : tiltOn
-            ? "Tilt your phone to pour the blocks"
-            : "Drag to slide · flick to throw · tap the phone icon to tilt"}
-      </p>
     </div>
   )
 }
