@@ -12,7 +12,8 @@ import {
   type RapierRigidBody,
 } from "@react-three/rapier"
 import * as THREE from "three"
-import { RotateCcw, Ruler, Smartphone } from "lucide-react"
+import { RotateCcw, Ruler, Smartphone, Volume2, VolumeX } from "lucide-react"
+import { playImpact, setMuted, unlockAudio } from "@/lib/impact-sound"
 
 /* ------------------------------------------------------------------ */
 /*  Rapier body-type constants (avoid importing the wasm enum)         */
@@ -208,6 +209,26 @@ function BlockBody({
 
   const labelY = block.shape === "cylinder" ? block.halfHeight + 0.5 : block.half[1] + 0.5
 
+  // smaller blocks ring higher; larger pieces knock lower
+  const pitch = THREE.MathUtils.clamp(1.55 - 0.42 * blockRadius(block), 0.7, 1.55)
+
+  const handleImpact = (payload: {
+    target: { rigidBody?: RapierRigidBody }
+    other: { rigidBody?: RapierRigidBody }
+  }) => {
+    const a = payload.target.rigidBody
+    if (!a) return
+    const av = a.linvel()
+    let speed = Math.hypot(av.x, av.y, av.z)
+    const b = payload.other.rigidBody
+    if (b) {
+      const bv = b.linvel()
+      speed = Math.max(speed, Math.hypot(bv.x, bv.y, bv.z))
+    }
+    const strength = THREE.MathUtils.clamp((speed - 0.45) / 7, 0, 1)
+    if (strength > 0) playImpact(strength, pitch)
+  }
+
   return (
     <RigidBody
       ref={(r) => {
@@ -227,6 +248,7 @@ function BlockBody({
       linearDamping={0.05}
       angularDamping={0.18}
       canSleep={false}
+      onCollisionEnter={handleImpact}
       ccd
     >
       {block.shape === "box" ? (
@@ -613,9 +635,17 @@ export default function WoodenBlocks() {
   const [measureMode, setMeasureMode] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [tiltOn, setTiltOn] = useState(false)
+  const [muted, setMutedState] = useState(false)
   const resetRef = useRef<() => void>(() => {})
   const tiltRef = useRef<TiltState>({ enabled: false, beta: 0, gamma: 0 })
   const iconRef = useRef<HTMLSpanElement>(null)
+
+  // Browsers only let audio start from a user gesture – unlock on first touch.
+  useEffect(() => {
+    const unlock = () => unlockAudio()
+    window.addEventListener("pointerdown", unlock, { once: true })
+    return () => window.removeEventListener("pointerdown", unlock)
+  }, [])
 
   // While tilt is on, spin the phone icon to mirror the live device
   // orientation – it becomes the indicator instead of a filled button.
@@ -710,6 +740,23 @@ export default function WoodenBlocks() {
 
       {/* UI */}
       <div className="pointer-events-none absolute bottom-7 right-7 z-10 flex flex-col gap-3">
+        <button
+          type="button"
+          aria-label={muted ? "Unmute impact sounds" : "Mute impact sounds"}
+          aria-pressed={muted}
+          onClick={() => {
+            const next = !muted
+            setMutedState(next)
+            setMuted(next)
+          }}
+          className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full text-foreground opacity-40 transition hover:opacity-90"
+        >
+          {muted ? (
+            <VolumeX className="h-5 w-5" strokeWidth={2.4} />
+          ) : (
+            <Volume2 className="h-5 w-5" strokeWidth={2.4} />
+          )}
+        </button>
         <button
           type="button"
           aria-label="Tilt to control gravity"
