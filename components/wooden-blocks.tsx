@@ -1365,10 +1365,10 @@ const TOTEM_LINKS: Link[] = [
   { id: "plank-short", parent: "plank-long", off: [1.62, 0, 0.81], rot: [0, Math.PI / 2, 0] }, // corner -> foot (across)
   { id: "cylinder", parent: "plank-short", off: [2.16, 0, 0], rot: [0, 0, Math.PI / 2] }, // foot tip (lying)
 ]
-const SNAP_RADIUS = 2.8 // a piece starts feeling its partner within this distance
-const CONNECT_DIST = 1.4 // counts as "snapped" within this (forgiving – colliders stop pieces seating perfectly)
-const MAG_PULL = 9 // proximity error -> velocity toward the snap pose
-const MAG_RESPONSE = 0.24 // how fast that velocity is applied (firm enough to seat them)
+const SNAP_RADIUS = 4.6 // a piece starts feeling its partner from well across the screen (easy)
+const CONNECT_DIST = 2.2 // counts as "snapped" within this (very forgiving)
+const MAG_PULL = 13 // proximity error -> velocity toward the snap pose (decisive)
+const MAG_RESPONSE = 0.32 // how fast that velocity is applied (snappy seating)
 const SPIN_AXIS = new THREE.Vector3(0.28, 1, 0.18).normalize() // the solved L tumbles about this
 const SPIN_SPEED = 0.7 // rad/s of the victory spin
 
@@ -1592,7 +1592,7 @@ function MagnetController({
     if (!revealRef.current) {
       if (connectedCount === TOTEM_LINKS.length) {
         dwell.current += dt
-        if (dwell.current > 0.4) {
+        if (dwell.current > 0.25) {
           // SOLVED: snap the L rigid and start the victory tumble. Build each
           // piece's exact pose by walking the chain from the root, freeze them
           // kinematic, and record their poses relative to the assembly centre.
