@@ -464,7 +464,7 @@ function makeBrickGlowTexture(size = 256, bevel = 0.16): THREE.DataTexture {
 /*  Environments – cycle with number keys 1-9 (desktop) or a two-finger */
 /*  tap-and-hold (touch). Each swaps the room materials + lighting mood. */
 /* ------------------------------------------------------------------ */
-type EnvKind = "concrete" | "gold" | "glass" | "playmat"
+type EnvKind = "concrete" | "gold" | "glass" | "playmat" | "video"
 type EnvConfig = {
   id: EnvKind
   name: string
@@ -512,6 +512,15 @@ const ENVIRONMENTS: EnvConfig[] = [
     keyIntensity: 2.5,
     contact: { color: "#5a4f63", opacity: 0.34 },
     bloom: false,
+  },
+  {
+    id: "video",
+    name: "Video room",
+    bg: "#000000",
+    keyColor: "#ffffff",
+    keyIntensity: 1.5,
+    contact: { color: "#000000", opacity: 0.45 },
+    bloom: true,
   },
 ]
 
@@ -758,7 +767,73 @@ function Room(props: RoomProps) {
   if (props.env.id === "gold") return <GoldRoom {...props} />
   if (props.env.id === "glass") return <GlassRoom {...props} />
   if (props.env.id === "playmat") return <PlayMatRoom {...props} />
+  if (props.env.id === "video") return <VideoRoom {...props} />
   return <ConcreteRoom {...props} />
+}
+
+// 5 — video room: the clip plays on loop across the floor and every wall.
+function VideoRoom({ box, visibleWalls }: RoomProps) {
+  const video = useMemo(() => {
+    if (typeof document === "undefined") return null
+    const v = document.createElement("video")
+    v.src = "/videoplayback.mp4"
+    v.loop = true
+    v.muted = true
+    v.playsInline = true
+    v.crossOrigin = "anonymous"
+    v.preload = "auto"
+    return v
+  }, [])
+  const tex = useMemo(() => {
+    if (!video) return null
+    const t = new THREE.VideoTexture(video)
+    t.colorSpace = THREE.SRGBColorSpace
+    t.minFilter = THREE.LinearFilter
+    t.magFilter = THREE.LinearFilter
+    return t
+  }, [video])
+  useEffect(() => {
+    if (!video) return
+    const start = () => {
+      const p = video.play()
+      if (p && typeof p.catch === "function") p.catch(() => {})
+    }
+    start()
+    // browsers may block autoplay until a gesture – retry on the first one
+    window.addEventListener("pointerdown", start, { once: true })
+    return () => {
+      window.removeEventListener("pointerdown", start)
+      video.pause()
+      video.removeAttribute("src")
+      video.load()
+      tex?.dispose()
+    }
+  }, [video, tex])
+
+  if (!tex) return null
+  const fw = box.bx * 2
+  const fd = box.bz * 2
+  return (
+    <>
+      {/* soft fill so the blocks read against the bright screens */}
+      <ambientLight intensity={0.45} color="#ffffff" />
+      <pointLight position={[0, 11, 0]} intensity={16} distance={36} decay={2} color="#ffffff" />
+
+      {/* floor screen – fitted to the visible tray so the clip fills the ground */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
+        <planeGeometry args={[fw, fd]} />
+        <meshBasicMaterial map={tex} toneMapped={false} />
+      </mesh>
+
+      {/* each wall is a screen too */}
+      {visibleWalls.map((w, i) => (
+        <mesh key={`wall-${i}`} position={w.pos}>
+          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
+          <meshBasicMaterial map={tex} toneMapped={false} />
+        </mesh>
+      ))}
+    </>
+  )
 }
 
 // 1 — real concrete: photographed albedo + normal + roughness maps.
