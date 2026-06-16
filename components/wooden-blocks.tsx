@@ -1,13 +1,12 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Canvas, useThree, useFrame } from "@react-three/fiber"
-import { Environment, RoundedBox, ContactShadows, Html } from "@react-three/drei"
+import { Environment, ContactShadows, Html, useGLTF, useProgress } from "@react-three/drei"
 import {
   Physics,
   RigidBody,
   CuboidCollider,
-  CylinderCollider,
   useRapier,
   type RapierRigidBody,
 } from "@react-three/rapier"
@@ -28,97 +27,84 @@ type TiltState = {
   enabled: boolean
   beta: number // front-back tilt in degrees
   gamma: number // left-right tilt in degrees
+  sx: number // calibrated screen-right gravity component (-1..1)
+  sz: number // calibrated screen-down gravity component (-1..1)
 }
 
 /* ------------------------------------------------------------------ */
 /*  Block catalogue – sizes are real millimetres scaled to scene units */
 /* ------------------------------------------------------------------ */
-const S = 0.045 // 1 mm -> scene units (blocks sit comfortably inside the tray)
-
-type BoxBlock = {
-  id: string
-  name: string
-  color: string
-  shape: "box"
-  half: [number, number, number]
-  dims: string
-  pos: [number, number, number]
-  rot?: [number, number, number]
-}
-type CylBlock = {
-  id: string
-  name: string
-  color: string
-  shape: "cylinder"
-  radius: number
-  halfHeight: number
-  dims: string
-  pos: [number, number, number]
-  rot?: [number, number, number]
-}
-type Block = BoxBlock | CylBlock
-
+const S = 0.045 // 1 mm -> scene units (used only for the measure-mode readout)
 const REST = 0.06 // small gap above floor when spawning
 
-const BLOCKS: Block[] = [
-  {
-    id: "cube",
-    name: "Light-Blue Cube",
-    color: "#3f9ec9",
-    shape: "box",
-    half: [(30 * S) / 2, (30 * S) / 2, (30 * S) / 2],
-    dims: "30 × 30 × 30 mm",
-    pos: [-1.48, (30 * S) / 2 + REST, -2.96],
-  },
-  {
-    id: "orange",
-    name: "Orange Block",
-    color: "#e07b22",
-    shape: "box",
-    // 45 × 45 × 24, lying so the 24 mm dimension is the height
-    half: [(45 * S) / 2, (24 * S) / 2, (45 * S) / 2],
-    dims: "45 × 45 × 24 mm",
-    pos: [-0.84, (24 * S) / 2 + REST, 0.26],
-  },
-  {
-    id: "plank-long",
-    name: "Blue Plank",
-    color: "#2f63cc",
-    shape: "box",
-    // 75 × 30 × 15, lying flat (75 along x, 30 along z, 15 high)
-    half: [(75 * S) / 2, (15 * S) / 2, (30 * S) / 2],
-    dims: "75 × 30 × 15 mm",
-    pos: [0.19, (15 * S) / 2 + REST, 3.21],
-  },
-  {
-    id: "plank-short",
-    name: "Blue Short Plank",
-    color: "#2f63cc",
-    shape: "box",
-    // 60 × 30 × 15, lying flat (60 along z, 30 along x, 15 high)
-    half: [(30 * S) / 2, (15 * S) / 2, (60 * S) / 2],
-    dims: "60 × 30 × 15 mm",
-    pos: [1.29, (15 * S) / 2 + REST, -1.48],
-  },
-  {
-    id: "cylinder",
-    name: "Red Cylinder",
-    color: "#c83a2e",
-    shape: "cylinder",
-    radius: (30 * S) / 2,
-    halfHeight: (60 * S) / 2,
-    dims: "Ø 30 mm · H 60 mm",
-    pos: [1.22, (60 * S) / 2 + REST, 1.93],
-  },
+// A detailed GLB mesh block. Physics stays on a simple cuboid collider matched
+// to the model's bounding box, so dragging/containment stay cheap and robust
+// while the visuals are the high-detail wooden meshes.
+type Block = {
+  id: string
+  name: string
+  model: string // GLB under /public
+  scale: number // uniform scale applied to the model
+  half: [number, number, number] // cuboid collider half extents (= scaled bbox / 2)
+  offset: [number, number, number] // recenters the model's bbox on the body origin
+  pos: [number, number, number] // spawn position (y derived from half)
+  rot?: [number, number, number]
+  radius: number // horizontal bounding radius (drag + containment margin)
+  dims: string // measure-mode label
+  freq: number // impact base frequency
+}
+
+// Raw per-model data. Bounding boxes (size + centre, in model units) were
+// measured from each GLB; `target` is the desired longest dimension in world
+// units and `xz` is where the block is dropped in the tray.
+type RawBlock = {
+  id: string
+  name: string
+  model: string
+  size: [number, number, number]
+  center: [number, number, number]
+  target: number
+  xz: [number, number]
+  rot?: [number, number, number]
+}
+
+const RAW_BLOCKS: RawBlock[] = [
+  { id: "block-1", name: "Wooden Block 1", model: "/models/block_01.glb", size: [0.275, 0.238, 0.267], center: [0, 0.119, 0], target: 1.7, xz: [-1.48, -2.96] },
+  { id: "block-2", name: "Wooden Block 2", model: "/models/block_02.glb", size: [0.365, 0.363, 0.237], center: [0, 0.181, 0], target: 2.1, xz: [-0.7, 0.4] },
+  { id: "block-3", name: "Wooden Block 3", model: "/models/block_03.glb", size: [0.37, 0.218, 0.21], center: [0, 0.109, 0], target: 2.4, xz: [0.3, 3.1] },
+  { id: "block-4", name: "Wooden Block 4", model: "/models/block_04.glb", size: [0.207, 0.463, 0.206], center: [0, 0.231, 0], target: 2.7, xz: [1.4, -1.4] },
+  { id: "block-5", name: "Wooden Block 5", model: "/models/block_05.glb", size: [0.298, 0.226, 0.226], center: [0, 0.113, 0], target: 1.9, xz: [1.2, 1.9] },
 ]
 
-const WOOD = {
-  roughness: 0.62,
-  metalness: 0.0,
-  clearcoat: 0.12,
-  clearcoatRoughness: 0.5,
-  sheen: 0.25,
+function prepareBlock(r: RawBlock): Block {
+  const scale = r.target / Math.max(r.size[0], r.size[1], r.size[2])
+  const half: [number, number, number] = [
+    (r.size[0] * scale) / 2,
+    (r.size[1] * scale) / 2,
+    (r.size[2] * scale) / 2,
+  ]
+  const offset: [number, number, number] = [-r.center[0] * scale, -r.center[1] * scale, -r.center[2] * scale]
+  const mm = (h: number) => Math.round((h * 2) / S)
+  const longestMm = (Math.max(half[0], half[1], half[2]) * 2) / S
+  return {
+    id: r.id,
+    name: r.name,
+    model: r.model,
+    scale,
+    half,
+    offset,
+    pos: [r.xz[0], half[1] + REST, r.xz[1]],
+    rot: r.rot,
+    radius: Math.hypot(half[0], half[2]),
+    dims: `${mm(half[0])} × ${mm(half[1])} × ${mm(half[2])} mm`,
+    freq: THREE.MathUtils.clamp(2600 / Math.sqrt(longestMm), 230, 680),
+  }
 }
+
+const BLOCKS: Block[] = RAW_BLOCKS.map(prepareBlock)
+
+// start fetching the meshes as early as possible
+RAW_BLOCKS.forEach((r) => useGLTF.preload(r.model))
 
 /* ------------------------------------------------------------------ */
 /*  Camera + tray layout – the single source of truth                  */
@@ -171,21 +157,55 @@ function buildWalls({ bx, bz }: Box, height: number): Wall[] {
   ]
 }
 
-// Horizontal bounding radius of a block – the margin to keep it off the walls
-// no matter how it is rotated about the vertical axis.
+// Horizontal bounding radius of a block – the margin to keep it off the walls.
 function blockRadius(b: Block) {
-  return b.shape === "cylinder" ? b.radius : Math.hypot(b.half[0], b.half[2])
+  return b.radius
 }
 
-// Largest real dimension of a block in mm – longer pieces ring at a lower pitch.
-function blockMaxMm(b: Block) {
-  const u = b.shape === "cylinder" ? Math.max(b.radius * 2, b.halfHeight * 2) : Math.max(...b.half) * 2
-  return u / S
+// The detailed wooden mesh for a block. The model is uniformly scaled to fill
+// the collider's largest dimension and re-centred on the body origin at runtime,
+// so the visual always matches the physics box regardless of the GLB's internal
+// transforms.
+function BlockModel({
+  url,
+  half,
+  onPointerDown,
+}: {
+  url: string
+  half: [number, number, number]
+  onPointerDown: (e: any) => void
+}) {
+  const { scene } = useGLTF(url)
+  const { obj, scale, offset } = useMemo(() => {
+    const clone = scene.clone(true)
+    clone.traverse((o) => {
+      const mesh = o as THREE.Mesh
+      if (mesh.isMesh) {
+        mesh.castShadow = true
+        mesh.receiveShadow = true
+      }
+    })
+    const box = new THREE.Box3().setFromObject(clone)
+    const size = box.getSize(new THREE.Vector3())
+    const center = box.getCenter(new THREE.Vector3())
+    const target = Math.max(half[0], half[1], half[2]) * 2
+    const s = target / Math.max(size.x, size.y, size.z, 1e-6)
+    const off: [number, number, number] = [-center.x * s, -center.y * s, -center.z * s]
+    return { obj: clone, scale: s, offset: off }
+  }, [scene, half])
+  return <primitive object={obj} scale={scale} position={offset} onPointerDown={onPointerDown} />
 }
 
-// Fundamental impact frequency: bigger block -> lower knock.
-function blockBaseFreq(b: Block) {
-  return THREE.MathUtils.clamp(2600 / Math.sqrt(blockMaxMm(b)), 230, 680)
+// Loading overlay shown while the (large) meshes download.
+function BlocksLoader() {
+  const { progress } = useProgress()
+  return (
+    <Html center>
+      <div className="pointer-events-none select-none whitespace-nowrap rounded-full bg-background/90 px-3 py-1.5 text-xs font-medium text-foreground/70 shadow">
+        Loading blocks… {Math.round(progress)}%
+      </div>
+    </Html>
+  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -218,7 +238,7 @@ function BlockBody({
     onGrab(ref.current, e.point.clone(), block)
   }
 
-  const labelY = block.shape === "cylinder" ? block.halfHeight + 0.5 : block.half[1] + 0.5
+  const labelY = block.half[1] + 0.5
 
   const handleImpact = (payload: {
     target: { rigidBody?: RapierRigidBody }
@@ -259,29 +279,8 @@ function BlockBody({
       onCollisionEnter={handleImpact}
       ccd
     >
-      {block.shape === "box" ? (
-        <>
-          <CuboidCollider args={block.half} />
-          <RoundedBox
-            args={[block.half[0] * 2, block.half[1] * 2, block.half[2] * 2]}
-            radius={Math.min(...block.half) * 0.12}
-            smoothness={4}
-            castShadow
-            receiveShadow
-            onPointerDown={handlePointerDown}
-          >
-            <meshPhysicalMaterial color={block.color} {...WOOD} />
-          </RoundedBox>
-        </>
-      ) : (
-        <>
-          <CylinderCollider args={[block.halfHeight, block.radius]} />
-          <mesh castShadow receiveShadow onPointerDown={handlePointerDown}>
-            <cylinderGeometry args={[block.radius, block.radius, block.halfHeight * 2, 48]} />
-            <meshPhysicalMaterial color={block.color} {...WOOD} />
-          </mesh>
-        </>
-      )}
+      <CuboidCollider args={block.half} />
+      <BlockModel url={block.model} half={block.half} onPointerDown={handlePointerDown} />
 
       {measureMode && selected && (
         <Html position={[0, labelY, 0]} center distanceFactor={10} zIndexRange={[100, 0]}>
@@ -348,6 +347,11 @@ function TiltController({
       sDown = inRight * dx + inDown * dy // along calibrated down
       sRight = inRight * dy - inDown * dx // along screen-right (perp of down)
     }
+
+    // publish the calibrated screen-space tilt so the UI icon can lean the same
+    // way gravity is actually pulling
+    t.sx = sRight
+    t.sz = sDown
 
     // keep a little pull into the tray so blocks never ride up over the walls
     const gy = -Math.max(Math.cos(b) * Math.cos(g), 0.18)
@@ -609,18 +613,20 @@ function SceneContents({
         </mesh>
       ))}
 
-      {/* blocks */}
-      {BLOCKS.map((b) => (
-        <BlockBody
-          key={b.id}
-          block={b}
-          bodyRef={(r) => (bodies.current[b.id] = r)}
-          onGrab={onGrab}
-          measureMode={measureMode}
-          selected={selectedId === b.id}
-          onSelect={(id) => setSelectedId(id)}
-        />
-      ))}
+      {/* blocks (detailed meshes load lazily) */}
+      <Suspense fallback={<BlocksLoader />}>
+        {BLOCKS.map((b) => (
+          <BlockBody
+            key={b.id}
+            block={b}
+            bodyRef={(r) => (bodies.current[b.id] = r)}
+            onGrab={onGrab}
+            measureMode={measureMode}
+            selected={selectedId === b.id}
+            onSelect={(id) => setSelectedId(id)}
+          />
+        ))}
+      </Suspense>
 
       {/* tap empty space to clear measurement */}
       {measureMode && (
@@ -666,7 +672,7 @@ export default function WoodenBlocks() {
   const [tiltOn, setTiltOn] = useState(false)
   const [muted, setMutedState] = useState(false)
   const resetRef = useRef<() => void>(() => {})
-  const tiltRef = useRef<TiltState>({ enabled: false, beta: 0, gamma: 0 })
+  const tiltRef = useRef<TiltState>({ enabled: false, beta: 0, gamma: 0, sx: 0, sz: 0 })
   const iconRef = useRef<HTMLSpanElement>(null)
 
   // Browsers only let audio start from a user gesture – unlock and pre-render
@@ -674,14 +680,15 @@ export default function WoodenBlocks() {
   useEffect(() => {
     const unlock = () => {
       unlockAudio()
-      primeBlocks(BLOCKS.map((b) => ({ id: b.id, freq: blockBaseFreq(b) })))
+      primeBlocks(BLOCKS.map((b) => ({ id: b.id, freq: b.freq })))
     }
     window.addEventListener("pointerdown", unlock, { once: true })
     return () => window.removeEventListener("pointerdown", unlock)
   }, [])
 
-  // While tilt is on, spin the phone icon to mirror the live device
-  // orientation – it becomes the indicator instead of a filled button.
+  // While tilt is on, lean the phone icon the same way gravity is pulling on
+  // screen (using the calibrated screen-space tilt), so it tips toward where the
+  // blocks pour instead of sideways.
   useEffect(() => {
     const el = iconRef.current
     if (!tiltOn) {
@@ -689,15 +696,15 @@ export default function WoodenBlocks() {
       return
     }
     let raf = 0
-    const cur = { beta: 0, gamma: 0 }
+    const cur = { x: 0, z: 0 }
     const loop = () => {
       const t = tiltRef.current
-      cur.gamma += (t.gamma - cur.gamma) * 0.18
-      cur.beta += (t.beta - cur.beta) * 0.18
-      const ry = Math.max(-48, Math.min(48, cur.gamma)) // left-right lean
-      const rx = Math.max(-48, Math.min(48, cur.beta)) // front-back lean
+      cur.x += (t.sx - cur.x) * 0.18
+      cur.z += (t.sz - cur.z) * 0.18
+      const ry = Math.max(-50, Math.min(50, cur.x * 60)) // lean toward screen-right pull
+      const rx = Math.max(-50, Math.min(50, cur.z * 60)) // lean toward screen-down pull
       if (iconRef.current) {
-        iconRef.current.style.transform = `perspective(140px) rotateY(${ry}deg) rotateX(${-rx}deg)`
+        iconRef.current.style.transform = `perspective(140px) rotateY(${ry}deg) rotateX(${rx}deg)`
       }
       raf = requestAnimationFrame(loop)
     }
