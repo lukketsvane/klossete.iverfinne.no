@@ -1,12 +1,12 @@
-// Realistic wooden-block impact sounds via modal synthesis (Web Audio API,
-// no audio assets).
+// Realistic wooden-block impact sounds via lightweight modal + noise synthesis
+// (Web Audio API, no audio assets).
 //
-// A struck wooden block rings at a handful of *inharmonic* resonant modes that
-// decay quickly, kicked off by a sharp contact transient. We pre-render that
-// impulse response per block into a few buffers (variations, so repeated hits
-// don't sound identical), then on each collision play one back through a
-// velocity-driven low-pass: soft taps come out dull and muffled, hard knocks
-// come out bright and cracky — which is what sells "this is solid wood."
+// Real hardwood-on-hardwood is a dry "clack", not a ringing tone: a sharp
+// broadband contact transient, a band-passed mid "knock" body, and only a
+// brief low resonance that damps almost immediately. We pre-render that impulse
+// per block into a few buffers (variations), then on each collision play one
+// through a velocity-driven low-pass — soft taps come out dull, hard knocks
+// crack — which is what sells solid wood.
 
 let ctx: AudioContext | null = null
 let master: GainNode | null = null
@@ -25,7 +25,7 @@ function ensureCtx(): AudioContext | null {
     if (!AC) return null
     ctx = new AC()
     master = ctx.createGain()
-    master.gain.value = 0.5
+    master.gain.value = 0.55
     master.connect(ctx.destination)
   }
   return ctx
@@ -41,26 +41,47 @@ export function setMuted(value: boolean) {
   if (!value) unlockAudio()
 }
 
-// Inharmonic modal series of a struck wooden bar/block: ratios relative to the
-// fundamental, each with its own loudness and (short) decay time in seconds.
+// A short, well-damped modal body. Decays are tiny (tens of ms) so the result
+// reads as a dry knock rather than a tuned bar.
 const MODES: { ratio: number; gain: number; decay: number }[] = [
-  { ratio: 1.0, gain: 1.0, decay: 0.34 },
-  { ratio: 2.41, gain: 0.6, decay: 0.2 },
-  { ratio: 3.94, gain: 0.4, decay: 0.13 },
-  { ratio: 6.1, gain: 0.25, decay: 0.085 },
-  { ratio: 8.74, gain: 0.14, decay: 0.05 },
-  { ratio: 11.9, gain: 0.08, decay: 0.032 },
+  { ratio: 1.0, gain: 0.7, decay: 0.07 },
+  { ratio: 2.18, gain: 0.32, decay: 0.045 },
+  { ratio: 3.7, gain: 0.16, decay: 0.03 },
 ]
+
+// One-pass 2nd-order band-pass (RBJ cookbook) used to colour the noise "knock".
+function bandpass(input: Float32Array, sr: number, freq: number, Q: number) {
+  const w0 = (2 * Math.PI * freq) / sr
+  const cw = Math.cos(w0)
+  const alpha = Math.sin(w0) / (2 * Q)
+  const a0 = 1 + alpha
+  const b0 = alpha / a0
+  const b2 = -alpha / a0
+  const a1 = (-2 * cw) / a0
+  const a2 = (1 - alpha) / a0
+  let x1 = 0
+  let x2 = 0
+  let y1 = 0
+  let y2 = 0
+  for (let n = 0; n < input.length; n++) {
+    const x = input[n]
+    const y = b0 * x + b2 * x2 - a1 * y1 - a2 * y2
+    x2 = x1
+    x1 = x
+    y2 = y1
+    y1 = y
+    input[n] = y
+  }
+}
 
 function renderImpact(c: AudioContext, f0: number): AudioBuffer {
   const sr = c.sampleRate
-  const dur = 0.55
+  const dur = 0.2
   const len = Math.floor(sr * dur)
   const buf = c.createBuffer(1, len, sr)
   const data = buf.getChannelData(0)
 
-  // Sum the decaying modal sinusoids. A small per-mode decay jitter and random
-  // phase make each rendered variant subtly different.
+  // Modal body – short decaying sinusoids for a touch of pitch.
   for (const m of MODES) {
     const w = 2 * Math.PI * f0 * m.ratio
     const decay = m.decay * (0.85 + Math.random() * 0.3)
@@ -71,16 +92,23 @@ function renderImpact(c: AudioContext, f0: number): AudioBuffer {
     }
   }
 
-  // Contact transient: a very short noise burst, high-passed (one-pole diff) so
-  // it reads as a crisp "tick" of two hard surfaces meeting rather than a thud.
-  const tickDecay = 0.005
+  // Band-passed noise "knock" – the woody dry body of the clack.
+  const knock = new Float32Array(len)
+  for (let n = 0; n < len; n++) knock[n] = Math.random() * 2 - 1
+  bandpass(knock, sr, f0 * 3.2, 1.1)
+  for (let n = 0; n < len; n++) {
+    const t = n / sr
+    data[n] += 0.8 * Math.exp(-t / 0.022) * knock[n]
+  }
+
+  // Bright contact tick – a very short high-passed noise transient.
   let prev = 0
   for (let n = 0; n < len; n++) {
     const t = n / sr
     const white = Math.random() * 2 - 1
     const hp = white - prev
     prev = white
-    data[n] += 0.6 * Math.exp(-t / tickDecay) * hp
+    data[n] += 0.5 * Math.exp(-t / 0.0022) * hp
   }
 
   // Normalize.
@@ -130,11 +158,11 @@ export function playImpact(id: string, strength: number) {
   // Harder hits excite more high-frequency energy: open the low-pass with v.
   const lp = c.createBiquadFilter()
   lp.type = "lowpass"
-  lp.frequency.value = 600 + v * v * 8200
-  lp.Q.value = 0.7
+  lp.frequency.value = 800 + v * v * 9000
+  lp.Q.value = 0.6
 
   const g = c.createGain()
-  g.gain.value = Math.min(1, 0.12 + v)
+  g.gain.value = Math.min(1, 0.14 + v)
 
   src.connect(lp).connect(g).connect(master)
   src.start()
