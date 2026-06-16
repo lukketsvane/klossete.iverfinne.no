@@ -274,18 +274,6 @@ function BlockBody({
 // wood that drops and settles quickly instead of drifting down.
 const G = 28
 
-// Current rotation of the page from the device's native orientation (0/90/180/
-// 270). DeviceOrientation beta/gamma are reported in the native frame, so we
-// need this to rotate the tilt into the frame the user is actually looking at –
-// otherwise a landscape iPad pours sideways instead of down the screen.
-function screenAngleDeg(): number {
-  if (typeof window === "undefined") return 0
-  const a = window.screen?.orientation?.angle
-  if (typeof a === "number") return a
-  const legacy = (window as unknown as { orientation?: number }).orientation
-  return typeof legacy === "number" ? legacy : 0
-}
-
 function TiltController({
   tiltRef,
   lightRef,
@@ -295,30 +283,42 @@ function TiltController({
 }) {
   const { world } = useRapier()
   const cur = useRef({ beta: 0, gamma: 0 })
+  // Self-calibrated "down the screen" direction in the device's native in-plane
+  // basis (right, down). Device/OS orientation reporting is unreliable across
+  // phones and iPads, so instead of trusting screen.orientation.angle we learn
+  // which way is down from where gravity actually pulls when tilt is engaged.
+  const down = useRef<{ x: number; y: number } | null>(null)
 
   useFrame(() => {
     const t = tiltRef.current
-    const targetBeta = t.enabled ? t.beta : 0
-    const targetGamma = t.enabled ? t.gamma : 0
+    if (!t.enabled) down.current = null
 
     // smooth toward the target so motion feels like weight settling, not jitter
-    cur.current.beta += (targetBeta - cur.current.beta) * 0.12
-    cur.current.gamma += (targetGamma - cur.current.gamma) * 0.12
+    cur.current.beta += ((t.enabled ? t.beta : 0) - cur.current.beta) * 0.12
+    cur.current.gamma += ((t.enabled ? t.gamma : 0) - cur.current.gamma) * 0.12
 
     const b = THREE.MathUtils.clamp(cur.current.beta, -70, 70) * (Math.PI / 180)
     const g = THREE.MathUtils.clamp(cur.current.gamma, -70, 70) * (Math.PI / 180)
 
-    // Real gravity projected onto the screen: in the device's native frame the
-    // in-plane pull is (right = sin γ, down = sin β). Rotate it by the current
-    // screen angle so "down the screen" is always down, whatever way the device
-    // is held, then map screen-right -> +x and screen-down -> +z.
+    // In-plane component of real gravity, in the device-native (right, down) basis.
     const inRight = Math.sin(g)
     const inDown = Math.sin(b)
-    const a = screenAngleDeg() * (Math.PI / 180)
-    const ca = Math.cos(a)
-    const sa = Math.sin(a)
-    const sRight = inRight * ca + inDown * sa
-    const sDown = -inRight * sa + inDown * ca
+    const mag = Math.hypot(inRight, inDown)
+
+    // Lock in "down" the first time the device is meaningfully tilted after
+    // enabling: whatever way gravity pulls on screen right now becomes down.
+    if (t.enabled && !down.current && mag > 0.18) {
+      down.current = { x: inRight / mag, y: inDown / mag }
+    }
+
+    let sRight = 0
+    let sDown = 0
+    if (down.current) {
+      const { x: dx, y: dy } = down.current
+      sDown = inRight * dx + inDown * dy // along calibrated down
+      sRight = inRight * dy - inDown * dx // along screen-right (perp of down)
+    }
+
     // keep a little pull into the tray so blocks never ride up over the walls
     const gy = -Math.max(Math.cos(b) * Math.cos(g), 0.18)
     const v = new THREE.Vector3(sRight, gy, sDown).normalize().multiplyScalar(G)
