@@ -1,23 +1,33 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Canvas, useThree } from "@react-three/fiber"
+import { Canvas, useThree, useFrame } from "@react-three/fiber"
 import { Environment, RoundedBox, ContactShadows, Html } from "@react-three/drei"
 import {
   Physics,
   RigidBody,
   CuboidCollider,
   CylinderCollider,
+  useRapier,
   type RapierRigidBody,
 } from "@react-three/rapier"
 import * as THREE from "three"
-import { RotateCcw, Ruler } from "lucide-react"
+import { RotateCcw, Ruler, Smartphone } from "lucide-react"
 
 /* ------------------------------------------------------------------ */
 /*  Rapier body-type constants (avoid importing the wasm enum)         */
 /* ------------------------------------------------------------------ */
 const BODY_DYNAMIC = 0
 const BODY_KINEMATIC_POSITION = 2
+
+/* ------------------------------------------------------------------ */
+/*  Shared device-tilt state (written by DOM listener, read in 3D)     */
+/* ------------------------------------------------------------------ */
+type TiltState = {
+  enabled: boolean
+  beta: number // front-back tilt in degrees
+  gamma: number // left-right tilt in degrees
+}
 
 /* ------------------------------------------------------------------ */
 /*  Block catalogue – sizes are real millimetres scaled to scene units */
@@ -57,7 +67,7 @@ const BLOCKS: Block[] = [
     shape: "box",
     half: [(30 * S) / 2, (30 * S) / 2, (30 * S) / 2],
     dims: "30 × 30 × 30 mm",
-    pos: [-5.5, (30 * S) / 2 + REST, -1],
+    pos: [-2.3, (30 * S) / 2 + REST, -4.6],
   },
   {
     id: "orange",
@@ -67,7 +77,7 @@ const BLOCKS: Block[] = [
     // 45 × 45 × 24, lying so the 24 mm dimension is the height
     half: [(45 * S) / 2, (24 * S) / 2, (45 * S) / 2],
     dims: "45 × 45 × 24 mm",
-    pos: [-2.3, (24 * S) / 2 + REST, 2.4],
+    pos: [-1.3, (24 * S) / 2 + REST, 0.4],
   },
   {
     id: "plank-long",
@@ -77,7 +87,7 @@ const BLOCKS: Block[] = [
     // 75 × 30 × 15, lying flat (75 along x, 30 along z, 15 high)
     half: [(75 * S) / 2, (15 * S) / 2, (30 * S) / 2],
     dims: "75 × 30 × 15 mm",
-    pos: [1.4, (15 * S) / 2 + REST, 2.6],
+    pos: [0.3, (15 * S) / 2 + REST, 5],
   },
   {
     id: "plank-short",
@@ -87,7 +97,7 @@ const BLOCKS: Block[] = [
     // 60 × 30 × 15, lying flat (60 along z, 30 along x, 15 high)
     half: [(30 * S) / 2, (15 * S) / 2, (60 * S) / 2],
     dims: "60 × 30 × 15 mm",
-    pos: [0.6, (15 * S) / 2 + REST, -1.6],
+    pos: [2, (15 * S) / 2 + REST, -2.3],
   },
   {
     id: "cylinder",
@@ -97,7 +107,7 @@ const BLOCKS: Block[] = [
     radius: (30 * S) / 2,
     halfHeight: (60 * S) / 2,
     dims: "Ø 30 mm · H 60 mm",
-    pos: [4.6, (60 * S) / 2 + REST, -0.4],
+    pos: [1.9, (60 * S) / 2 + REST, 3],
   },
 ]
 
@@ -110,13 +120,17 @@ const WOOD = {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Invisible walls fitted to the exact visible floor region           */
+/*  Box walls fitted to the visible floor region (inset to form a tray)*/
 /* ------------------------------------------------------------------ */
 type Wall = {
   half: [number, number, number]
   pos: [number, number, number]
   rot: [number, number, number]
 }
+
+const WALL_HEIGHT = 3.2
+const WALL_HALF_THICK = 0.4
+const BOX_INSET = 0.9 // shrink the box toward centre so the frame reads inside the screen
 
 function useFrustumWalls() {
   const { camera, size } = useThree()
@@ -134,19 +148,19 @@ function useFrustumWalls() {
     ]
     const camPos = new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld)
 
-    const corners = ndc.map(([x, y]) => {
+    const raw = ndc.map(([x, y]) => {
       const v = new THREE.Vector3(x, y, 0.5).unproject(cam)
       const dir = v.sub(camPos).normalize()
       const t = -camPos.y / dir.y // intersect plane y = 0
       return camPos.clone().add(dir.multiplyScalar(t))
     })
 
-    const centroid = corners
+    const centroid = raw
       .reduce((a, c) => a.add(c), new THREE.Vector3())
-      .multiplyScalar(1 / corners.length)
+      .multiplyScalar(1 / raw.length)
 
-    const HEIGHT = 9
-    const HALF_THICK = 0.4
+    // inset the corners toward the centre so all four walls sit inside the view
+    const corners = raw.map((c) => centroid.clone().lerp(c, BOX_INSET))
 
     const next: Wall[] = corners.map((a, i) => {
       const b = corners[(i + 1) % corners.length]
@@ -155,10 +169,10 @@ function useFrustumWalls() {
       const len = Math.hypot(edge.x, edge.z)
       const angle = Math.atan2(-edge.z, edge.x)
       const outward = new THREE.Vector3(mid.x - centroid.x, 0, mid.z - centroid.z).normalize()
-      const center = mid.clone().add(outward.multiplyScalar(HALF_THICK))
+      const center = mid.clone().add(outward.multiplyScalar(WALL_HALF_THICK))
       return {
-        half: [len / 2 + HALF_THICK, HEIGHT / 2, HALF_THICK],
-        pos: [center.x, HEIGHT / 2, center.z],
+        half: [len / 2 + WALL_HALF_THICK, WALL_HEIGHT / 2, WALL_HALF_THICK],
+        pos: [center.x, WALL_HEIGHT / 2, center.z],
         rot: [0, angle, 0],
       }
     })
@@ -199,8 +213,7 @@ function BlockBody({
     onGrab(ref.current, e.point.clone())
   }
 
-  const labelY =
-    block.shape === "cylinder" ? block.halfHeight + 0.5 : block.half[1] + 0.5
+  const labelY = block.shape === "cylinder" ? block.halfHeight + 0.5 : block.half[1] + 0.5
 
   return (
     <RigidBody
@@ -216,6 +229,7 @@ function BlockBody({
       density={3}
       linearDamping={0.35}
       angularDamping={0.55}
+      canSleep={false}
       ccd
     >
       {block.shape === "box" ? (
@@ -236,9 +250,7 @@ function BlockBody({
         <>
           <CylinderCollider args={[block.halfHeight, block.radius]} />
           <mesh castShadow receiveShadow onPointerDown={handlePointerDown}>
-            <cylinderGeometry
-              args={[block.radius, block.radius, block.halfHeight * 2, 48]}
-            />
+            <cylinderGeometry args={[block.radius, block.radius, block.halfHeight * 2, 48]} />
             <meshPhysicalMaterial color={block.color} {...WOOD} />
           </mesh>
         </>
@@ -259,6 +271,54 @@ function BlockBody({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Tilt controller – maps device orientation to gravity + light       */
+/* ------------------------------------------------------------------ */
+const G = 18
+
+function TiltController({
+  tiltRef,
+  lightRef,
+}: {
+  tiltRef: React.MutableRefObject<TiltState>
+  lightRef: React.MutableRefObject<THREE.DirectionalLight | null>
+}) {
+  const { world } = useRapier()
+  const cur = useRef({ beta: 0, gamma: 0 })
+
+  useFrame(() => {
+    const t = tiltRef.current
+    const targetBeta = t.enabled ? t.beta : 0
+    const targetGamma = t.enabled ? t.gamma : 0
+
+    // smooth toward the target so motion feels like weight settling, not jitter
+    cur.current.beta += (targetBeta - cur.current.beta) * 0.12
+    cur.current.gamma += (targetGamma - cur.current.gamma) * 0.12
+
+    const b = THREE.MathUtils.clamp(cur.current.beta, -55, 55) * (Math.PI / 180)
+    const g = THREE.MathUtils.clamp(cur.current.gamma, -55, 55) * (Math.PI / 180)
+
+    // gravity tilts with the device: lateral component pours the blocks downhill
+    const gx = Math.sin(g)
+    const gz = Math.sin(b)
+    const gy = -Math.max(Math.cos(b) * Math.cos(g), 0.15)
+    const v = new THREE.Vector3(gx, gy, gz).normalize().multiplyScalar(G)
+
+    if (world) {
+      world.gravity.x = v.x
+      world.gravity.y = v.y
+      world.gravity.z = v.z
+    }
+
+    // the key light swings with the tilt so highlights + shadows shift live
+    if (lightRef.current) {
+      lightRef.current.position.set(2 + gx * 8, 18, 3 + gz * 8)
+    }
+  })
+
+  return null
+}
+
+/* ------------------------------------------------------------------ */
 /*  Scene contents (inside Canvas) – owns drag controller + walls      */
 /* ------------------------------------------------------------------ */
 type DragState = {
@@ -275,14 +335,17 @@ function SceneContents({
   selectedId,
   setSelectedId,
   registerReset,
+  tiltRef,
 }: {
   measureMode: boolean
   selectedId: string | null
   setSelectedId: (id: string | null) => void
   registerReset: (fn: () => void) => void
+  tiltRef: React.MutableRefObject<TiltState>
 }) {
   const { camera, gl, size } = useThree()
   const walls = useFrustumWalls()
+  const lightRef = useRef<THREE.DirectionalLight>(null)
   const bodies = useRef<Record<string, RapierRigidBody | null>>({})
   const drag = useRef<DragState | null>(null)
   const raycaster = useMemo(() => new THREE.Raycaster(), [])
@@ -383,44 +446,48 @@ function SceneContents({
 
   return (
     <>
-      {/* lighting */}
-      <ambientLight intensity={0.45} />
+      {/* lighting – mostly overhead so the box reads cleanly from above */}
+      <ambientLight intensity={0.55} />
       <directionalLight
-        position={[6, 12, 7]}
-        intensity={2.6}
+        ref={lightRef}
+        position={[2, 18, 3]}
+        intensity={2.5}
         castShadow
         shadow-mapSize-width={2048}
         shadow-mapSize-height={2048}
-        shadow-camera-left={-14}
-        shadow-camera-right={14}
-        shadow-camera-top={14}
-        shadow-camera-bottom={-14}
+        shadow-camera-left={-16}
+        shadow-camera-right={16}
+        shadow-camera-top={16}
+        shadow-camera-bottom={-16}
         shadow-bias={-0.0002}
       />
       <Environment preset="apartment" environmentIntensity={0.35} />
 
-      <ContactShadows
-        position={[0, 0.002, 0]}
-        scale={40}
-        far={6}
-        blur={2.4}
-        opacity={0.35}
-        resolution={1024}
-      />
+      <ContactShadows position={[0, 0.002, 0]} scale={40} far={6} blur={2.4} opacity={0.3} resolution={1024} />
 
-      {/* static world: floor + frustum walls */}
+      <TiltController tiltRef={tiltRef} lightRef={lightRef} />
+
+      {/* static world: floor + box walls (colliders) */}
       <RigidBody type="fixed" colliders={false} friction={0.85} restitution={0.08}>
         <CuboidCollider args={[60, 1, 60]} position={[0, -1, 0]} />
         {walls.map((w, i) => (
-          <CuboidCollider key={i} args={w.half} position={w.pos} rotation={w.rot} restitution={0.25} />
+          <CuboidCollider key={i} args={w.half} position={w.pos} rotation={w.rot} restitution={0.2} />
         ))}
       </RigidBody>
 
       {/* visible floor */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
         <planeGeometry args={[120, 120]} />
-        <meshStandardMaterial color="#f3efe7" roughness={0.95} metalness={0} />
+        <meshStandardMaterial color="#f1ece2" roughness={0.95} metalness={0} />
       </mesh>
+
+      {/* visible box walls */}
+      {walls.map((w, i) => (
+        <mesh key={`wall-${i}`} position={w.pos} rotation={w.rot} castShadow receiveShadow>
+          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
+          <meshStandardMaterial color="#d8cfbd" roughness={0.9} metalness={0} />
+        </mesh>
+      ))}
 
       {/* blocks */}
       {BLOCKS.map((b) => (
@@ -437,11 +504,7 @@ function SceneContents({
 
       {/* tap empty space to clear measurement */}
       {measureMode && (
-        <mesh
-          position={[0, -0.5, 0]}
-          rotation={[-Math.PI / 2, 0, 0]}
-          onPointerDown={() => setSelectedId(null)}
-        >
+        <mesh position={[0, -0.5, 0]} rotation={[-Math.PI / 2, 0, 0]} onPointerDown={() => setSelectedId(null)}>
           <planeGeometry args={[200, 200]} />
           <meshBasicMaterial visible={false} />
         </mesh>
@@ -451,14 +514,11 @@ function SceneContents({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Responsive camera – keeps the whole play area framed on any aspect */
-/*  (critical for tall iPhone portrait screens where the horizontal    */
-/*   field of view is far narrower than on desktop).                   */
+/*  Top-down camera – looks straight down into the box, fits any aspect */
 /* ------------------------------------------------------------------ */
-const CAM_FOV = 34
-const CAM_DIR = new THREE.Vector3(0, 20, 16).normalize()
-const TARGET_HALF_WIDTH = 7.5 // world units of content to keep visible across
-const TARGET_HALF_HEIGHT = 6 // world units to keep visible top-to-bottom
+const CAM_FOV = 36
+const TARGET_HALF_X = 4.4 // world units to keep visible across the short axis
+const TARGET_HALF_Z = 4.4 // world units to keep visible across the long axis
 
 function CameraRig() {
   const camera = useThree((s) => s.camera)
@@ -467,15 +527,17 @@ function CameraRig() {
   useEffect(() => {
     const aspect = size.width / size.height
     const halfV = Math.tan((CAM_FOV / 2) * (Math.PI / 180))
-    const distForWidth = TARGET_HALF_WIDTH / (halfV * aspect)
-    const distForHeight = TARGET_HALF_HEIGHT / halfV
-    const dist = Math.max(distForWidth, distForHeight)
+    const distForX = TARGET_HALF_X / (halfV * aspect)
+    const distForZ = TARGET_HALF_Z / halfV
+    const dist = Math.max(distForX, distForZ) + 0.5
 
-    camera.position.copy(CAM_DIR.clone().multiplyScalar(dist))
-    camera.lookAt(0, 0, 0)
-    ;(camera as THREE.PerspectiveCamera).fov = CAM_FOV
-    ;(camera as THREE.PerspectiveCamera).aspect = aspect
-    camera.updateProjectionMatrix()
+    const cam = camera as THREE.PerspectiveCamera
+    cam.up.set(0, 0, -1) // screen-up maps to -z
+    cam.position.set(0, dist, 0)
+    cam.lookAt(0, 0, 0)
+    cam.fov = CAM_FOV
+    cam.aspect = aspect
+    cam.updateProjectionMatrix()
   }, [camera, size])
 
   return null
@@ -487,7 +549,42 @@ function CameraRig() {
 export default function WoodenBlocks() {
   const [measureMode, setMeasureMode] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [tiltOn, setTiltOn] = useState(false)
   const resetRef = useRef<() => void>(() => {})
+  const tiltRef = useRef<TiltState>({ enabled: false, beta: 0, gamma: 0 })
+
+  const onOrient = useCallback((e: DeviceOrientationEvent) => {
+    tiltRef.current.beta = e.beta ?? 0
+    tiltRef.current.gamma = e.gamma ?? 0
+  }, [])
+
+  useEffect(() => {
+    return () => window.removeEventListener("deviceorientation", onOrient)
+  }, [onOrient])
+
+  const toggleTilt = useCallback(async () => {
+    if (tiltOn) {
+      window.removeEventListener("deviceorientation", onOrient)
+      tiltRef.current.enabled = false
+      setTiltOn(false)
+      return
+    }
+
+    // iOS 13+ requires an explicit permission request from a user gesture
+    const DOE = window.DeviceOrientationEvent as any
+    try {
+      if (DOE && typeof DOE.requestPermission === "function") {
+        const res = await DOE.requestPermission()
+        if (res !== "granted") return
+      }
+    } catch {
+      return
+    }
+
+    window.addEventListener("deviceorientation", onOrient)
+    tiltRef.current.enabled = true
+    setTiltOn(true)
+  }, [tiltOn, onOrient])
 
   return (
     <div className="relative h-dvh w-full overflow-hidden bg-[#f6f2ea]">
@@ -495,7 +592,7 @@ export default function WoodenBlocks() {
         shadows
         dpr={[1, 2]}
         gl={{ antialias: true, preserveDrawingBuffer: false }}
-        camera={{ position: [0, 20, 16], fov: 34, near: 0.1, far: 200 }}
+        camera={{ position: [0, 30, 0], fov: CAM_FOV, near: 0.1, far: 200 }}
         onCreated={({ gl }) => {
           gl.toneMapping = THREE.ACESFilmicToneMapping
           gl.toneMappingExposure = 1.05
@@ -505,18 +602,32 @@ export default function WoodenBlocks() {
       >
         <color attach="background" args={["#f6f2ea"]} />
         <CameraRig />
-        <Physics gravity={[0, -16, 0]} timeStep={1 / 120} interpolate>
+        <Physics gravity={[0, -G, 0]} timeStep={1 / 120} interpolate>
           <SceneContents
             measureMode={measureMode}
             selectedId={selectedId}
             setSelectedId={setSelectedId}
             registerReset={(fn) => (resetRef.current = fn)}
+            tiltRef={tiltRef}
           />
         </Physics>
       </Canvas>
 
       {/* UI */}
       <div className="pointer-events-none absolute bottom-7 right-7 z-10 flex flex-col gap-3">
+        <button
+          type="button"
+          aria-label="Tilt to control gravity"
+          aria-pressed={tiltOn}
+          onClick={toggleTilt}
+          className={`pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full transition ${
+            tiltOn
+              ? "bg-foreground text-background opacity-100 shadow-md"
+              : "text-foreground opacity-40 hover:opacity-90"
+          }`}
+        >
+          <Smartphone className="h-5 w-5" strokeWidth={2.4} />
+        </button>
         <button
           type="button"
           aria-label="Measure"
@@ -547,7 +658,11 @@ export default function WoodenBlocks() {
       </div>
 
       <p className="pointer-events-none absolute left-1/2 top-6 z-10 -translate-x-1/2 text-balance text-center text-xs font-medium text-foreground/45">
-        {measureMode ? "Tap a block to see its size" : "Drag to slide · flick to throw"}
+        {measureMode
+          ? "Tap a block to see its size"
+          : tiltOn
+            ? "Tilt your phone to pour the blocks"
+            : "Drag to slide · flick to throw · tap the phone icon to tilt"}
       </p>
     </div>
   )
