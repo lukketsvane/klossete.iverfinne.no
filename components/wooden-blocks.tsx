@@ -14,7 +14,7 @@ import {
   type RapierRigidBody,
 } from "@react-three/rapier"
 import * as THREE from "three"
-import { Layers, RotateCcw, Ruler, Smartphone, Volume2, VolumeX } from "lucide-react"
+import { Layers, Smartphone, Volume2, VolumeX } from "lucide-react"
 import { playImpact, primeBlocks, setMuted, unlockAudio } from "@/lib/impact-sound"
 
 /* ------------------------------------------------------------------ */
@@ -499,7 +499,7 @@ const ENVIRONMENTS: EnvConfig[] = [
     name: "Glass blocks",
     bg: "#eef2f6",
     keyColor: "#ffffff",
-    keyIntensity: 2.0,
+    keyIntensity: 2.7,
     contact: { color: "#3a4452", opacity: 0.28 },
     bloom: true,
     reactive: true, // each glass tile lights up where a block strikes it
@@ -759,8 +759,8 @@ type RoomProps = {
   roughMap: THREE.Texture
 }
 
-// glass floor is tiled into ~1.2-unit bricks; the reactive glow snaps to this grid
-const GLASS_FLOOR_REPEAT = 96
+// glass floor is tiled into chunky ~1.9-unit bricks; the glow snaps to this grid
+const GLASS_FLOOR_REPEAT = 64
 const GLASS_TILE = FLOOR / GLASS_FLOOR_REPEAT
 
 function Room(props: RoomProps) {
@@ -897,16 +897,14 @@ function VideoRoom({ box, visibleWalls }: RoomProps) {
       {tex && (
         <>
           {/* floor screen – fitted to the visible tray so the clip fills the ground */}
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} material={crt}>
             <planeGeometry args={[fw, fd]} />
-            <meshBasicMaterial map={tex} toneMapped={false} />
           </mesh>
 
           {/* each wall is a screen too */}
           {visibleWalls.map((w, i) => (
-            <mesh key={`wall-${i}`} position={w.pos}>
+            <mesh key={`wall-${i}`} position={w.pos} material={crt}>
               <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
-              <meshBasicMaterial map={tex} toneMapped={false} />
             </mesh>
           ))}
         </>
@@ -1037,8 +1035,9 @@ function GoldRoom({ visibleWalls }: RoomProps) {
 
 // 3 — backlit frosted glass-block room: pillowed bricks glowing from within.
 function GlassRoom({ visibleWalls }: RoomProps) {
-  const brickN = useMemo(() => makeBrickNormalTexture(), [])
-  const brickGlow = useMemo(() => makeBrickGlowTexture(), [])
+  // deep, rounded bevels = chunky glass bricks with glossy edges that catch light
+  const brickN = useMemo(() => makeBrickNormalTexture(256, 0.28, 3.4), [])
+  const brickGlow = useMemo(() => makeBrickGlowTexture(256, 0.28), [])
   const floorN = useMemo(() => {
     const t = brickN.clone()
     t.repeat.set(GLASS_FLOOR_REPEAT, GLASS_FLOOR_REPEAT)
@@ -1053,38 +1052,41 @@ function GlassRoom({ visibleWalls }: RoomProps) {
   }, [brickGlow])
   const wallN = useMemo(() => {
     const t = brickN.clone()
-    t.repeat.set(14, 5)
+    t.repeat.set(9, 3)
     t.needsUpdate = true
     return t
   }, [brickN])
   const wallGlow = useMemo(() => {
     const t = brickGlow.clone()
-    t.repeat.set(14, 5)
+    t.repeat.set(9, 3)
     t.needsUpdate = true
     return t
   }, [brickGlow])
 
   return (
     <>
-      <ambientLight intensity={0.4} color="#eef4ff" />
-      <hemisphereLight intensity={0.3} color="#ffffff" groundColor="#aebccc" />
-      {/* glow from behind the floor so the frosted bricks read as backlit */}
-      <pointLight position={[0, -3, 0]} intensity={26} distance={26} decay={2} color="#ffffff" />
-      <pointLight position={[0, 6, 0]} intensity={10} distance={24} decay={2} color="#eef4ff" />
+      <ambientLight intensity={0.55} color="#eef4ff" />
+      <hemisphereLight intensity={0.4} color="#ffffff" groundColor="#aebccc" />
+      {/* bright glow from behind the floor so the frosted bricks read as backlit */}
+      <pointLight position={[0, -2.5, 0]} intensity={30} distance={26} decay={2} color="#ffffff" />
+      {/* raking fills so the deep bevels pick up glossy highlights */}
+      <pointLight position={[-4, 7, -3]} intensity={16} distance={26} decay={2} color="#eef6ff" />
+      <pointLight position={[4, 7, 3]} intensity={12} distance={26} decay={2} color="#eef6ff" />
 
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
         <planeGeometry args={[FLOOR, FLOOR]} />
         <meshPhysicalMaterial
-          color="#dbe6f0"
-          roughness={0.14}
+          color="#e9f0f7"
+          roughness={0.2}
           metalness={0}
           clearcoat={1}
-          clearcoatRoughness={0.22}
+          clearcoatRoughness={0.05}
+          reflectivity={0.6}
           normalMap={floorN}
-          normalScale={new THREE.Vector2(1.3, 1.3)}
-          emissive="#cfe0f0"
+          normalScale={new THREE.Vector2(1.9, 1.9)}
+          emissive="#d4e4f2"
           emissiveMap={floorGlow}
-          emissiveIntensity={0.35}
+          emissiveIntensity={0.32}
         />
       </mesh>
 
@@ -1092,16 +1094,17 @@ function GlassRoom({ visibleWalls }: RoomProps) {
         <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
           <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
           <meshPhysicalMaterial
-            color="#dbe6f0"
-            roughness={0.18}
+            color="#e9f0f7"
+            roughness={0.24}
             metalness={0}
             clearcoat={1}
-            clearcoatRoughness={0.3}
+            clearcoatRoughness={0.08}
+            reflectivity={0.6}
             normalMap={wallN}
-            normalScale={new THREE.Vector2(1.0, 1.0)}
+            normalScale={new THREE.Vector2(1.6, 1.6)}
             emissive="#dceaf6"
             emissiveMap={wallGlow}
-            emissiveIntensity={0.55}
+            emissiveIntensity={0.5}
           />
         </mesh>
       ))}
@@ -1521,8 +1524,8 @@ function SceneContents({
         intensity={env.keyIntensity}
         color={env.keyColor}
         castShadow
-        shadow-mapSize-width={4096}
-        shadow-mapSize-height={4096}
+        shadow-mapSize-width={2048}
+        shadow-mapSize-height={2048}
         shadow-camera-near={1}
         shadow-camera-far={70}
         shadow-camera-left={-shadowSpan}
@@ -1792,8 +1795,8 @@ export default function WoodenBlocks() {
     >
       <Canvas
         shadows
-        dpr={[1, 2]}
-        gl={{ antialias: true, preserveDrawingBuffer: false }}
+        dpr={[1, 1.75]}
+        gl={{ antialias: true, preserveDrawingBuffer: false, powerPreference: "high-performance" }}
         camera={{ position: [0, 30, 0], fov: CAM_FOV, near: 0.1, far: 200 }}
         onCreated={({ gl }) => {
           // tone mapping is handled by the post-processing ToneMapping effect
@@ -1892,33 +1895,6 @@ export default function WoodenBlocks() {
           <span ref={iconRef} className="flex items-center justify-center [transform-style:preserve-3d]">
             <Smartphone className="h-5 w-5" strokeWidth={2.4} />
           </span>
-        </button>
-        <button
-          type="button"
-          aria-label="Measure"
-          aria-pressed={measureMode}
-          onClick={() => {
-            setMeasureMode((m) => !m)
-            setSelectedId(null)
-          }}
-          className={`pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full transition ${
-            measureMode
-              ? "bg-foreground text-background opacity-100 shadow-md"
-              : "opacity-40 hover:opacity-90"
-          }`}
-        >
-          <Ruler className="h-5 w-5" strokeWidth={2.4} />
-        </button>
-        <button
-          type="button"
-          aria-label="Reset blocks"
-          onClick={() => {
-            setSelectedId(null)
-            resetRef.current()
-          }}
-          className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full opacity-40 transition hover:opacity-90"
-        >
-          <RotateCcw className="h-5 w-5" strokeWidth={2.4} />
         </button>
       </div>
 
