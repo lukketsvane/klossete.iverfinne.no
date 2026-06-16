@@ -226,9 +226,13 @@ function blockBaseFreq(b: Block) {
 function BlockMesh({
   block,
   onPointerDown,
+  flat = false,
+  revealRef,
 }: {
   block: Block
   onPointerDown: (e: any) => void
+  flat?: boolean // projection room: render colourless until solved
+  revealRef?: React.MutableRefObject<boolean>
 }) {
   const gltf = useGLTF(block.mesh.url)
   const model = useMemo(() => {
@@ -241,6 +245,31 @@ function BlockMesh({
     })
     return clone
   }, [gltf.scene])
+
+  // Original materials + a flat dark "colourless" stand-in for the projection room.
+  const originals = useMemo(() => {
+    const map = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>()
+    model.traverse((o) => {
+      const m = o as THREE.Mesh
+      if (m.isMesh) map.set(m, m.material)
+    })
+    return map
+  }, [model])
+  const flatMat = useMemo(
+    () => new THREE.MeshStandardMaterial({ color: "#2f323a", roughness: 1, metalness: 0 }),
+    [],
+  )
+  const state = useRef<"flat" | "real" | null>(null)
+  useFrame(() => {
+    const want = flat && !revealRef?.current ? "flat" : "real"
+    if (want === state.current) return
+    state.current = want
+    model.traverse((o) => {
+      const m = o as THREE.Mesh
+      if (!m.isMesh) return
+      m.material = want === "flat" ? flatMat : originals.get(m) ?? m.material
+    })
+  })
 
   return (
     <group onPointerDown={onPointerDown} scale={MESH_FIT}>
@@ -259,6 +288,8 @@ function BlockBody({
   onImpact,
   knock,
   showAfterimage,
+  flat,
+  revealRef,
   measureMode,
   selected,
   onSelect,
@@ -269,6 +300,8 @@ function BlockBody({
   onImpact: (x: number, z: number, strength: number) => void
   knock: boolean // play the wooden clack? (off in the music-tile env)
   showAfterimage: boolean
+  flat?: boolean // projection room: colourless until solved
+  revealRef?: React.MutableRefObject<boolean>
   measureMode: boolean
   selected: boolean
   onSelect: (id: string) => void
@@ -334,12 +367,12 @@ function BlockBody({
       {block.shape === "box" ? (
         <>
           <CuboidCollider args={block.half} />
-          <BlockMesh block={block} onPointerDown={handlePointerDown} />
+          <BlockMesh block={block} onPointerDown={handlePointerDown} flat={flat} revealRef={revealRef} />
         </>
       ) : (
         <>
           <CylinderCollider args={[block.halfHeight, block.radius]} />
-          <BlockMesh block={block} onPointerDown={handlePointerDown} />
+          <BlockMesh block={block} onPointerDown={handlePointerDown} flat={flat} revealRef={revealRef} />
         </>
       )}
 
@@ -473,7 +506,17 @@ function makeBrickGlowTexture(size = 256, bevel = 0.16): THREE.DataTexture {
 /*  Environments – cycle with number keys 1-9 (desktop) or a two-finger */
 /*  tap-and-hold (touch). Each swaps the room materials + lighting mood. */
 /* ------------------------------------------------------------------ */
-type EnvKind = "concrete" | "gold" | "glass" | "playmat" | "video" | "peel" | "texturemiss" | "fourthside" | "klossete"
+type EnvKind =
+  | "concrete"
+  | "gold"
+  | "glass"
+  | "playmat"
+  | "video"
+  | "peel"
+  | "texturemiss"
+  | "fourthside"
+  | "klossete"
+  | "projection"
 type EnvConfig = {
   id: EnvKind
   name: string
@@ -485,6 +528,8 @@ type EnvConfig = {
   reactive?: boolean // tiles flash with light where a block hits (brightness ~ force)
   fourthSide?: boolean // wraps each block in glowing wireframe "4D" shells
   puzzle?: boolean // sort each block onto its zone -> they blink "KLOSSETE" in Morse
+  projection?: boolean // shapes are flat/colourless until their floor projections
+  // are arranged onto the target outline – then the 3D forms appear in colour
 }
 const ENVIRONMENTS: EnvConfig[] = [
   {
@@ -570,6 +615,16 @@ const ENVIRONMENTS: EnvConfig[] = [
     contact: { color: "#000000", opacity: 0.4 },
     bloom: true, // the win flash blooms like real lightbulbs
     puzzle: true,
+  },
+  {
+    id: "projection",
+    name: "Projection",
+    bg: "#0a0b0e",
+    keyColor: "#ffffff",
+    keyIntensity: 1.2,
+    contact: { color: "#000000", opacity: 0.0 }, // the only "shadow" is the colour projection
+    bloom: true, // the reveal flash blooms
+    projection: true,
   },
 ]
 
@@ -902,6 +957,7 @@ function Room(props: RoomProps) {
   if (props.env.id === "texturemiss") return <TextureMissRoom {...props} />
   if (props.env.id === "fourthside") return <FourthRoom {...props} />
   if (props.env.id === "klossete") return <KlosseRoom {...props} />
+  if (props.env.id === "projection") return <ProjectionRoom {...props} />
   return <ConcreteRoom {...props} />
 }
 
@@ -1076,6 +1132,174 @@ function PuzzleController({
           <mesh scale={Math.max(z.hx, z.hz, z.radius) * 2.4}>
             <sphereGeometry args={[1, 16, 16]} />
             <meshBasicMaterial color="#fffdf2" transparent opacity={0} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
+          </mesh>
+        </group>
+      ))}
+    </>
+  )
+}
+
+/* ---- projection puzzle: flat colour projections + a target shape ---- */
+function projectionTargets(box: Box): Zone[] {
+  // the five targets form a plus / star – the "certain shape"
+  const layout: { id: string; nx: number; nz: number }[] = [
+    { id: "plank-long", nx: 0, nz: 0 },
+    { id: "cube", nx: 0, nz: -0.62 },
+    { id: "cylinder", nx: 0, nz: 0.62 },
+    { id: "orange", nx: -0.55, nz: 0 },
+    { id: "plank-short", nx: 0.55, nz: 0 },
+  ]
+  return layout.flatMap((L) => {
+    const b = BLOCKS.find((bb) => bb.id === L.id)
+    if (!b) return []
+    const isCyl = b.shape === "cylinder"
+    const hx = isCyl ? b.radius : b.half[0]
+    const hz = isCyl ? b.radius : b.half[2]
+    const restY = isCyl ? b.halfHeight : b.half[1]
+    return [
+      {
+        id: L.id,
+        color: b.color,
+        shape: b.shape,
+        x: L.nx * box.bx,
+        z: L.nz * box.bz,
+        hx,
+        hz,
+        radius: isCyl ? b.radius : 0,
+        restY,
+        tolX: hx + 0.6,
+        tolZ: hz + 0.6,
+      } satisfies Zone,
+    ]
+  })
+}
+
+// 10 — Projection room: the 3D shapes are flat and colourless; you only see
+// their colour as a flat projection on the dark floor. Slide the projections
+// onto the target outline (a plus/star) and the 3D forms appear in colour.
+function ProjectionRoom({ box, visibleWalls }: RoomProps) {
+  const targets = useMemo(() => projectionTargets(box), [box.bx, box.bz])
+  return (
+    <>
+      <ambientLight intensity={0.34} color="#aab2c4" />
+      <directionalLight position={[-6, 18, -5]} intensity={0.7} color="#ffffff" />
+
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
+        <planeGeometry args={[box.bx * 2, box.bz * 2]} />
+        <meshStandardMaterial color="#101218" roughness={0.96} metalness={0} />
+      </mesh>
+
+      {/* the target outline the projections must be arranged onto */}
+      {targets.map((z) => (
+        <group key={z.id} position={[z.x, 0.014, z.z]} rotation={[-Math.PI / 2, 0, 0]}>
+          <lineSegments>
+            <edgesGeometry
+              args={[
+                z.shape === "cylinder"
+                  ? new THREE.CircleGeometry(z.radius + 0.1, 40)
+                  : new THREE.PlaneGeometry((z.hx + 0.1) * 2, (z.hz + 0.1) * 2),
+              ]}
+            />
+            <lineBasicMaterial color="#8294b4" transparent opacity={0.85} toneMapped={false} />
+          </lineSegments>
+        </group>
+      ))}
+
+      {visibleWalls.map((w, i) => (
+        <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
+          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
+          <meshStandardMaterial color="#15171d" roughness={0.92} metalness={0} />
+        </mesh>
+      ))}
+    </>
+  )
+}
+
+// Live colour projections under each block + solve detection + the reveal flash.
+function ProjectionController({
+  bodies,
+  box,
+  revealRef,
+}: {
+  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  box: Box
+  revealRef: React.MutableRefObject<boolean>
+}) {
+  const targets = useMemo(() => projectionTargets(box), [box.bx, box.bz])
+  const groups = useRef<(THREE.Group | null)[]>([])
+  const dwell = useRef(0)
+  const flash = useRef<THREE.PointLight>(null)
+  const flashT = useRef(0)
+
+  useEffect(() => () => {
+    revealRef.current = false
+  }, [revealRef])
+
+  useFrame((_s, dt) => {
+    // slide each colour projection to sit directly under its (colourless) block
+    targets.forEach((z, i) => {
+      const g = groups.current[i]
+      const body = bodies.current[z.id]
+      if (!g || !body) return
+      const t = body.translation()
+      const r = body.rotation()
+      const yaw = Math.atan2(2 * (r.w * r.y + r.x * r.z), 1 - 2 * (r.y * r.y + r.z * r.z))
+      g.position.set(t.x, 0.02, t.z)
+      g.rotation.set(-Math.PI / 2, 0, -yaw)
+    })
+
+    if (!revealRef.current) {
+      let all = true
+      for (const z of targets) {
+        const body = bodies.current[z.id]
+        if (!body) {
+          all = false
+          break
+        }
+        const t = body.translation()
+        const lv = body.linvel()
+        const placed =
+          Math.abs(t.x - z.x) < z.tolX &&
+          Math.abs(t.z - z.z) < z.tolZ &&
+          Math.hypot(lv.x, lv.y, lv.z) < 1.3
+        if (!placed) {
+          all = false
+          break
+        }
+      }
+      if (all) {
+        dwell.current += dt
+        if (dwell.current > 0.5) {
+          revealRef.current = true
+          flashT.current = 1
+        }
+      } else {
+        dwell.current = 0
+      }
+    }
+
+    flashT.current = Math.max(0, flashT.current - dt * 0.8)
+    if (flash.current) flash.current.intensity = flashT.current * 70
+  })
+
+  return (
+    <>
+      <pointLight ref={flash} position={[0, 6, 0]} distance={44} decay={2} color="#ffffff" intensity={0} />
+      {targets.map((z, i) => (
+        <group
+          key={z.id}
+          ref={(el) => {
+            groups.current[i] = el
+          }}
+          rotation={[-Math.PI / 2, 0, 0]}
+        >
+          <mesh>
+            {z.shape === "cylinder" ? (
+              <circleGeometry args={[z.radius, 40]} />
+            ) : (
+              <planeGeometry args={[z.hx * 2, z.hz * 2]} />
+            )}
+            <meshBasicMaterial color={z.color} transparent opacity={0.92} toneMapped={false} />
           </mesh>
         </group>
       ))}
@@ -1778,6 +2002,10 @@ function SceneContents({
   const bodies = useRef<Record<string, RapierRigidBody | null>>({})
   const drag = useRef<DragState | null>(null)
   const puzzleLock = useRef(false) // blocks become impervious during the win celebration
+  const revealRef = useRef(false) // projection room: solved -> 3D forms appear in colour
+  useEffect(() => {
+    revealRef.current = false // reset the reveal when the environment changes
+  }, [env.id])
   const lightDragging = useRef(false)
   const pointerNdc = useRef(new THREE.Vector2())
   const raycaster = useMemo(() => new THREE.Raycaster(), [])
@@ -2162,6 +2390,9 @@ function SceneContents({
       {/* klossete sorting puzzle: win detection + Morse lightbulb celebration */}
       {env.puzzle && <PuzzleController bodies={bodies} box={box} lockRef={puzzleLock} />}
 
+      {/* projection puzzle: colour projections under the colourless blocks */}
+      {env.projection && <ProjectionController bodies={bodies} box={box} revealRef={revealRef} />}
+
       {/* blocks */}
       {BLOCKS.map((b) => (
         <BlockBody
@@ -2172,6 +2403,8 @@ function SceneContents({
           onImpact={onBlockImpact}
           knock={!reactive}
           showAfterimage={env.fourthSide === true}
+          flat={env.projection === true}
+          revealRef={revealRef}
           measureMode={measureMode}
           selected={selectedId === b.id}
           onSelect={(id) => setSelectedId(id)}
