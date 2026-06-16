@@ -305,24 +305,45 @@ function TiltController({
 }) {
   const { world } = useRapier()
   const cur = useRef({ beta: 0, gamma: 0 })
+  // Self-calibrated "down the screen" direction in the device's native in-plane
+  // basis (right, down). Device/OS orientation reporting is unreliable across
+  // phones and iPads, so instead of trusting screen.orientation.angle we learn
+  // which way is down from where gravity actually pulls when tilt is engaged.
+  const down = useRef<{ x: number; y: number } | null>(null)
 
   useFrame(() => {
     const t = tiltRef.current
-    const targetBeta = t.enabled ? t.beta : 0
-    const targetGamma = t.enabled ? t.gamma : 0
+    if (!t.enabled) down.current = null
 
     // smooth toward the target so motion feels like weight settling, not jitter
-    cur.current.beta += (targetBeta - cur.current.beta) * 0.12
-    cur.current.gamma += (targetGamma - cur.current.gamma) * 0.12
+    cur.current.beta += ((t.enabled ? t.beta : 0) - cur.current.beta) * 0.12
+    cur.current.gamma += ((t.enabled ? t.gamma : 0) - cur.current.gamma) * 0.12
 
-    const b = THREE.MathUtils.clamp(cur.current.beta, -55, 55) * (Math.PI / 180)
-    const g = THREE.MathUtils.clamp(cur.current.gamma, -55, 55) * (Math.PI / 180)
+    const b = THREE.MathUtils.clamp(cur.current.beta, -70, 70) * (Math.PI / 180)
+    const g = THREE.MathUtils.clamp(cur.current.gamma, -70, 70) * (Math.PI / 180)
 
-    // gravity tilts with the device: lateral component pours the blocks downhill
-    const gx = Math.sin(g)
-    const gz = Math.sin(b)
-    const gy = -Math.max(Math.cos(b) * Math.cos(g), 0.15)
-    const v = new THREE.Vector3(gx, gy, gz).normalize().multiplyScalar(G)
+    // In-plane component of real gravity, in the device-native (right, down) basis.
+    const inRight = Math.sin(g)
+    const inDown = Math.sin(b)
+    const mag = Math.hypot(inRight, inDown)
+
+    // Lock in "down" the first time the device is meaningfully tilted after
+    // enabling: whatever way gravity pulls on screen right now becomes down.
+    if (t.enabled && !down.current && mag > 0.18) {
+      down.current = { x: inRight / mag, y: inDown / mag }
+    }
+
+    let sRight = 0
+    let sDown = 0
+    if (down.current) {
+      const { x: dx, y: dy } = down.current
+      sDown = inRight * dx + inDown * dy // along calibrated down
+      sRight = inRight * dy - inDown * dx // along screen-right (perp of down)
+    }
+
+    // keep a little pull into the tray so blocks never ride up over the walls
+    const gy = -Math.max(Math.cos(b) * Math.cos(g), 0.18)
+    const v = new THREE.Vector3(sRight, gy, sDown).normalize().multiplyScalar(G)
 
     if (world) {
       world.gravity.x = v.x
@@ -332,7 +353,7 @@ function TiltController({
 
     // the key light swings with the tilt so highlights + shadows shift live
     if (lightRef.current) {
-      lightRef.current.position.set(2 + gx * 8, 18, 3 + gz * 8)
+      lightRef.current.position.set(2 + sRight * 8, 18, 3 + sDown * 8)
     }
   })
 
