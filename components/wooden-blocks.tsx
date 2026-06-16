@@ -32,7 +32,7 @@ type TiltState = {
 /* ------------------------------------------------------------------ */
 /*  Block catalogue – sizes are real millimetres scaled to scene units */
 /* ------------------------------------------------------------------ */
-const S = 0.07 // 1 mm -> scene units
+const S = 0.035 // 1 mm -> scene units (blocks kept small relative to the tray)
 
 type BoxBlock = {
   id: string
@@ -67,7 +67,7 @@ const BLOCKS: Block[] = [
     shape: "box",
     half: [(30 * S) / 2, (30 * S) / 2, (30 * S) / 2],
     dims: "30 × 30 × 30 mm",
-    pos: [-2.3, (30 * S) / 2 + REST, -4.6],
+    pos: [-1.15, (30 * S) / 2 + REST, -2.3],
   },
   {
     id: "orange",
@@ -77,7 +77,7 @@ const BLOCKS: Block[] = [
     // 45 × 45 × 24, lying so the 24 mm dimension is the height
     half: [(45 * S) / 2, (24 * S) / 2, (45 * S) / 2],
     dims: "45 × 45 × 24 mm",
-    pos: [-1.3, (24 * S) / 2 + REST, 0.4],
+    pos: [-0.65, (24 * S) / 2 + REST, 0.2],
   },
   {
     id: "plank-long",
@@ -87,7 +87,7 @@ const BLOCKS: Block[] = [
     // 75 × 30 × 15, lying flat (75 along x, 30 along z, 15 high)
     half: [(75 * S) / 2, (15 * S) / 2, (30 * S) / 2],
     dims: "75 × 30 × 15 mm",
-    pos: [0.3, (15 * S) / 2 + REST, 5],
+    pos: [0.15, (15 * S) / 2 + REST, 2.5],
   },
   {
     id: "plank-short",
@@ -97,7 +97,7 @@ const BLOCKS: Block[] = [
     // 60 × 30 × 15, lying flat (60 along z, 30 along x, 15 high)
     half: [(30 * S) / 2, (15 * S) / 2, (60 * S) / 2],
     dims: "60 × 30 × 15 mm",
-    pos: [2, (15 * S) / 2 + REST, -2.3],
+    pos: [1, (15 * S) / 2 + REST, -1.15],
   },
   {
     id: "cylinder",
@@ -107,7 +107,7 @@ const BLOCKS: Block[] = [
     radius: (30 * S) / 2,
     halfHeight: (60 * S) / 2,
     dims: "Ø 30 mm · H 60 mm",
-    pos: [1.9, (60 * S) / 2 + REST, 3],
+    pos: [0.95, (60 * S) / 2 + REST, 1.5],
   },
 ]
 
@@ -224,11 +224,15 @@ function BlockBody({
       position={block.pos}
       rotation={block.rot}
       colliders={false}
-      friction={0.85}
-      restitution={0.04}
-      density={3}
-      linearDamping={0.35}
-      angularDamping={0.55}
+      // hardwood feel: grippy wood-on-wood friction, a small hard clack of
+      // restitution, and a uniform dense-hardwood density so mass scales with
+      // volume (the cylinder lands heavier than the little cube). Low damping
+      // keeps them lively rather than floating through air.
+      friction={0.6}
+      restitution={0.16}
+      density={6}
+      linearDamping={0.05}
+      angularDamping={0.18}
       canSleep={false}
       ccd
     >
@@ -273,7 +277,9 @@ function BlockBody({
 /* ------------------------------------------------------------------ */
 /*  Tilt controller – maps device orientation to gravity + light       */
 /* ------------------------------------------------------------------ */
-const G = 18
+// Stronger-than-default gravity so the now-smaller blocks read as heavy solid
+// wood that drops and settles quickly instead of drifting down.
+const G = 28
 
 function TiltController({
   tiltRef,
@@ -468,7 +474,7 @@ function SceneContents({
       <TiltController tiltRef={tiltRef} lightRef={lightRef} />
 
       {/* static world: floor + box walls (colliders) */}
-      <RigidBody type="fixed" colliders={false} friction={0.85} restitution={0.08}>
+      <RigidBody type="fixed" colliders={false} friction={0.6} restitution={0.12}>
         <CuboidCollider args={[60, 1, 60]} position={[0, -1, 0]} />
         {walls.map((w, i) => (
           <CuboidCollider key={i} args={w.half} position={w.pos} rotation={w.rot} restitution={0.2} />
