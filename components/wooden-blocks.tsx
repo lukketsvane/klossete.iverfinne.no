@@ -521,6 +521,7 @@ type EnvKind =
   | "fourthside"
   | "klossete"
   | "projection"
+  | "magnet"
 type EnvConfig = {
   id: EnvKind
   name: string
@@ -534,6 +535,7 @@ type EnvConfig = {
   puzzle?: boolean // sort each block onto its zone -> they blink "KLOSSETE" in Morse
   projection?: boolean // shapes are flat/colourless until their floor projections
   // are arranged onto the target outline – then the 3D forms appear in colour
+  magnet?: boolean // zero-g: pieces gently magnet-snap (each to one partner) into a totem
 }
 const ENVIRONMENTS: EnvConfig[] = [
   {
@@ -629,6 +631,16 @@ const ENVIRONMENTS: EnvConfig[] = [
     contact: { color: "#000000", opacity: 0.0 }, // the only "shadow" is the colour projection
     bloom: true, // the reveal flash blooms
     projection: true,
+  },
+  {
+    id: "magnet",
+    name: "Magnets",
+    bg: "#05060c",
+    keyColor: "#dfe9ff",
+    keyIntensity: 1.7,
+    contact: { color: "#000000", opacity: 0.0 }, // floating in space – no floor shadow
+    bloom: true, // the magnetic tethers + solve flash glow
+    magnet: true,
   },
 ]
 
@@ -762,8 +774,10 @@ function ImpactGlows({
 
 function TiltController({
   tiltRef,
+  zeroG = false,
 }: {
   tiltRef: React.MutableRefObject<TiltState>
+  zeroG?: boolean
 }) {
   const { world } = useRapier()
   const cur = useRef({ beta: 0, gamma: 0 })
@@ -774,6 +788,15 @@ function TiltController({
   const down = useRef<{ x: number; y: number } | null>(null)
 
   useFrame(() => {
+    // zero-gravity environments (the magnet/totem room) float freely
+    if (zeroG) {
+      if (world) {
+        world.gravity.x = 0
+        world.gravity.y = 0
+        world.gravity.z = 0
+      }
+      return
+    }
     const t = tiltRef.current
     if (!t.enabled) down.current = null
 
@@ -961,6 +984,7 @@ function Room(props: RoomProps) {
   if (props.env.id === "fourthside") return <FourthRoom {...props} />
   if (props.env.id === "klossete") return <KlosseRoom {...props} />
   if (props.env.id === "projection") return <ProjectionRoom {...props} />
+  if (props.env.id === "magnet") return <MagnetRoom />
   return <ConcreteRoom {...props} />
 }
 
@@ -1319,6 +1343,180 @@ function ProjectionController({
           </mesh>
         </group>
       ))}
+    </>
+  )
+}
+
+/* ---- magnet totem: each piece snaps to ONE partner, building a figure ---- */
+// A small graph: every piece (except the root body) has exactly one partner it
+// snaps to, with a relative pose. Snapped together they read as a little figure:
+// head over body, an arm to the side, legs under the body, a base under the legs.
+type Link = {
+  id: string
+  parent: string
+  off: [number, number, number] // target offset from the parent (parent-local)
+  rot: [number, number, number] // target orientation relative to the parent (euler)
+}
+const TOTEM_ROOT = "orange" // the body – the seed everything else gathers around
+const TOTEM_LINKS: Link[] = [
+  { id: "cube", parent: "orange", off: [0, 0, -1.7], rot: [0, 0, 0] }, // head, above
+  { id: "cylinder", parent: "orange", off: [1.75, 0, 0.05], rot: [0, 0, Math.PI / 2] }, // arm, right (lying)
+  { id: "plank-short", parent: "orange", off: [0, 0, 2.2], rot: [0, 0, 0] }, // legs, below (upright)
+  { id: "plank-long", parent: "plank-short", off: [0, 0, 2.0], rot: [0, Math.PI / 2, 0] }, // base, bottom (across)
+]
+const SNAP_RADIUS = 2.0 // a piece starts feeling its partner within this distance
+const CONNECT_DIST = 0.55 // considered "snapped" (counts toward the solve) within this
+const MAG_PULL = 6 // proximity error -> gentle velocity toward the snap pose
+const MAG_RESPONSE = 0.16 // how fast that velocity is applied (low = soft, not forcible)
+
+function MagnetController({
+  bodies,
+  dragRef,
+  revealRef,
+}: {
+  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  dragRef: React.MutableRefObject<DragState | null>
+  revealRef: React.MutableRefObject<boolean>
+}) {
+  // glowing dashed tether per link, built imperatively (avoids the JSX <line>
+  // clashing with the SVG line element)
+  const lines = useMemo(
+    () =>
+      TOTEM_LINKS.map(() => {
+        const geom = new THREE.BufferGeometry()
+        geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3))
+        const mat = new THREE.LineDashedMaterial({
+          color: "#7fb4ff",
+          transparent: true,
+          opacity: 0.6,
+          dashSize: 0.12,
+          gapSize: 0.12,
+          toneMapped: false,
+        })
+        const line = new THREE.Line(geom, mat)
+        line.visible = false
+        line.frustumCulled = false
+        return line
+      }),
+    [],
+  )
+  const flash = useRef<THREE.PointLight>(null)
+  const flashT = useRef(0)
+  const dwell = useRef(0)
+
+  useEffect(() => () => {
+    revealRef.current = false
+  }, [revealRef])
+
+  useFrame((_s, dt) => {
+    const dragged = dragRef.current?.body ?? null
+    let connectedCount = 0
+
+    TOTEM_LINKS.forEach((link, i) => {
+      const child = bodies.current[link.id]
+      const parent = bodies.current[link.parent]
+      const line = lines[i]
+      if (!child || !parent) {
+        if (line) line.visible = false
+        return
+      }
+      const pp = parent.translation()
+      const pr = parent.rotation()
+      const pq = new THREE.Quaternion(pr.x, pr.y, pr.z, pr.w)
+      const offW = new THREE.Vector3(link.off[0], link.off[1], link.off[2]).applyQuaternion(pq)
+      const targetPos = new THREE.Vector3(pp.x + offW.x, pp.y + offW.y, pp.z + offW.z)
+      const cp = child.translation()
+      const toTarget = targetPos.clone().sub(new THREE.Vector3(cp.x, cp.y, cp.z))
+      const dist = toTarget.length()
+      const connected = dist < CONNECT_DIST
+      if (connected) connectedCount++
+
+      // gentle magnetic pull on the child toward the snap pose (skip while it's
+      // the piece being dragged, so the cursor stays in full control)
+      if (dist < SNAP_RADIUS && child !== dragged) {
+        const k = 1 - dist / SNAP_RADIUS // firmer the closer it gets
+        let dvx = toTarget.x * MAG_PULL
+        let dvy = toTarget.y * MAG_PULL
+        let dvz = toTarget.z * MAG_PULL
+        const lv = child.linvel()
+        const a = MAG_RESPONSE * (0.35 + 0.65 * k)
+        child.setLinvel(
+          { x: lv.x + (dvx - lv.x) * a, y: lv.y + (dvy - lv.y) * a, z: lv.z + (dvz - lv.z) * a },
+          true,
+        )
+        // ease orientation toward the target pose
+        const targetQ = pq.clone().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(...link.rot)))
+        const cr = child.rotation()
+        const cq = new THREE.Quaternion(cr.x, cr.y, cr.z, cr.w)
+        cq.slerp(targetQ, 0.1 + 0.18 * k)
+        child.setRotation({ x: cq.x, y: cq.y, z: cq.z, w: cq.w }, true)
+        child.setAngvel({ x: 0, y: 0, z: 0 }, true)
+      }
+
+      // tether: a glowing dashed line drawn once the two are within reach
+      if (line) {
+        const show = dist < SNAP_RADIUS
+        line.visible = show
+        if (show) {
+          const pos = line.geometry.attributes.position as THREE.BufferAttribute
+          pos.setXYZ(0, cp.x, cp.y, cp.z) // the piece
+          pos.setXYZ(1, pp.x, pp.y, pp.z) // its one partner
+          pos.needsUpdate = true
+          line.computeLineDistances()
+          const mat = line.material as THREE.LineDashedMaterial
+          mat.opacity = connected ? 0.95 : 0.35 + 0.5 * (1 - dist / SNAP_RADIUS)
+        }
+      }
+    })
+
+    if (!revealRef.current) {
+      if (connectedCount === TOTEM_LINKS.length) {
+        dwell.current += dt
+        if (dwell.current > 0.5) {
+          revealRef.current = true
+          flashT.current = 1
+        }
+      } else {
+        dwell.current = 0
+      }
+    }
+    flashT.current = Math.max(0, flashT.current - dt * 0.8)
+    if (flash.current) flash.current.intensity = flashT.current * 80
+  })
+
+  return (
+    <>
+      <pointLight ref={flash} position={[0, 4, 2]} distance={40} decay={2} color="#bcd4ff" intensity={0} />
+      {lines.map((l, i) => (
+        <primitive key={i} object={l} />
+      ))}
+    </>
+  )
+}
+
+// — Magnet/totem room: dark open space with a sparse starfield, no floor.
+function MagnetRoom() {
+  const stars = useMemo(() => {
+    const n = 220
+    const a = new Float32Array(n * 3)
+    for (let i = 0; i < n; i++) {
+      a[i * 3] = (Math.random() - 0.5) * 80
+      a[i * 3 + 1] = -2 - Math.random() * 30
+      a[i * 3 + 2] = (Math.random() - 0.5) * 80
+    }
+    return a
+  }, [])
+  return (
+    <>
+      <ambientLight intensity={0.12} color="#9fb0d8" />
+      <directionalLight position={[-5, 14, -6]} intensity={1.0} color="#dfe9ff" />
+      <pointLight position={[6, 6, 6]} intensity={18} distance={40} decay={2} color="#88a6ff" />
+      <points>
+        <bufferGeometry>
+          <bufferAttribute attach="attributes-position" args={[stars, 3]} count={stars.length / 3} itemSize={3} />
+        </bufferGeometry>
+        <pointsMaterial color="#cdd8ff" size={0.07} sizeAttenuation transparent opacity={0.8} toneMapped={false} />
+      </points>
     </>
   )
 }
@@ -2385,7 +2583,7 @@ function SceneContents({
         color={env.contact.color}
       />
 
-      <TiltController tiltRef={tiltRef} />
+      <TiltController tiltRef={tiltRef} zeroG={env.magnet === true} />
 
       {/* static world: floor + tall invisible containment walls */}
       <RigidBody type="fixed" colliders={false} friction={0.7} restitution={0.1}>
@@ -2406,6 +2604,9 @@ function SceneContents({
 
       {/* projection puzzle: colour projections under the colourless blocks */}
       {env.projection && <ProjectionController bodies={bodies} box={box} revealRef={revealRef} />}
+
+      {/* magnet/totem puzzle: gentle pairwise snaps assemble a figure */}
+      {env.magnet && <MagnetController bodies={bodies} dragRef={drag} revealRef={revealRef} />}
 
       {/* blocks */}
       {BLOCKS.map((b) => (
