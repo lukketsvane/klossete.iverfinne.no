@@ -354,10 +354,18 @@ function SceneContents({
   boxRef.current = box
   const colliderWalls = useMemo(() => buildWalls(box, WALL_COL_HEIGHT), [box])
   const visibleWalls = useMemo(() => buildWalls(box, WALL_VIS_HEIGHT), [box])
+  // shadows (cast + contact) are sized to the current box so they cover the
+  // whole tray and stay sharp on any window/aspect
+  const shadowSpan = Math.max(box.bx, box.bz) + 1.5
   const lightRef = useRef<THREE.DirectionalLight>(null)
   const bodies = useRef<Record<string, RapierRigidBody | null>>({})
   const drag = useRef<DragState | null>(null)
   const raycaster = useMemo(() => new THREE.Raycaster(), [])
+
+  /* ---- keep the shadow camera in sync when the box resizes ---- */
+  useEffect(() => {
+    lightRef.current?.shadow.camera.updateProjectionMatrix()
+  }, [shadowSpan])
 
   /* ---- reset ---- */
   useEffect(() => {
@@ -493,24 +501,38 @@ function SceneContents({
 
   return (
     <>
-      {/* lighting – mostly overhead so the box reads cleanly from above */}
-      <ambientLight intensity={0.55} />
+      {/* lighting – key light close to overhead so each block's cast shadow
+          sits right under it, and a high-res shadow map tightened to the box */}
+      <ambientLight intensity={0.5} />
       <directionalLight
         ref={lightRef}
-        position={[2, 18, 3]}
-        intensity={2.5}
+        position={[1.5, 24, 2]}
+        intensity={2.7}
         castShadow
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
-        shadow-camera-left={-16}
-        shadow-camera-right={16}
-        shadow-camera-top={16}
-        shadow-camera-bottom={-16}
-        shadow-bias={-0.0002}
+        shadow-mapSize-width={4096}
+        shadow-mapSize-height={4096}
+        shadow-camera-near={1}
+        shadow-camera-far={60}
+        shadow-camera-left={-shadowSpan}
+        shadow-camera-right={shadowSpan}
+        shadow-camera-top={shadowSpan}
+        shadow-camera-bottom={-shadowSpan}
+        shadow-bias={-0.00015}
+        shadow-normalBias={0.02}
       />
       <Environment preset="apartment" environmentIntensity={0.35} />
 
-      <ContactShadows position={[0, 0.002, 0]} scale={40} far={6} blur={2.4} opacity={0.3} resolution={1024} />
+      {/* soft contact shadow that grounds the blocks; sized to the box so it
+          fills any screen and stays crisp instead of spread thin */}
+      <ContactShadows
+        position={[0, 0.001, 0]}
+        scale={shadowSpan * 2}
+        resolution={2048}
+        far={4}
+        blur={2.2}
+        opacity={0.5}
+        color="#332b20"
+      />
 
       <TiltController tiltRef={tiltRef} lightRef={lightRef} />
 
