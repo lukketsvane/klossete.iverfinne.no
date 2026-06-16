@@ -1347,27 +1347,32 @@ function ProjectionController({
   )
 }
 
-/* ---- magnet totem: each piece snaps to ONE partner, building a figure ---- */
-// A small graph: every piece (except the root body) has exactly one partner it
-// snaps to, with a relative pose. Snapped together they read as a little figure:
-// head over body, an arm to the side, legs under the body, a base under the legs.
+/* ---- magnet L-puzzle: each piece snaps to ONE partner, building a long L ---- */
+// A chain: each piece (except the root) snaps to one partner at a fixed pose.
+// Snapped together they interlock into a long L – a vertical arm of three with a
+// foot of two turning off the bottom. Offsets are world-axis, relative to the
+// partner's position; orientations are fixed (the magnet keeps pieces aligned).
 type Link = {
   id: string
   parent: string
-  off: [number, number, number] // target offset from the parent (parent-local)
-  rot: [number, number, number] // target orientation relative to the parent (euler)
+  off: [number, number, number] // world-axis offset from the partner's position
+  rot: [number, number, number] // fixed target orientation (world euler)
 }
-const TOTEM_ROOT = "orange" // the body – the seed everything else gathers around
+const TOTEM_ROOT = "cube" // top of the L's long arm – the seed
 const TOTEM_LINKS: Link[] = [
-  { id: "cube", parent: "orange", off: [0, 0, -1.7], rot: [0, 0, 0] }, // head, above
-  { id: "cylinder", parent: "orange", off: [1.75, 0, 0.05], rot: [0, 0, Math.PI / 2] }, // arm, right (lying)
-  { id: "plank-short", parent: "orange", off: [0, 0, 2.2], rot: [0, 0, 0] }, // legs, below (upright)
-  { id: "plank-long", parent: "plank-short", off: [0, 0, 2.0], rot: [0, Math.PI / 2, 0] }, // base, bottom (across)
+  { id: "orange", parent: "cube", off: [0, 0, 1.35], rot: [0, 0, 0] }, // arm
+  { id: "plank-long", parent: "orange", off: [0, 0, 2.16], rot: [0, 0, 0] }, // arm (long, upright)
+  { id: "plank-short", parent: "plank-long", off: [1.62, 0, 0.81], rot: [0, Math.PI / 2, 0] }, // corner -> foot (across)
+  { id: "cylinder", parent: "plank-short", off: [2.16, 0, 0], rot: [0, 0, Math.PI / 2] }, // foot tip (lying)
 ]
 const SNAP_RADIUS = 2.0 // a piece starts feeling its partner within this distance
-const CONNECT_DIST = 0.55 // considered "snapped" (counts toward the solve) within this
+const CONNECT_DIST = 0.6 // considered "snapped" (counts toward the solve) within this
 const MAG_PULL = 6 // proximity error -> gentle velocity toward the snap pose
 const MAG_RESPONSE = 0.16 // how fast that velocity is applied (low = soft, not forcible)
+const SPIN_AXIS = new THREE.Vector3(0.28, 1, 0.18).normalize() // the solved L tumbles about this
+const SPIN_SPEED = 0.7 // rad/s of the victory spin
+
+type WinPose = { p: THREE.Vector3; q: THREE.Quaternion }
 
 function MagnetController({
   bodies,
@@ -1406,10 +1411,21 @@ function MagnetController({
   const flashT = useRef(0)
   const dwell = useRef(0)
   const scattered = useRef(false)
+  // victory state: once the L is complete the pieces go kinematic and the whole
+  // rigid assembly tumbles in place
+  const win = useRef<{ active: boolean; t: number; center: THREE.Vector3; base: Map<string, WinPose> }>({
+    active: false,
+    t: 0,
+    center: new THREE.Vector3(),
+    base: new Map(),
+  })
 
   useEffect(() => () => {
     revealRef.current = false
-  }, [revealRef])
+    // hand the pieces back to physics when leaving the level
+    win.current.active = false
+    for (const b of BLOCKS) bodies.current[b.id]?.setBodyType(BODY_DYNAMIC, true)
+  }, [revealRef, bodies])
 
   useFrame((_s, dt) => {
     const dragged = dragRef.current?.body ?? null
@@ -1450,6 +1466,41 @@ function MagnetController({
       }
     }
 
+    // ---- victory: the completed L is rigid and tumbles in place ----
+    if (win.current.active) {
+      const W = win.current
+      W.t += dt
+      const spin = new THREE.Quaternion().setFromAxisAngle(SPIN_AXIS, W.t * SPIN_SPEED)
+      for (const b of BLOCKS) {
+        const body = bodies.current[b.id]
+        const base = W.base.get(b.id)
+        if (!body || !base) continue
+        const p = base.p.clone().applyQuaternion(spin).add(W.center)
+        const q = spin.clone().multiply(base.q)
+        body.setNextKinematicTranslation({ x: p.x, y: p.y, z: p.z })
+        body.setNextKinematicRotation({ x: q.x, y: q.y, z: q.z, w: q.w })
+      }
+      // keep the tethers lit and tracking between partners
+      TOTEM_LINKS.forEach((link, i) => {
+        const line = lines[i]
+        const child = bodies.current[link.id]
+        const parent = bodies.current[link.parent]
+        if (!line || !child || !parent) return
+        const cp = child.translation()
+        const pp = parent.translation()
+        line.visible = true
+        const pos = line.geometry.attributes.position as THREE.BufferAttribute
+        pos.setXYZ(0, cp.x, cp.y, cp.z)
+        pos.setXYZ(1, pp.x, pp.y, pp.z)
+        pos.needsUpdate = true
+        line.computeLineDistances()
+        ;(line.material as THREE.LineDashedMaterial).opacity = 0.9
+      })
+      flashT.current = Math.max(0, flashT.current - dt * 0.7)
+      if (flash.current) flash.current.intensity = 30 + flashT.current * 120
+      return
+    }
+
     TOTEM_LINKS.forEach((link, i) => {
       const child = bodies.current[link.id]
       const parent = bodies.current[link.parent]
@@ -1459,10 +1510,7 @@ function MagnetController({
         return
       }
       const pp = parent.translation()
-      const pr = parent.rotation()
-      const pq = new THREE.Quaternion(pr.x, pr.y, pr.z, pr.w)
-      const offW = new THREE.Vector3(link.off[0], link.off[1], link.off[2]).applyQuaternion(pq)
-      const targetPos = new THREE.Vector3(pp.x + offW.x, pp.y + offW.y, pp.z + offW.z)
+      const targetPos = new THREE.Vector3(pp.x + link.off[0], pp.y + link.off[1], pp.z + link.off[2])
       const cp = child.translation()
       const toTarget = targetPos.clone().sub(new THREE.Vector3(cp.x, cp.y, cp.z))
       const dist = toTarget.length()
@@ -1482,8 +1530,8 @@ function MagnetController({
           { x: lv.x + (dvx - lv.x) * a, y: lv.y + (dvy - lv.y) * a, z: lv.z + (dvz - lv.z) * a },
           true,
         )
-        // ease orientation toward the target pose
-        const targetQ = pq.clone().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(...link.rot)))
+        // ease orientation toward the fixed target pose
+        const targetQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(...link.rot))
         const cr = child.rotation()
         const cq = new THREE.Quaternion(cr.x, cr.y, cr.z, cr.w)
         cq.slerp(targetQ, 0.1 + 0.18 * k)
@@ -1542,9 +1590,33 @@ function MagnetController({
     if (!revealRef.current) {
       if (connectedCount === TOTEM_LINKS.length) {
         dwell.current += dt
-        if (dwell.current > 0.5) {
-          revealRef.current = true
-          flashT.current = 1
+        if (dwell.current > 0.4) {
+          // SOLVED: snap the L rigid and start the victory tumble. Build each
+          // piece's exact pose by walking the chain from the root, freeze them
+          // kinematic, and record their poses relative to the assembly centre.
+          const root = bodies.current[TOTEM_ROOT]
+          if (root) {
+            const rp = root.translation()
+            const posMap = new Map<string, THREE.Vector3>()
+            const quatMap = new Map<string, THREE.Quaternion>()
+            posMap.set(TOTEM_ROOT, new THREE.Vector3(rp.x, rp.y, rp.z))
+            quatMap.set(TOTEM_ROOT, new THREE.Quaternion())
+            for (const link of TOTEM_LINKS) {
+              const pp = posMap.get(link.parent)
+              if (!pp) continue
+              posMap.set(link.id, pp.clone().add(new THREE.Vector3(...link.off)))
+              quatMap.set(link.id, new THREE.Quaternion().setFromEuler(new THREE.Euler(...link.rot)))
+            }
+            const center = new THREE.Vector3()
+            posMap.forEach((p) => center.add(p))
+            center.multiplyScalar(1 / posMap.size)
+            const base = new Map<string, WinPose>()
+            posMap.forEach((p, id) => base.set(id, { p: p.clone().sub(center), q: quatMap.get(id)! }))
+            for (const id of posMap.keys()) bodies.current[id]?.setBodyType(BODY_KINEMATIC_POSITION, true)
+            win.current = { active: true, t: 0, center, base }
+            revealRef.current = true
+            flashT.current = 1
+          }
         }
       } else {
         dwell.current = 0
