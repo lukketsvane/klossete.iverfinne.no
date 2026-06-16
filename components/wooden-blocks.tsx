@@ -1144,14 +1144,18 @@ function PuzzleController({
 
 /* ---- projection puzzle: flat colour projections + a target shape ---- */
 function projectionTargets(box: Box): Zone[] {
-  // the five targets form a plus / star – the "certain shape"
-  const layout: { id: string; nx: number; nz: number }[] = [
-    { id: "plank-long", nx: 0, nz: 0 },
-    { id: "cube", nx: 0, nz: -0.62 },
-    { id: "cylinder", nx: 0, nz: 0.62 },
-    { id: "orange", nx: -0.55, nz: 0 },
-    { id: "plank-short", nx: 0.55, nz: 0 },
+  // A balanced, symmetric emblem: the big square sits in the centre, the small
+  // square above and the circle below, with the two planks as side bars. Fixed
+  // world spacing (scaled down only if the tray is small) so it always reads as
+  // a deliberate composition rather than stretching with the aspect ratio.
+  const layout: { id: string; x: number; z: number }[] = [
+    { id: "orange", x: 0, z: 0 }, // central square
+    { id: "cube", x: 0, z: -2.05 }, // small square above
+    { id: "cylinder", x: 0, z: 2.05 }, // circle below
+    { id: "plank-long", x: -2.0, z: 0 }, // left bar
+    { id: "plank-short", x: 2.0, z: 0 }, // right bar
   ]
+  const fit = Math.min(1, (box.bx - 0.5) / 2.6, (box.bz - 0.5) / 2.7)
   return layout.flatMap((L) => {
     const b = BLOCKS.find((bb) => bb.id === L.id)
     if (!b) return []
@@ -1164,8 +1168,8 @@ function projectionTargets(box: Box): Zone[] {
         id: L.id,
         color: b.color,
         shape: b.shape,
-        x: L.nx * box.bx,
-        z: L.nz * box.bz,
+        x: L.x * fit,
+        z: L.z * fit,
         hx,
         hz,
         radius: isCyl ? b.radius : 0,
@@ -1179,7 +1183,7 @@ function projectionTargets(box: Box): Zone[] {
 
 // 10 — Projection room: the 3D shapes are flat and colourless; you only see
 // their colour as a flat projection on the dark floor. Slide the projections
-// onto the target outline (a plus/star) and the 3D forms appear in colour.
+// onto the target outline (a symmetric emblem) and the 3D forms appear.
 function ProjectionRoom({ box, visibleWalls }: RoomProps) {
   const targets = useMemo(() => projectionTargets(box), [box.bx, box.bz])
   return (
@@ -1192,18 +1196,27 @@ function ProjectionRoom({ box, visibleWalls }: RoomProps) {
         <meshStandardMaterial color="#101218" roughness={0.96} metalness={0} />
       </mesh>
 
-      {/* the target outline the projections must be arranged onto */}
+      {/* the target slots the projections must be arranged onto: a faint filled
+          recess + a crisp outline so each reads as a place to drop a piece */}
       {targets.map((z) => (
         <group key={z.id} position={[z.x, 0.014, z.z]} rotation={[-Math.PI / 2, 0, 0]}>
+          <mesh>
+            {z.shape === "cylinder" ? (
+              <circleGeometry args={[z.radius + 0.1, 44]} />
+            ) : (
+              <planeGeometry args={[(z.hx + 0.1) * 2, (z.hz + 0.1) * 2]} />
+            )}
+            <meshBasicMaterial color="#8294b4" transparent opacity={0.08} toneMapped={false} />
+          </mesh>
           <lineSegments>
             <edgesGeometry
               args={[
                 z.shape === "cylinder"
-                  ? new THREE.CircleGeometry(z.radius + 0.1, 40)
+                  ? new THREE.CircleGeometry(z.radius + 0.1, 44)
                   : new THREE.PlaneGeometry((z.hx + 0.1) * 2, (z.hz + 0.1) * 2),
               ]}
             />
-            <lineBasicMaterial color="#8294b4" transparent opacity={0.85} toneMapped={false} />
+            <lineBasicMaterial color="#9fb0cf" transparent opacity={0.9} toneMapped={false} />
           </lineSegments>
         </group>
       ))}
