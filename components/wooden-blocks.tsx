@@ -359,6 +359,7 @@ type EnvKind =
   | "klossete"
   | "projection"
   | "magnet"
+  | "maze"
 type EnvConfig = {
   id: EnvKind
   name: string
@@ -373,6 +374,7 @@ type EnvConfig = {
   projection?: boolean // shapes are flat/colourless until their floor projections
   // are arranged onto the target outline – then the 3D forms appear in colour
   magnet?: boolean // zero-g: pieces gently magnet-snap (each to one partner) into a totem
+  maze?: boolean // a single block "flip-flop" tips through a camera-following maze to an exit
 }
 const ENVIRONMENTS: EnvConfig[] = [
   {
@@ -478,6 +480,16 @@ const ENVIRONMENTS: EnvConfig[] = [
     contact: { color: "#000000", opacity: 0.0 }, // floating in space – no floor shadow
     bloom: true, // the magnetic tethers + solve flash glow + the sun glare
     magnet: true,
+  },
+  {
+    id: "maze",
+    name: "Maze",
+    bg: "#05070d",
+    keyColor: "#cfe0ff",
+    keyIntensity: 1.4,
+    contact: { color: "#000000", opacity: 0.0 }, // the maze room lights itself
+    bloom: true, // the exit + solve flash glow
+    maze: true,
   },
 ]
 
@@ -821,6 +833,7 @@ function Room(props: RoomProps) {
   if (props.env.id === "klossete") return <KlosseRoom {...props} />
   if (props.env.id === "projection") return <ProjectionRoom {...props} />
   if (props.env.id === "magnet") return <MagnetRoom />
+  if (props.env.id === "maze") return <MazeRoom />
   return <ConcreteRoom {...props} />
 }
 
@@ -1547,6 +1560,299 @@ function MagnetRoom() {
   )
 }
 
+/* ---- maze: a single block you "flip-flop" tip through corridors ---- */
+// This level strips you to one block. Press a direction (arrows/WASD or swipe)
+// and it tips 90° over its leading edge to the next cell – "flip-flop walking".
+// The camera follows it top-down, so you roam a maze far larger than the screen.
+// Reach the glowing exit and the level is solved.
+const MAZE_CELL = 30 * 0.036 // one cube edge = one grid cell (matches the cube)
+type Maze = { W: number; H: number; wall: boolean[][]; start: [number, number]; goal: [number, number] }
+// Recursive-backtracker maze on a (2·rooms+1) grid; the goal is the floor cell
+// farthest from the centre start (BFS), so it's always reachable.
+function buildMaze(rooms: number, seed: number): Maze {
+  const W = rooms * 2 + 1
+  const H = rooms * 2 + 1
+  const wall: boolean[][] = Array.from({ length: H }, () => Array(W).fill(true))
+  let s = (seed >>> 0) || 1
+  const rnd = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296)
+  const stack: [number, number][] = [[1, 1]]
+  wall[1][1] = false
+  const dirs = [
+    [0, -2],
+    [0, 2],
+    [-2, 0],
+    [2, 0],
+  ] as const
+  while (stack.length) {
+    const [x, y] = stack[stack.length - 1]
+    const opts = dirs
+      .map(([dx, dy]) => [x + dx, y + dy, dx, dy] as const)
+      .filter(([nx, ny]) => nx > 0 && ny > 0 && nx < W - 1 && ny < H - 1 && wall[ny][nx])
+    if (!opts.length) {
+      stack.pop()
+      continue
+    }
+    const [nx, ny, dx, dy] = opts[Math.floor(rnd() * opts.length)]
+    wall[y + dy / 2][x + dx / 2] = false
+    wall[ny][nx] = false
+    stack.push([nx, ny])
+  }
+  const c = Math.floor(rooms / 2) * 2 + 1
+  const start: [number, number] = [c, c]
+  // BFS from the start to the farthest reachable floor cell -> the exit
+  const dist: number[][] = Array.from({ length: H }, () => Array(W).fill(-1))
+  dist[start[1]][start[0]] = 0
+  const queue: [number, number][] = [[start[0], start[1]]]
+  let goal: [number, number] = start
+  let best = 0
+  const nb = [
+    [0, 1],
+    [0, -1],
+    [1, 0],
+    [-1, 0],
+  ] as const
+  while (queue.length) {
+    const [x, y] = queue.shift()!
+    for (const [dx, dy] of nb) {
+      const nx = x + dx
+      const ny = y + dy
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H || wall[ny][nx] || dist[ny][nx] >= 0) continue
+      dist[ny][nx] = dist[y][x] + 1
+      if (dist[ny][nx] > best) {
+        best = dist[ny][nx]
+        goal = [nx, ny]
+      }
+      queue.push([nx, ny])
+    }
+  }
+  return { W, H, wall, start, goal }
+}
+const MAZE = buildMaze(5, 20260617)
+// grid cell -> world (x,z), with the start cell at the origin
+function mazeWorld(gx: number, gy: number): [number, number] {
+  return [(gx - MAZE.start[0]) * MAZE_CELL, (gy - MAZE.start[1]) * MAZE_CELL]
+}
+
+// — Maze room: dark floor, a forest of wall blocks, a glowing exit tile.
+function MazeRoom() {
+  const walls = useMemo(() => {
+    const out: [number, number][] = []
+    for (let y = 0; y < MAZE.H; y++) for (let x = 0; x < MAZE.W; x++) if (MAZE.wall[y][x]) out.push([x, y])
+    return out
+  }, [])
+  const [gx, gz] = mazeWorld(MAZE.goal[0], MAZE.goal[1])
+  return (
+    <>
+      <ambientLight intensity={0.4} color="#22304c" />
+      <pointLight position={[0, 14, 0]} intensity={26} distance={70} decay={2} color="#bcd0ff" />
+      {/* a large dark floor under the whole maze */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
+        <planeGeometry args={[MAZE.W * MAZE_CELL + 6, MAZE.H * MAZE_CELL + 6]} />
+        <meshStandardMaterial color="#0b1020" roughness={0.96} metalness={0} />
+      </mesh>
+      {/* maze walls */}
+      {walls.map(([x, y], i) => {
+        const [wx, wz] = mazeWorld(x, y)
+        return (
+          <mesh key={i} position={[wx, MAZE_CELL * 0.5, wz]} castShadow receiveShadow>
+            <boxGeometry args={[MAZE_CELL, MAZE_CELL, MAZE_CELL]} />
+            <meshStandardMaterial color="#27345c" roughness={0.75} metalness={0.08} />
+          </mesh>
+        )
+      })}
+      {/* the glowing exit */}
+      <mesh position={[gx, 0.03, gz]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[MAZE_CELL * 0.92, MAZE_CELL * 0.92]} />
+        <meshBasicMaterial color="#7cf6c8" toneMapped={false} transparent opacity={0.9} />
+      </mesh>
+      <pointLight position={[gx, 1.6, gz]} intensity={12} distance={7} decay={2} color="#7cf6c8" />
+    </>
+  )
+}
+
+type TipState = {
+  t: number
+  dur: number
+  axis: THREE.Vector3
+  pivot: THREE.Vector3
+  startCenter: THREE.Vector3
+  startQ: THREE.Quaternion
+  target: [number, number]
+}
+function MazeController({
+  bodies,
+  revealRef,
+}: {
+  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  revealRef: React.MutableRefObject<boolean>
+}) {
+  const camera = useThree((s) => s.camera)
+  const cell = useRef<[number, number]>([MAZE.start[0], MAZE.start[1]])
+  const tip = useRef<TipState | null>(null)
+  const moveReq = useRef<[number, number] | null>(null)
+  const camY = useRef<number | null>(null)
+  const flash = useRef<THREE.PointLight>(null)
+  const flashT = useRef(0)
+
+  // seat the cube at the start cell; park the other four blocks off-screen
+  useEffect(() => {
+    cell.current = [MAZE.start[0], MAZE.start[1]]
+    tip.current = null
+    const cube = bodies.current["cube"]
+    if (cube) {
+      cube.setBodyType(BODY_KINEMATIC_POSITION, true)
+      cube.setNextKinematicTranslation({ x: 0, y: MAZE_CELL / 2, z: 0 })
+      cube.setNextKinematicRotation({ x: 0, y: 0, z: 0, w: 1 })
+    }
+    for (const b of BLOCKS) {
+      if (b.id === "cube") continue
+      const body = bodies.current[b.id]
+      if (!body) continue
+      body.setBodyType(BODY_KINEMATIC_POSITION, true)
+      body.setNextKinematicTranslation({ x: (Math.random() - 0.5) * 4, y: -60, z: (Math.random() - 0.5) * 4 })
+    }
+    return () => {
+      // hand the blocks back to physics + recentre the camera when leaving
+      for (const b of BLOCKS) {
+        const body = bodies.current[b.id]
+        if (!body) continue
+        body.setBodyType(BODY_DYNAMIC, true)
+        body.setTranslation({ x: b.pos[0], y: b.pos[1], z: b.pos[2] }, true)
+        const e = new THREE.Euler(...(b.rot ?? [0, 0, 0]))
+        const q = new THREE.Quaternion().setFromEuler(e)
+        body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
+        body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+        body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+      }
+      camera.position.x = 0
+      camera.position.z = 0
+      camera.lookAt(0, 0, 0)
+      revealRef.current = false
+    }
+  }, [bodies, revealRef, camera])
+
+  // input -> a queued unit grid direction (grid +y is world +z)
+  useEffect(() => {
+    const req = (dx: number, dy: number) => {
+      if (!moveReq.current) moveReq.current = [dx, dy]
+    }
+    const onKey = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase()
+      if (k === "arrowup" || k === "w") req(0, -1)
+      else if (k === "arrowdown" || k === "s") req(0, 1)
+      else if (k === "arrowleft" || k === "a") req(-1, 0)
+      else if (k === "arrowright" || k === "d") req(1, 0)
+      else return
+      e.preventDefault()
+    }
+    let sx = 0
+    let sy = 0
+    const ts = (e: TouchEvent) => {
+      const t = e.touches[0]
+      if (t) {
+        sx = t.clientX
+        sy = t.clientY
+      }
+    }
+    const te = (e: TouchEvent) => {
+      const t = e.changedTouches[0]
+      if (!t) return
+      const dx = t.clientX - sx
+      const dy = t.clientY - sy
+      if (Math.hypot(dx, dy) < 24) return // a tap, not a swipe
+      if (Math.abs(dx) > Math.abs(dy)) req(dx > 0 ? 1 : -1, 0)
+      else req(0, dy > 0 ? 1 : -1)
+    }
+    window.addEventListener("keydown", onKey)
+    window.addEventListener("touchstart", ts, { passive: true })
+    window.addEventListener("touchend", te, { passive: true })
+    return () => {
+      window.removeEventListener("keydown", onKey)
+      window.removeEventListener("touchstart", ts)
+      window.removeEventListener("touchend", te)
+    }
+  }, [])
+
+  useFrame((_s, dt) => {
+    const cube = bodies.current["cube"]
+    if (!cube) return
+    if (camY.current == null) camY.current = camera.position.y
+    if (cube.bodyType() !== BODY_KINEMATIC_POSITION) cube.setBodyType(BODY_KINEMATIC_POSITION, true)
+
+    // start a tip if idle, a move is queued, and the target cell is open
+    if (!tip.current && moveReq.current && !revealRef.current) {
+      const [dx, dy] = moveReq.current
+      moveReq.current = null
+      const [gx, gy] = cell.current
+      const tx = gx + dx
+      const ty = gy + dy
+      const open = ty >= 0 && ty < MAZE.H && tx >= 0 && tx < MAZE.W && !MAZE.wall[ty][tx]
+      if (open) {
+        const [wx, wz] = mazeWorld(gx, gy)
+        const d = new THREE.Vector3(dx, 0, dy)
+        const up = new THREE.Vector3(0, 1, 0)
+        const startCenter = new THREE.Vector3(wx, MAZE_CELL / 2, wz)
+        tip.current = {
+          t: 0,
+          dur: 0.15,
+          axis: new THREE.Vector3().crossVectors(up, d).normalize(),
+          pivot: startCenter
+            .clone()
+            .add(d.clone().multiplyScalar(MAZE_CELL / 2))
+            .add(up.clone().multiplyScalar(-MAZE_CELL / 2)),
+          startCenter,
+          startQ: new THREE.Quaternion(),
+          target: [tx, ty],
+        }
+      }
+    }
+
+    if (tip.current) {
+      const T = tip.current
+      T.t = Math.min(T.dur, T.t + dt)
+      const theta = (Math.PI / 2) * (T.t / T.dur)
+      const q = new THREE.Quaternion().setFromAxisAngle(T.axis, theta)
+      const c = T.pivot.clone().add(T.startCenter.clone().sub(T.pivot).applyQuaternion(q))
+      const rot = q.clone().multiply(T.startQ)
+      cube.setNextKinematicTranslation({ x: c.x, y: c.y, z: c.z })
+      cube.setNextKinematicRotation({ x: rot.x, y: rot.y, z: rot.z, w: rot.w })
+      if (T.t >= T.dur) {
+        cell.current = T.target
+        // land flat and reset orientation (a cube reads the same any way up)
+        const [fx, fz] = mazeWorld(T.target[0], T.target[1])
+        cube.setNextKinematicTranslation({ x: fx, y: MAZE_CELL / 2, z: fz })
+        cube.setNextKinematicRotation({ x: 0, y: 0, z: 0, w: 1 })
+        tip.current = null
+        if (T.target[0] === MAZE.goal[0] && T.target[1] === MAZE.goal[1] && !revealRef.current) {
+          revealRef.current = true // solved -> progression advances
+          flashT.current = 1
+        }
+      }
+    } else {
+      // idle: pin the cube to its cell so nothing (e.g. a reset) drifts it
+      const [wx, wz] = mazeWorld(cell.current[0], cell.current[1])
+      cube.setNextKinematicTranslation({ x: wx, y: MAZE_CELL / 2, z: wz })
+      cube.setNextKinematicRotation({ x: 0, y: 0, z: 0, w: 1 })
+    }
+
+    // camera follows the cube, straight down
+    const t = cube.translation()
+    camera.position.x += (t.x - camera.position.x) * 0.14
+    camera.position.z += (t.z - camera.position.z) * 0.14
+    camera.position.y = camY.current
+    camera.lookAt(camera.position.x, 0, camera.position.z)
+
+    flashT.current = Math.max(0, flashT.current - dt * 0.6)
+    if (flash.current) {
+      const [gx, gz] = mazeWorld(MAZE.goal[0], MAZE.goal[1])
+      flash.current.position.set(gx, 2, gz)
+      flash.current.intensity = flashT.current * 140
+    }
+  })
+
+  return <pointLight ref={flash} distance={60} decay={2} color="#7cf6c8" intensity={0} />
+}
+
 // 8 — The Fourth Side room: cold TRON grid floor + walls.
 function FourthRoom({ box, visibleWalls }: RoomProps) {
   const mat = useMemo(
@@ -2113,6 +2419,10 @@ function SceneContents({
   const lightCur = useRef(new THREE.Vector3(KEY.x, KEY.y, KEY.z))
   const bodies = useRef<Record<string, RapierRigidBody | null>>({})
   const drag = useRef<DragState | null>(null)
+  // two-finger twist on a held block -> rotate it (yaw), with magnetic snapping
+  // to right angles so it's easy to line up. `base` is the orientation when the
+  // second finger landed; `delta` is the live yaw the servo applies on top.
+  const twist = useRef<{ base: THREE.Quaternion; start: number; delta: number; active: boolean } | null>(null)
   const puzzleLock = useRef(false) // blocks become impervious during the win celebration
   const revealRef = useRef(false) // projection room: solved -> 3D forms appear in colour
   const solvedFired = useRef(false) // edge-detect the solve so onSolved fires once
@@ -2267,6 +2577,7 @@ function SceneContents({
         d.body.setLinvel({ x: v.x, y: v.y, z: v.z }, true)
       }
       drag.current = null
+      twist.current = null
       grabbingRef.current = false
       haptic(6)
     }
@@ -2299,10 +2610,26 @@ function SceneContents({
         e.touches[0].clientX - e.touches[1].clientX,
         e.touches[0].clientY - e.touches[1].clientY,
       )
+    // angle of the line between the two fingers (screen space)
+    const twoAngle = (e: TouchEvent) =>
+      Math.atan2(e.touches[1].clientY - e.touches[0].clientY, e.touches[1].clientX - e.touches[0].clientX)
+    const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a))
+    const QUARTER = Math.PI / 2
+    // magnetic assist: gently pull the live yaw toward the nearest right angle as
+    // it gets close, so aligning a block feels effortless (the "prediction").
+    const softSnap = (a: number) => {
+      const n = Math.round(a / QUARTER) * QUARTER
+      const d = a - n
+      return Math.abs(d) < 0.22 ? n + d * 0.35 : a
+    }
+    let lastSnap = 99
     const onStart = (e: TouchEvent) => {
       if (e.touches.length === 2 && drag.current) {
         startDist = span(e)
         squeeze = 0
+        const r = drag.current.body.rotation()
+        twist.current = { base: new THREE.Quaternion(r.x, r.y, r.z, r.w), start: twoAngle(e), delta: 0, active: true }
+        lastSnap = 99
       }
     }
     const onMove = (e: TouchEvent) => {
@@ -2313,11 +2640,33 @@ function SceneContents({
         lastBuzz = now
         haptic(2 + squeeze * 10) // tighter pinch -> stronger buzz
       }
+      // twist -> yaw (screen rotation maps to world yaw under the top-down camera)
+      const tw = twist.current
+      if (tw) {
+        const raw = -wrap(twoAngle(e) - tw.start)
+        tw.delta = softSnap(raw)
+        // a tick each time we pass into a fresh right-angle bucket
+        const bucket = Math.round(tw.delta / QUARTER)
+        if (bucket !== lastSnap && Math.abs(tw.delta - bucket * QUARTER) < 0.05) {
+          lastSnap = bucket
+          haptic(6)
+        }
+      }
     }
     const onEnd = (e: TouchEvent) => {
       if (startDist <= 0) return
       if (e.touches.length < 2) {
         const d = drag.current
+        // settle the twist on the exact nearest right angle
+        const tw = twist.current
+        if (d && tw) {
+          const snapped = Math.round(tw.delta / QUARTER) * QUARTER
+          const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), snapped).multiply(tw.base)
+          d.body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
+          d.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+          if (Math.abs(snapped) > 0.01) haptic(12)
+        }
+        twist.current = null
         if (d && squeeze > 0.15) {
           // "pop": release the squeezed block with force proportional to squeeze
           const m = d.body.mass() || 1
@@ -2426,8 +2775,17 @@ function SceneContents({
       },
       true,
     )
-    const av = d.body.angvel()
-    d.body.setAngvel({ x: av.x * GRAB_ANG_DAMP, y: av.y * GRAB_ANG_DAMP, z: av.z * GRAB_ANG_DAMP }, true)
+    const tw = twist.current
+    if (tw && tw.active) {
+      // a second finger is twisting: drive the yaw directly (predictable, snappy)
+      // about world-Y, on top of the orientation captured when it landed
+      const targetQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), tw.delta).multiply(tw.base)
+      d.body.setRotation({ x: targetQ.x, y: targetQ.y, z: targetQ.z, w: targetQ.w }, true)
+      d.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+    } else {
+      const av = d.body.angvel()
+      d.body.setAngvel({ x: av.x * GRAB_ANG_DAMP, y: av.y * GRAB_ANG_DAMP, z: av.z * GRAB_ANG_DAMP }, true)
+    }
   })
 
   /* ---- safety net: rescue any body that ever leaves the box ---- */
@@ -2500,8 +2858,9 @@ function SceneContents({
       <RigidBody type="fixed" colliders={false} friction={0.7} restitution={0.1}>
         {/* the space level has no floor – pieces float freely (the magnet room's
             own edge force-field keeps them on screen) */}
-        {!env.magnet && <CuboidCollider args={[60, 1, 60]} position={[0, -1, 0]} />}
+        {!env.magnet && !env.maze && <CuboidCollider args={[60, 1, 60]} position={[0, -1, 0]} />}
         {!env.magnet &&
+          !env.maze &&
           colliderWalls.map((w, i) => (
             <CuboidCollider key={i} args={w.half} position={w.pos} restitution={0.12} />
           ))}
@@ -2521,6 +2880,9 @@ function SceneContents({
 
       {/* magnet/totem puzzle: gentle pairwise snaps assemble a figure */}
       {env.magnet && <MagnetController bodies={bodies} box={box} dragRef={drag} revealRef={revealRef} />}
+
+      {/* maze: one block flip-flops through corridors, camera following, to the exit */}
+      {env.maze && <MazeController bodies={bodies} revealRef={revealRef} />}
 
       {/* blocks */}
       {BLOCKS.map((b) => (
