@@ -2323,15 +2323,42 @@ const FIVE_MOVE: Record<string, { angle: number; dur: number }> = {
   "plank-short": { angle: Math.PI, dur: 0.24 }, // short plank tumbles
 }
 
-// — The Five room: a calm dark stage with one soft warm key light.
+// — The Five room: a calm stage whose mosaic floor changes per piloted block.
+const fiveFloor = { idx: 0 } // signal set by FiveController -> which mosaic to show
+const FIVE_MOSAICS = [
+  "/textures/floors/mosaic-1.jpg",
+  "/textures/floors/mosaic-2.jpg",
+  "/textures/floors/mosaic-3.jpg",
+  "/textures/floors/mosaic-4.jpg",
+]
 function FiveRoom() {
+  const texs = useTexture(FIVE_MOSAICS)
+  useMemo(() => {
+    texs.forEach((t) => {
+      t.wrapS = t.wrapT = THREE.RepeatWrapping
+      t.repeat.set(8, 8)
+      t.colorSpace = THREE.SRGBColorSpace
+      t.anisotropy = 4
+    })
+  }, [texs])
+  const mat = useRef<THREE.MeshStandardMaterial>(null)
+  const cur = useRef(-1)
+  useFrame(() => {
+    const i = ((fiveFloor.idx % texs.length) + texs.length) % texs.length
+    if (mat.current && cur.current !== i) {
+      cur.current = i
+      mat.current.map = texs[i]
+      mat.current.needsUpdate = true
+    }
+  })
   return (
     <>
-      <ambientLight intensity={0.16} color="#3a3328" />
-      <pointLight position={[0, 9, 1]} intensity={20} distance={40} decay={2} color="#fff0d8" />
+      <ambientLight intensity={0.42} color="#fff1df" />
+      <pointLight position={[0, 9, 1]} intensity={16} distance={42} decay={2} color="#fff0d8" />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
         <planeGeometry args={[60, 60]} />
-        <meshStandardMaterial color="#0c0e14" roughness={0.85} metalness={0.05} />
+        {/* the mosaic, gently dimmed so the blocks + figure read on top */}
+        <meshStandardMaterial ref={mat} map={texs[0]} color="#9c968c" roughness={0.92} metalness={0} />
       </mesh>
     </>
   )
@@ -2401,6 +2428,7 @@ function FiveController({
     spawned.current = false
     hop.current = null
     seat.current = null
+    fiveFloor.idx = 0
     for (const b of BLOCKS) {
       const body = bodies.current[b.id]
       if (!body) continue
@@ -2474,6 +2502,7 @@ function FiveController({
   useFrame((_s, dt) => {
     cool.current = Math.max(0, cool.current - dt)
     const idx = active.current
+    fiveFloor.idx = Math.min(idx, FIVE_ORDER.length - 1) // each block gets its own mosaic floor
 
     // hold placed blocks at their slots; keep not-yet-active blocks hidden.
     // setTranslation (not setNextKinematic) so it works even on a sleeping body.
@@ -2598,15 +2627,20 @@ function FiveController({
 
   return (
     <>
-      {/* faint glowing slots, tinted by the block that belongs there */}
+      {/* a calm dark stage over the mosaic so the figure + slots read clearly */}
+      <mesh position={[0, 0.012, 0.1]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[2.7, 56]} />
+        <meshBasicMaterial color="#0a0b10" transparent opacity={0.62} />
+      </mesh>
+      {/* glowing slots, tinted by the block that belongs there */}
       {slots.map((s) => (
-        <mesh key={s.id} position={[s.pos.x, 0.02, s.pos.z]} rotation={[-Math.PI / 2, 0, 0]}>
+        <mesh key={s.id} position={[s.pos.x, 0.03, s.pos.z]} rotation={[-Math.PI / 2, 0, 0]}>
           <circleGeometry args={[0.42, 28]} />
           <meshBasicMaterial
             color={BLOCKS.find((b) => b.id === s.id)?.color ?? "#ffffff"}
             toneMapped={false}
             transparent
-            opacity={0.22}
+            opacity={0.38}
           />
         </mesh>
       ))}
