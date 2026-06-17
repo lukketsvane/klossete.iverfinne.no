@@ -382,6 +382,7 @@ type EnvConfig = {
   lineup?: boolean // line all five blocks along the glowing centre line
   plate?: boolean // rest a block on the glowing plate
   apart?: boolean // scatter every block out of the centre ring to solve
+  five?: boolean // bring each block to its glowing slot -> build the Messias figure
 }
 const BASE_ENVIRONMENTS: EnvConfig[] = [
   {
@@ -506,6 +507,16 @@ const BASE_ENVIRONMENTS: EnvConfig[] = [
     bloom: true, // the exit + solve flash glow
     maze: true,
   },
+  {
+    id: "five",
+    name: "The Five",
+    bg: "#0b0d12",
+    keyColor: "#fff1dc", // one soft, warm key – calm and minimal
+    keyIntensity: 2.2,
+    contact: { color: "#000000", opacity: 0.5 },
+    bloom: true, // the figure glows as it completes
+    five: true,
+  },
 ]
 
 // Pull the visual theme of a base "look" so extra levels can reuse it.
@@ -529,7 +540,6 @@ const EXTRA_SPECS: { name: string; look: EnvKind; key: KeyFlag }[] = [
   { name: "Gold · plate", look: "gold", key: "plate" },
   { name: "Play mat · stack", look: "playmat", key: "stack" },
   { name: "Concrete · corners", look: "concrete", key: "corners" },
-  { name: "Peel · gather", look: "peel", key: "gather" },
 ]
 const EXTRA_ENVIRONMENTS: EnvConfig[] = EXTRA_SPECS.map((s, i) => ({
   id: `x${i + 13}`,
@@ -885,6 +895,7 @@ function Room(props: RoomProps) {
   if (look === "projection") return <ProjectionRoom {...props} />
   if (look === "magnet") return <MagnetRoom />
   if (look === "maze") return <MazeRoom />
+  if (look === "five") return <FiveRoom />
   return <ConcreteRoom {...props} />
 }
 
@@ -2280,6 +2291,136 @@ function ApartController({
   )
 }
 
+/* ---- The Five: bring each block to its slot, building the Messias figure ---- */
+// Flat, top-down-readable poses (relative to centre, +z is "down/front"):
+// the two blue planks are the water, the cube the pelvis, the red cylinder the
+// body, the orange block the head.
+const FIVE_POSE: Record<string, { pos: [number, number, number]; rot: [number, number, number] }> = {
+  "plank-long": { pos: [0, 0.27, 1.3], rot: [0, Math.PI / 2, 0] },
+  "plank-short": { pos: [0, 0.27, 2.0], rot: [0, Math.PI / 2, 0] },
+  cube: { pos: [0, 0.54, 0.55], rot: [0, 0, 0] },
+  cylinder: { pos: [0, 0.54, -0.6], rot: [Math.PI / 2, 0, 0] },
+  orange: { pos: [0, 0.43, -1.8], rot: [0, 0, 0] },
+}
+const FIVE_ORDER = ["plank-long", "plank-short", "cube", "cylinder", "orange"]
+
+// — The Five room: a calm dark stage with one soft warm key light.
+function FiveRoom() {
+  return (
+    <>
+      <ambientLight intensity={0.16} color="#3a3328" />
+      <pointLight position={[0, 9, 1]} intensity={20} distance={40} decay={2} color="#fff0d8" />
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
+        <planeGeometry args={[60, 60]} />
+        <meshStandardMaterial color="#0c0e14" roughness={0.85} metalness={0.05} />
+      </mesh>
+    </>
+  )
+}
+
+function FiveController({
+  bodies,
+  box,
+  dragRef,
+  revealRef,
+}: {
+  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  box: Box
+  dragRef: React.MutableRefObject<DragState | null>
+  revealRef: React.MutableRefObject<boolean>
+}) {
+  const flash = useRef<THREE.PointLight>(null)
+  const flashT = useRef(0)
+  const dwell = useRef(0)
+  const locked = useRef<Set<string>>(new Set())
+  const SNAP = 0.95 // horizontal distance to drop a block into its slot
+
+  // fit the figure inside the tray
+  const slots = useMemo(() => {
+    const fit = Math.min(1, (Math.min(box.bx, box.bz) - 0.5) / 2.2)
+    return FIVE_ORDER.map((id) => {
+      const p = FIVE_POSE[id]
+      return {
+        id,
+        pos: new THREE.Vector3(p.pos[0] * fit, p.pos[1], p.pos[2] * fit),
+        quat: new THREE.Quaternion().setFromEuler(new THREE.Euler(...p.rot)),
+      }
+    })
+  }, [box.bx, box.bz])
+
+  useEffect(() => () => {
+    revealRef.current = false
+    locked.current.clear()
+    for (const b of BLOCKS) bodies.current[b.id]?.setBodyType(BODY_DYNAMIC, true)
+  }, [revealRef, bodies])
+
+  useFrame((_s, dt) => {
+    const dragged = dragRef.current?.body ?? null
+    let count = 0
+    for (const slot of slots) {
+      const body = bodies.current[slot.id]
+      if (!body) continue
+      const isLocked = locked.current.has(slot.id)
+      if (body === dragged) {
+        if (isLocked) {
+          locked.current.delete(slot.id)
+          body.setBodyType(BODY_DYNAMIC, true)
+        }
+        continue
+      }
+      if (isLocked) {
+        body.setNextKinematicTranslation({ x: slot.pos.x, y: slot.pos.y, z: slot.pos.z })
+        body.setNextKinematicRotation({ x: slot.quat.x, y: slot.quat.y, z: slot.quat.z, w: slot.quat.w })
+        count++
+        continue
+      }
+      const t = body.translation()
+      if (Math.hypot(t.x - slot.pos.x, t.z - slot.pos.z) < SNAP) {
+        // close enough -> click it into the figure
+        locked.current.add(slot.id)
+        body.setBodyType(BODY_KINEMATIC_POSITION, true)
+        body.setNextKinematicTranslation({ x: slot.pos.x, y: slot.pos.y, z: slot.pos.z })
+        body.setNextKinematicRotation({ x: slot.quat.x, y: slot.quat.y, z: slot.quat.z, w: slot.quat.w })
+        playImpact(slot.id, 0.6)
+        haptic(16)
+        flashT.current = Math.max(flashT.current, 0.5)
+        count++
+      }
+    }
+    if (!revealRef.current) {
+      if (count === slots.length) {
+        dwell.current += dt
+        if (dwell.current > 0.4) {
+          revealRef.current = true
+          flashT.current = 1
+        }
+      } else {
+        dwell.current = 0
+      }
+    }
+    flashT.current = Math.max(0, flashT.current - dt * 0.5)
+    if (flash.current) flash.current.intensity = flashT.current * 110
+  })
+
+  return (
+    <>
+      {/* faint glowing slots, tinted by the block that belongs there */}
+      {slots.map((s) => (
+        <mesh key={s.id} position={[s.pos.x, 0.02, s.pos.z]} rotation={[-Math.PI / 2, 0, 0]}>
+          <circleGeometry args={[0.42, 28]} />
+          <meshBasicMaterial
+            color={BLOCKS.find((b) => b.id === s.id)?.color ?? "#ffffff"}
+            toneMapped={false}
+            transparent
+            opacity={0.18}
+          />
+        </mesh>
+      ))}
+      <pointLight ref={flash} position={[0, 3, 0]} distance={36} decay={2} color="#fff1dc" intensity={0} />
+    </>
+  )
+}
+
 // 8 — The Fourth Side room: cold TRON grid floor + walls.
 function FourthRoom({ box, visibleWalls }: RoomProps) {
   const mat = useMemo(
@@ -3339,6 +3480,9 @@ function SceneContents({
 
       {/* apart: scatter every block out of the centre ring */}
       {env.apart && <ApartController bodies={bodies} box={box} revealRef={revealRef} />}
+
+      {/* The Five: drag each block to its slot to build the Messias figure */}
+      {env.five && <FiveController bodies={bodies} box={box} dragRef={drag} revealRef={revealRef} />}
 
       {/* blocks — in the maze only the player cube exists; the others aren't
           rendered at all, so nothing else can ever appear in the corridors */}
