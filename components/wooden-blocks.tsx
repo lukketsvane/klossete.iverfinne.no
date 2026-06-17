@@ -1183,34 +1183,28 @@ function ProjectionController({
   )
 }
 
-/* ---- magnet line-puzzle: each piece snaps to ONE partner, end to end ---- */
-// A simple chain: every piece (except the root) snaps to the next at a fixed
-// pose, each oriented so its LONGEST dimension runs along z, joined end-to-end
-// into the longest possible single bar. Offsets are world-axis, relative to the
-// partner's position; orientations are fixed (the magnet keeps pieces aligned).
-// Per-piece half-length along z: cube .54, orange .81, plank-short 1.08,
-// cylinder (laid on its side) 1.08, plank-long 1.35. Each gap = sum of the two
-// touching half-lengths.
-type Link = {
-  id: string
-  parent: string
-  off: [number, number, number] // world-axis offset from the partner's position
-  rot: [number, number, number] // fixed target orientation (world euler)
+/* ---- magnet constellation: drag the five blocks into one glowing bar ---- */
+// The five blocks each click into a fixed slot that together form one straight
+// bar, laid along whichever screen axis is longer so it always fits. As a piece
+// nears its slot it lights up; finish the bar and the whole thing glows like a
+// constellation (a "star sign"), then the rigid key tumbles in space.
+// Per-piece half-length along the bar (scene units).
+const BAR_ORDER = ["cube", "orange", "plank-short", "cylinder", "plank-long"] as const
+const BAR_HALF: Record<string, number> = {
+  cube: 0.54,
+  orange: 0.81,
+  "plank-short": 1.08,
+  cylinder: 1.08,
+  "plank-long": 1.35,
 }
-const TOTEM_ROOT = "cube" // one end of the bar – the seed
-const TOTEM_LINKS: Link[] = [
-  { id: "orange", parent: "cube", off: [0, 0, 1.35], rot: [0, 0, 0] }, // .54 + .81
-  { id: "plank-short", parent: "orange", off: [0, 0, 1.89], rot: [0, 0, 0] }, // .81 + 1.08
-  { id: "cylinder", parent: "plank-short", off: [0, 0, 2.16], rot: [Math.PI / 2, 0, 0] }, // 1.08 + 1.08, laid along z
-  { id: "plank-long", parent: "cylinder", off: [0, 0, 2.43], rot: [0, 0, 0] }, // 1.08 + 1.35
-]
-const SNAP_RADIUS = 2.4 // within this a free piece feels a faint pull toward its partner
-const LOCK_DIST = 1.05 // bring it about this close and it CLICKS rigidly into place
-const ATTRACT_PULL = 2.2 // faint pull velocity toward the partner (just a nudge)
-const ATTRACT_EASE = 0.07 // soft application of that pull
-const MAX_ATTRACT_SPEED = 2.0 // hard cap so a piece is nudged, never yanked across the room
-const SPIN_AXIS = new THREE.Vector3(0.28, 1, 0.18).normalize() // the solved L tumbles about this
-const SPIN_SPEED = 0.7 // rad/s of the victory spin
+const BAR_Y = 2.4 // depth band the floating pieces settle into
+const SNAP_RADIUS = 3.2 // generous: a piece this close eases toward its slot
+const LOCK_DIST = 1.4 // bring it about this close and it CLICKS into place
+const ATTRACT_PULL = 2.2 // pull velocity toward the slot
+const ATTRACT_EASE = 0.1 // soft application of that pull
+const MAX_ATTRACT_SPEED = 2.6 // cap so a piece is nudged, never yanked
+const SPIN_AXIS = new THREE.Vector3(0.28, 1, 0.18).normalize() // the solved bar tumbles about this
+const SPIN_SPEED = 0.5 // rad/s of the victory spin
 
 type WinPose = { p: THREE.Vector3; q: THREE.Quaternion }
 
@@ -1225,35 +1219,55 @@ function MagnetController({
   dragRef: React.MutableRefObject<DragState | null>
   revealRef: React.MutableRefObject<boolean>
 }) {
-  // glowing dashed tether per link, built imperatively (avoids the JSX <line>
-  // clashing with the SVG line element)
+  // Fixed, centred slots: the bar is laid along whichever screen axis is longer
+  // and shrunk only if even that axis is too short, so the finished key always
+  // fits on screen and the pieces never jam against the edge field.
+  const slots = useMemo(() => {
+    const alongZ = box.bz >= box.bx
+    const lim = alongZ ? box.bz : box.bx
+    let edge = 0
+    const centres = BAR_ORDER.map((id) => {
+      const c = edge + BAR_HALF[id]
+      edge += 2 * BAR_HALF[id]
+      return c
+    })
+    const mid = edge / 2
+    const fit = Math.min(1, (lim * 0.9) / mid)
+    return BAR_ORDER.map((id, i) => {
+      const d = (centres[i] - mid) * fit
+      const pos = new THREE.Vector3(alongZ ? 0 : d, BAR_Y, alongZ ? d : 0)
+      // orient each block so its longest dimension runs along the bar
+      let e: [number, number, number] = [0, 0, 0]
+      if (id === "cylinder") e = alongZ ? [Math.PI / 2, 0, 0] : [0, 0, Math.PI / 2]
+      else if (id === "plank-short" || id === "plank-long") e = alongZ ? [0, 0, 0] : [0, Math.PI / 2, 0]
+      return { id, pos, quat: new THREE.Quaternion().setFromEuler(new THREE.Euler(...e)) }
+    })
+  }, [box.bx, box.bz])
+
+  // constellation edges between consecutive stars (light up as the bar forms)
   const lines = useMemo(
     () =>
-      TOTEM_LINKS.map(() => {
+      slots.slice(1).map(() => {
         const geom = new THREE.BufferGeometry()
         geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6), 3))
-        const mat = new THREE.LineDashedMaterial({
-          color: "#7fb4ff",
-          transparent: true,
-          opacity: 0.6,
-          dashSize: 0.12,
-          gapSize: 0.12,
-          toneMapped: false,
-        })
+        const mat = new THREE.LineBasicMaterial({ color: "#bcd4ff", transparent: true, opacity: 0, toneMapped: false })
         const line = new THREE.Line(geom, mat)
-        line.visible = false
         line.frustumCulled = false
         return line
       }),
-    [],
+    [slots],
   )
+
+  const starRefs = useRef<(THREE.Mesh | null)[]>([])
   const flash = useRef<THREE.PointLight>(null)
+  const glowLight = useRef<THREE.PointLight>(null)
   const flashT = useRef(0)
+  const glow = useRef(0) // smoothed overall illumination 0..1
   const dwell = useRef(0)
   const scattered = useRef(false)
-  const locked = useRef<Set<string>>(new Set()) // pieces clicked rigidly onto their partner
-  // victory state: once the L is complete the pieces go kinematic and the whole
-  // rigid assembly tumbles in place
+  const locked = useRef<Set<string>>(new Set()) // pieces clicked rigidly into their slot
+  // victory state: once the bar is complete the pieces go kinematic and the
+  // whole rigid assembly tumbles in place
   const win = useRef<{ active: boolean; t: number; center: THREE.Vector3; base: Map<string, WinPose> }>({
     active: false,
     t: 0,
@@ -1271,16 +1285,14 @@ function MagnetController({
 
   useFrame((_s, dt) => {
     const dragged = dragRef.current?.body ?? null
-    let connectedCount = 0
-    const snapping = new Set<string>() // pieces actively seating – exempt from the edge field
+    const snapping = new Set<string>() // pieces seating / locked – exempt from the edge field
 
     // on first frame in the space level, scatter the pieces across space at
     // random floating orientations (no floor/gravity -> they hang at odd angles)
     if (!scattered.current) {
       scattered.current = true
       for (const b of BLOCKS) {
-        const body = bodies.current[b.id]
-        if (!body) {
+        if (!bodies.current[b.id]) {
           scattered.current = false // bodies not ready yet – try next frame
           break
         }
@@ -1302,15 +1314,19 @@ function MagnetController({
           body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
           body.setLinvel({ x: 0, y: 0, z: 0 }, true)
           body.setAngvel(
-            { x: (Math.random() - 0.5) * 0.5, y: (Math.random() - 0.5) * 0.5, z: (Math.random() - 0.5) * 0.5 },
+            { x: (Math.random() - 0.5) * 0.4, y: (Math.random() - 0.5) * 0.4, z: (Math.random() - 0.5) * 0.4 },
             true,
           )
         }
       }
     }
 
-    // ---- victory: the completed L is rigid and tumbles in place ----
+    // per-star brightness (1 = fully lit) and how many pieces are home
+    const bright: number[] = []
+    let seated = 0
+
     if (win.current.active) {
+      // ---- victory: the rigid bar tumbles in place, every star fully lit ----
       const W = win.current
       W.t += dt
       const spin = new THREE.Quaternion().setFromAxisAngle(SPIN_AXIS, W.t * SPIN_SPEED)
@@ -1323,110 +1339,113 @@ function MagnetController({
         body.setNextKinematicTranslation({ x: p.x, y: p.y, z: p.z })
         body.setNextKinematicRotation({ x: q.x, y: q.y, z: q.z, w: q.w })
       }
-      // keep the tethers lit and tracking between partners
-      TOTEM_LINKS.forEach((link, i) => {
-        const line = lines[i]
-        const child = bodies.current[link.id]
-        const parent = bodies.current[link.parent]
-        if (!line || !child || !parent) return
-        const cp = child.translation()
-        const pp = parent.translation()
-        line.visible = true
-        const pos = line.geometry.attributes.position as THREE.BufferAttribute
-        pos.setXYZ(0, cp.x, cp.y, cp.z)
-        pos.setXYZ(1, pp.x, pp.y, pp.z)
-        pos.needsUpdate = true
-        line.computeLineDistances()
-        ;(line.material as THREE.LineDashedMaterial).opacity = 0.9
+      slots.forEach(() => bright.push(1))
+      seated = slots.length
+    } else {
+      // ---- assembly: each block eases into its fixed slot and lights up ----
+      slots.forEach((slot) => {
+        const body = bodies.current[slot.id]
+        if (!body) {
+          bright.push(0)
+          return
+        }
+        const cp = body.translation()
+        const dist = Math.hypot(cp.x - slot.pos.x, cp.y - slot.pos.y, cp.z - slot.pos.z)
+        const isLocked = locked.current.has(slot.id)
+
+        if (body === dragged) {
+          // grabbed: release any lock so the user can reposition it
+          if (isLocked) {
+            locked.current.delete(slot.id)
+            body.setBodyType(BODY_DYNAMIC, true)
+          }
+          bright.push(Math.max(0, 1 - dist / SNAP_RADIUS))
+        } else if (isLocked) {
+          // clicked home: ride the slot rigidly (kinematic – no physics fighting)
+          body.setNextKinematicTranslation({ x: slot.pos.x, y: slot.pos.y, z: slot.pos.z })
+          body.setNextKinematicRotation({ x: slot.quat.x, y: slot.quat.y, z: slot.quat.z, w: slot.quat.w })
+          snapping.add(slot.id)
+          seated++
+          bright.push(1)
+        } else if (dist < LOCK_DIST) {
+          // close enough -> click it into place
+          locked.current.add(slot.id)
+          body.setBodyType(BODY_KINEMATIC_POSITION, true)
+          body.setNextKinematicTranslation({ x: slot.pos.x, y: slot.pos.y, z: slot.pos.z })
+          body.setNextKinematicRotation({ x: slot.quat.x, y: slot.quat.y, z: slot.quat.z, w: slot.quat.w })
+          snapping.add(slot.id)
+          seated++
+          bright.push(1)
+        } else if (dist < SNAP_RADIUS) {
+          // gentle attract toward the slot (capped so it's nudged, never yanked)
+          snapping.add(slot.id)
+          const k = 1 - dist / SNAP_RADIUS
+          const lv = body.linvel()
+          const a = ATTRACT_EASE * (0.4 + 0.6 * k)
+          let dvx = (slot.pos.x - cp.x) * ATTRACT_PULL
+          let dvy = (slot.pos.y - cp.y) * ATTRACT_PULL
+          let dvz = (slot.pos.z - cp.z) * ATTRACT_PULL
+          const sp = Math.hypot(dvx, dvy, dvz)
+          if (sp > MAX_ATTRACT_SPEED) {
+            const s = MAX_ATTRACT_SPEED / sp
+            dvx *= s
+            dvy *= s
+            dvz *= s
+          }
+          body.setLinvel(
+            { x: lv.x + (dvx - lv.x) * a, y: lv.y + (dvy - lv.y) * a, z: lv.z + (dvz - lv.z) * a },
+            true,
+          )
+          bright.push(0.15 + 0.85 * k)
+        } else {
+          bright.push(0)
+        }
       })
-      flashT.current = Math.max(0, flashT.current - dt * 0.7)
-      if (flash.current) flash.current.intensity = 30 + flashT.current * 120
-      return
     }
 
-    TOTEM_LINKS.forEach((link, i) => {
-      const child = bodies.current[link.id]
-      const parent = bodies.current[link.parent]
-      const line = lines[i]
-      if (!child || !parent) {
-        if (line) line.visible = false
+    // overall glow rises smoothly with how many pieces are home
+    const targetGlow = seated / slots.length
+    glow.current += (targetGlow - glow.current) * 0.1
+
+    // stars: a bright point riding each piece, lighting up as it nears its slot
+    slots.forEach((slot, i) => {
+      const star = starRefs.current[i]
+      if (!star) return
+      const body = bodies.current[slot.id]
+      if (body) {
+        const t = body.translation()
+        star.position.set(t.x, t.y, t.z)
+      }
+      const b = Math.max(bright[i] ?? 0, glow.current * 0.5)
+      star.scale.setScalar(0.5 + 1.3 * b)
+      ;(star.material as THREE.MeshBasicMaterial).opacity = 0.1 + 0.9 * b
+    })
+
+    // constellation edges: a line lights fully only once both ends settle
+    lines.forEach((line, i) => {
+      const a = bodies.current[slots[i].id]
+      const c = bodies.current[slots[i + 1].id]
+      if (!a || !c) {
+        line.visible = false
         return
       }
-      const pp = parent.translation()
-      const targetPos = new THREE.Vector3(pp.x + link.off[0], pp.y + link.off[1], pp.z + link.off[2])
-      const targetQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(...link.rot))
-      const cp = child.translation()
-      const dist = Math.hypot(cp.x - targetPos.x, cp.y - targetPos.y, cp.z - targetPos.z)
-      const isLocked = locked.current.has(link.id)
-
-      if (child === dragged) {
-        // the user grabbed it: release any lock so they can freely reposition
-        if (isLocked) {
-          locked.current.delete(link.id)
-          child.setBodyType(BODY_DYNAMIC, true)
-        }
-      } else if (isLocked) {
-        // CLICKED ON: ride the partner rigidly (kinematic – no physics fighting)
-        child.setNextKinematicTranslation({ x: targetPos.x, y: targetPos.y, z: targetPos.z })
-        child.setNextKinematicRotation({ x: targetQ.x, y: targetQ.y, z: targetQ.z, w: targetQ.w })
-        snapping.add(link.id)
-        connectedCount++
-      } else if (dist < LOCK_DIST) {
-        // close enough -> click it rigidly into place
-        locked.current.add(link.id)
-        child.setBodyType(BODY_KINEMATIC_POSITION, true)
-        child.setNextKinematicTranslation({ x: targetPos.x, y: targetPos.y, z: targetPos.z })
-        child.setNextKinematicRotation({ x: targetQ.x, y: targetQ.y, z: targetQ.z, w: targetQ.w })
-        snapping.add(link.id)
-        connectedCount++
-      } else if (dist < SNAP_RADIUS) {
-        // gentle attract (position only – orientation is snapped on lock, so the
-        // dynamic body never fights its own rotation -> no flicker). The desired
-        // velocity is capped so a piece is nudged, never yanked across the room.
-        snapping.add(link.id)
-        const k = 1 - dist / SNAP_RADIUS
-        const lv = child.linvel()
-        const a = ATTRACT_EASE * (0.4 + 0.6 * k)
-        let dvx = (targetPos.x - cp.x) * ATTRACT_PULL
-        let dvy = (targetPos.y - cp.y) * ATTRACT_PULL
-        let dvz = (targetPos.z - cp.z) * ATTRACT_PULL
-        const sp = Math.hypot(dvx, dvy, dvz)
-        if (sp > MAX_ATTRACT_SPEED) {
-          const s = MAX_ATTRACT_SPEED / sp
-          dvx *= s
-          dvy *= s
-          dvz *= s
-        }
-        child.setLinvel(
-          { x: lv.x + (dvx - lv.x) * a, y: lv.y + (dvy - lv.y) * a, z: lv.z + (dvz - lv.z) * a },
-          true,
-        )
-      }
-
-      // tether: a glowing dashed line drawn once the two are within reach
-      if (line) {
-        const show = isLocked || dist < SNAP_RADIUS
-        line.visible = show
-        if (show) {
-          const pos = line.geometry.attributes.position as THREE.BufferAttribute
-          pos.setXYZ(0, cp.x, cp.y, cp.z) // the piece
-          pos.setXYZ(1, pp.x, pp.y, pp.z) // its one partner
-          pos.needsUpdate = true
-          line.computeLineDistances()
-          ;(line.material as THREE.LineDashedMaterial).opacity = isLocked ? 0.95 : 0.3 + 0.5 * (1 - dist / SNAP_RADIUS)
-        }
-      }
+      const ap = a.translation()
+      const cpp = c.translation()
+      const pos = line.geometry.attributes.position as THREE.BufferAttribute
+      pos.setXYZ(0, ap.x, ap.y, ap.z)
+      pos.setXYZ(1, cpp.x, cpp.y, cpp.z)
+      pos.needsUpdate = true
+      const e = Math.min(bright[i] ?? 0, bright[i + 1] ?? 0)
+      line.visible = e > 0.02
+      ;(line.material as THREE.LineBasicMaterial).opacity = e
     })
 
     // edge force-field: in zero-g there's no floor/walls, so gently ease every
-    // piece's velocity back inward as it drifts toward the screen bounds. It
-    // ramps in over a soft margin and *eases* the velocity (no hard stop) so it
-    // feels like a soft field, not a collision.
+    // free piece's velocity back inward as it drifts toward the screen bounds.
     const { bx, bz } = box
     const MARGIN = 1.2 // start nudging this far before the edge
     const REP = 3.0 // inward speed at deep penetration
     const EASE = 0.12 // how gently the velocity is steered inward
-    // ease one axis: returns the new velocity component
     const ease = (pos: number, vel: number, lim: number): number => {
       const inset = Math.max(lim - MARGIN, 0.4)
       let target = vel
@@ -1443,55 +1462,51 @@ function MagnetController({
       const r = blockRadius(b)
       const nx = ease(t.x, lv.x, Math.max(bx - r, 0.6))
       const nz = ease(t.z, lv.z, Math.max(bz - r, 0.6))
-      // depth band, centred ~2.4 so it doesn't drift toward / through the camera
-      const yMid = 2.4
-      const yHalf = 2.6
-      const ny = ease(t.y - yMid, lv.y, yHalf) // re-centre on the band
+      const ny = ease(t.y - BAR_Y, lv.y, 2.6) // keep them in the depth band
       body.setLinvel({ x: nx, y: ny, z: nz }, true)
     }
 
+    // solved: all five seated -> freeze rigid, full glow, victory tumble
     if (!revealRef.current) {
-      if (connectedCount === TOTEM_LINKS.length) {
+      if (seated === slots.length) {
         dwell.current += dt
-        if (dwell.current > 0.25) {
-          // SOLVED: snap the L rigid and start the victory tumble. Build each
-          // piece's exact pose by walking the chain from the root, freeze them
-          // kinematic, and record their poses relative to the assembly centre.
-          const root = bodies.current[TOTEM_ROOT]
-          if (root) {
-            const rp = root.translation()
-            const posMap = new Map<string, THREE.Vector3>()
-            const quatMap = new Map<string, THREE.Quaternion>()
-            posMap.set(TOTEM_ROOT, new THREE.Vector3(rp.x, rp.y, rp.z))
-            quatMap.set(TOTEM_ROOT, new THREE.Quaternion())
-            for (const link of TOTEM_LINKS) {
-              const pp = posMap.get(link.parent)
-              if (!pp) continue
-              posMap.set(link.id, pp.clone().add(new THREE.Vector3(...link.off)))
-              quatMap.set(link.id, new THREE.Quaternion().setFromEuler(new THREE.Euler(...link.rot)))
-            }
-            const center = new THREE.Vector3()
-            posMap.forEach((p) => center.add(p))
-            center.multiplyScalar(1 / posMap.size)
-            const base = new Map<string, WinPose>()
-            posMap.forEach((p, id) => base.set(id, { p: p.clone().sub(center), q: quatMap.get(id)! }))
-            for (const id of posMap.keys()) bodies.current[id]?.setBodyType(BODY_KINEMATIC_POSITION, true)
-            win.current = { active: true, t: 0, center, base }
-            revealRef.current = true
-            flashT.current = 1
-          }
+        if (dwell.current > 0.2) {
+          const center = new THREE.Vector3(0, BAR_Y, 0)
+          const base = new Map<string, WinPose>()
+          slots.forEach((slot) => base.set(slot.id, { p: slot.pos.clone().sub(center), q: slot.quat.clone() }))
+          for (const slot of slots) bodies.current[slot.id]?.setBodyType(BODY_KINEMATIC_POSITION, true)
+          win.current = { active: true, t: 0, center, base }
+          revealRef.current = true
+          flashT.current = 1
         }
       } else {
         dwell.current = 0
       }
     }
+
     flashT.current = Math.max(0, flashT.current - dt * 0.8)
-    if (flash.current) flash.current.intensity = flashT.current * 80
+    if (flash.current) flash.current.intensity = flashT.current * 90
+    if (glowLight.current) glowLight.current.intensity = 6 + glow.current * 55 + flashT.current * 60
   })
 
   return (
     <>
-      <pointLight ref={flash} position={[0, 4, 2]} distance={40} decay={2} color="#bcd4ff" intensity={0} />
+      <pointLight ref={flash} position={[0, 4, 2]} distance={40} decay={2} color="#dcebff" intensity={0} />
+      <pointLight ref={glowLight} position={[0, BAR_Y + 2, 0]} distance={26} decay={2} color="#bcd4ff" intensity={0} />
+      {/* faint slot markers so the assembly is easy to read */}
+      {slots.map((s, i) => (
+        <mesh key={`slot-${i}`} position={[s.pos.x, s.pos.y, s.pos.z]}>
+          <sphereGeometry args={[0.12, 12, 12]} />
+          <meshBasicMaterial color="#5a78b0" transparent opacity={0.25} toneMapped={false} />
+        </mesh>
+      ))}
+      {/* the glowing "stars" that ride each piece and light up as it seats */}
+      {slots.map((s, i) => (
+        <mesh key={`star-${i}`} ref={(el) => (starRefs.current[i] = el)}>
+          <sphereGeometry args={[0.2, 16, 16]} />
+          <meshBasicMaterial color="#eaf2ff" transparent opacity={0} toneMapped={false} />
+        </mesh>
+      ))}
       {lines.map((l, i) => (
         <primitive key={i} object={l} />
       ))}
