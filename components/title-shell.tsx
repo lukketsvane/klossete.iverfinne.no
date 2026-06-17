@@ -38,14 +38,24 @@ export default function TitleShell() {
   return (
     <main className="relative flex h-dvh w-full flex-col items-center justify-center overflow-hidden bg-[#f6f2ea] px-6 text-[#262626]">
       {screen === "title" ? (
-        <div className="flex flex-col items-center gap-7">
+        <div className="flex flex-col items-center gap-8">
           {/* the mark */}
-          <img src="/icon.svg" alt="" width={104} height={104} className="rounded-[22%] shadow-sm" />
-          <h1 className="font-klossete text-6xl tracking-tight text-[#2b56be] sm:text-7xl">kl.oss.ete</h1>
-          <p className="-mt-3 max-w-xs text-center text-sm text-[#6b6155]">
-            an interactive physics sandbox of wooden blocks
-          </p>
-          <div className="mt-2 flex flex-col items-center gap-3">
+          <img src="/icon.svg" alt="" width={108} height={108} className="rounded-[22%] shadow-sm" />
+          {/* wordmark: each letter in a block colour */}
+          <h1 className="font-klossete text-7xl leading-none tracking-tight sm:text-8xl">
+            {"kl.oss.ete".split("").map((ch, i) =>
+              ch === "." ? (
+                <span key={i} style={{ color: "#7c7264" }}>
+                  {ch}
+                </span>
+              ) : (
+                <span key={i} style={{ color: SOLVED_COLORS[i % SOLVED_COLORS.length] }}>
+                  {ch}
+                </span>
+              ),
+            )}
+          </h1>
+          <div className="mt-1 flex flex-col items-center gap-3">
             <button
               type="button"
               onClick={() => startAt(progress.current)}
