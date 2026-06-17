@@ -1698,6 +1698,8 @@ function MazeController({
   const origCamY = useRef(0) // the rig's height, restored when we leave
   const flash = useRef<THREE.PointLight>(null)
   const flashT = useRef(0)
+  const glow = useRef<THREE.PointLight>(null) // a soft light riding the player
+  const landT = useRef(0) // brief brighten as it lands
 
   // seat the cube at the start cell; park the other four blocks off-screen
   useEffect(() => {
@@ -1839,6 +1841,7 @@ function MazeController({
         const won = T.target[0] === MAZE.goal[0] && T.target[1] === MAZE.goal[1]
         playImpact("cube", won ? 0.9 : 0.42) // a wooden knock as it lands
         haptic(won ? 26 : 9)
+        landT.current = 1 // pop the player glow as it settles
         if (won && !revealRef.current) {
           revealRef.current = true // solved -> progression advances
           flashT.current = 1
@@ -1851,12 +1854,19 @@ function MazeController({
       cube.setNextKinematicRotation({ x: 0, y: 0, z: 0, w: 1 })
     }
 
-    // camera follows the cube, straight down
+    // keep the player PERFECTLY centred: the camera sits straight above it, so
+    // wherever the cube flops to, it stays dead-centre on screen
     const t = cube.translation()
-    camera.position.x += (t.x - camera.position.x) * 0.14
-    camera.position.z += (t.z - camera.position.z) * 0.14
-    camera.position.y = camY.current
-    camera.lookAt(camera.position.x, 0, camera.position.z)
+    const cy = camY.current ?? camera.position.y
+    camera.position.set(t.x, cy, t.z)
+    camera.lookAt(t.x, 0, t.z)
+
+    // a soft light rides the player and pops as it lands
+    landT.current = Math.max(0, landT.current - dt * 2.4)
+    if (glow.current) {
+      glow.current.position.set(t.x, t.y + 0.6, t.z)
+      glow.current.intensity = 7 + landT.current * 20
+    }
 
     flashT.current = Math.max(0, flashT.current - dt * 0.6)
     if (flash.current) {
@@ -1866,7 +1876,12 @@ function MazeController({
     }
   })
 
-  return <pointLight ref={flash} distance={60} decay={2} color="#7cf6c8" intensity={0} />
+  return (
+    <>
+      <pointLight ref={flash} distance={60} decay={2} color="#7cf6c8" intensity={0} />
+      <pointLight ref={glow} distance={6} decay={2} color="#dcebff" intensity={7} />
+    </>
+  )
 }
 
 // 8 — The Fourth Side room: cold TRON grid floor + walls.
