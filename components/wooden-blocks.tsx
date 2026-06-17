@@ -2303,6 +2303,16 @@ const FIVE_POSE: Record<string, { pos: [number, number, number]; rot: [number, n
   orange: { pos: [0, 0.43, -1.8], rot: [0, 0, 0] },
 }
 const FIVE_ORDER = ["plank-long", "plank-short", "cube", "cylinder", "orange"]
+const FIVE_CELL = 0.9 // hop step
+const FIVE_BOUND = 3 // how far the active block may roam (cells)
+// where each block enters from (cell), alternating sides so it isn't a straight line
+const FIVE_ENTRY: [number, number][] = [
+  [-2, 3],
+  [2, 3],
+  [-2, 3],
+  [2, 3],
+  [0, 3],
+]
 
 // — The Five room: a calm dark stage with one soft warm key light.
 function FiveRoom() {
@@ -2318,88 +2328,241 @@ function FiveRoom() {
   )
 }
 
+type FiveSeat = {
+  t: number
+  dur: number
+  id: string
+  fromP: THREE.Vector3
+  fromQ: THREE.Quaternion
+  toP: THREE.Vector3
+  toQ: THREE.Quaternion
+}
+// You pilot each block in turn (hop it with arrows / a held finger) from its
+// entry point into its glowing slot; the Messias figure builds up piece by piece.
 function FiveController({
   bodies,
   box,
-  dragRef,
   revealRef,
 }: {
   bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
   box: Box
-  dragRef: React.MutableRefObject<DragState | null>
   revealRef: React.MutableRefObject<boolean>
 }) {
+  const active = useRef(0)
+  const placed = useRef<Set<string>>(new Set())
+  const cell = useRef<[number, number]>([0, 0])
+  const spawned = useRef(false)
+  const heldDir = useRef<[number, number] | null>(null)
+  const hop = useRef<{ t: number; dur: number; from: THREE.Vector3; to: THREE.Vector3 } | null>(null)
+  const seat = useRef<FiveSeat | null>(null)
+  const cool = useRef(0)
+  const dwell = useRef(0)
   const flash = useRef<THREE.PointLight>(null)
   const flashT = useRef(0)
-  const dwell = useRef(0)
-  const locked = useRef<Set<string>>(new Set())
-  const SNAP = 0.95 // horizontal distance to drop a block into its slot
+  const glow = useRef<THREE.PointLight>(null)
+  const CARRY = 0.75
 
-  // fit the figure inside the tray
   const slots = useMemo(() => {
     const fit = Math.min(1, (Math.min(box.bx, box.bz) - 0.5) / 2.2)
     return FIVE_ORDER.map((id) => {
       const p = FIVE_POSE[id]
+      const pos = new THREE.Vector3(p.pos[0] * fit, p.pos[1], p.pos[2] * fit)
       return {
         id,
-        pos: new THREE.Vector3(p.pos[0] * fit, p.pos[1], p.pos[2] * fit),
+        pos,
         quat: new THREE.Quaternion().setFromEuler(new THREE.Euler(...p.rot)),
+        cellX: Math.round(pos.x / FIVE_CELL),
+        cellY: Math.round(pos.z / FIVE_CELL),
       }
     })
   }, [box.bx, box.bz])
 
-  useEffect(() => () => {
-    revealRef.current = false
-    locked.current.clear()
-    for (const b of BLOCKS) bodies.current[b.id]?.setBodyType(BODY_DYNAMIC, true)
-  }, [revealRef, bodies])
+  // setup: all blocks kinematic + parked; first becomes active
+  useEffect(() => {
+    active.current = 0
+    placed.current = new Set()
+    spawned.current = false
+    hop.current = null
+    seat.current = null
+    for (const b of BLOCKS) {
+      const body = bodies.current[b.id]
+      if (!body) continue
+      body.setBodyType(BODY_KINEMATIC_POSITION, true)
+      body.setNextKinematicTranslation({ x: 0, y: -80, z: 0 })
+    }
+    return () => {
+      for (const b of BLOCKS) bodies.current[b.id]?.setBodyType(BODY_DYNAMIC, true)
+      revealRef.current = false
+    }
+  }, [bodies, revealRef])
+
+  // input -> a held steering direction (grid +y = world +z)
+  useEffect(() => {
+    const keys = new Set<string>()
+    const map = (k: string) =>
+      k === "arrowup" || k === "w"
+        ? "up"
+        : k === "arrowdown" || k === "s"
+          ? "down"
+          : k === "arrowleft" || k === "a"
+            ? "left"
+            : k === "arrowright" || k === "d"
+              ? "right"
+              : null
+    const dirOf = (m: string | null): [number, number] | null =>
+      m === "up" ? [0, -1] : m === "down" ? [0, 1] : m === "left" ? [-1, 0] : m === "right" ? [1, 0] : null
+    const onDown = (e: KeyboardEvent) => {
+      const m = map(e.key.toLowerCase())
+      if (!m) return
+      keys.add(m)
+      heldDir.current = dirOf(m)
+      e.preventDefault()
+    }
+    const onUp = (e: KeyboardEvent) => {
+      const m = map(e.key.toLowerCase())
+      if (!m) return
+      keys.delete(m)
+      heldDir.current = null
+      for (const k of ["up", "down", "left", "right"]) if (keys.has(k)) heldDir.current = dirOf(k)
+    }
+    const dirFromTouch = (t: Touch): [number, number] | null => {
+      const dx = t.clientX - window.innerWidth / 2
+      const dy = t.clientY - window.innerHeight / 2
+      if (Math.abs(dx) < 18 && Math.abs(dy) < 18) return heldDir.current
+      return Math.abs(dx) > Math.abs(dy) ? [dx > 0 ? 1 : -1, 0] : [0, dy > 0 ? 1 : -1]
+    }
+    const tMove = (e: TouchEvent) => {
+      const t = e.touches[0]
+      if (t && e.touches.length === 1) heldDir.current = dirFromTouch(t)
+    }
+    const tEnd = (e: TouchEvent) => {
+      if (e.touches.length === 0) heldDir.current = null
+    }
+    window.addEventListener("keydown", onDown)
+    window.addEventListener("keyup", onUp)
+    window.addEventListener("touchstart", tMove, { passive: true })
+    window.addEventListener("touchmove", tMove, { passive: true })
+    window.addEventListener("touchend", tEnd, { passive: true })
+    window.addEventListener("touchcancel", tEnd, { passive: true })
+    return () => {
+      window.removeEventListener("keydown", onDown)
+      window.removeEventListener("keyup", onUp)
+      window.removeEventListener("touchstart", tMove)
+      window.removeEventListener("touchmove", tMove)
+      window.removeEventListener("touchend", tEnd)
+      window.removeEventListener("touchcancel", tEnd)
+    }
+  }, [])
 
   useFrame((_s, dt) => {
-    const dragged = dragRef.current?.body ?? null
-    let count = 0
-    for (const slot of slots) {
-      const body = bodies.current[slot.id]
-      if (!body) continue
-      const isLocked = locked.current.has(slot.id)
-      if (body === dragged) {
-        if (isLocked) {
-          locked.current.delete(slot.id)
-          body.setBodyType(BODY_DYNAMIC, true)
-        }
-        continue
+    cool.current = Math.max(0, cool.current - dt)
+    const idx = active.current
+
+    // hold placed blocks at their slots; keep not-yet-active blocks hidden.
+    // setTranslation (not setNextKinematic) so it works even on a sleeping body.
+    slots.forEach((s, i) => {
+      const body = bodies.current[s.id]
+      if (!body) return
+      if (body.bodyType() !== BODY_KINEMATIC_POSITION) body.setBodyType(BODY_KINEMATIC_POSITION, true)
+      if (placed.current.has(s.id)) {
+        body.setTranslation({ x: s.pos.x, y: s.pos.y, z: s.pos.z }, true)
+        body.setRotation({ x: s.quat.x, y: s.quat.y, z: s.quat.z, w: s.quat.w }, true)
+      } else if (i > idx) {
+        body.setTranslation({ x: 0, y: -80, z: 0 }, true)
       }
-      if (isLocked) {
-        body.setNextKinematicTranslation({ x: slot.pos.x, y: slot.pos.y, z: slot.pos.z })
-        body.setNextKinematicRotation({ x: slot.quat.x, y: slot.quat.y, z: slot.quat.z, w: slot.quat.w })
-        count++
-        continue
-      }
+    })
+
+    const beginSeat = (s: (typeof slots)[number], body: RapierRigidBody) => {
       const t = body.translation()
-      if (Math.hypot(t.x - slot.pos.x, t.z - slot.pos.z) < SNAP) {
-        // close enough -> click it into the figure
-        locked.current.add(slot.id)
-        body.setBodyType(BODY_KINEMATIC_POSITION, true)
-        body.setNextKinematicTranslation({ x: slot.pos.x, y: slot.pos.y, z: slot.pos.z })
-        body.setNextKinematicRotation({ x: slot.quat.x, y: slot.quat.y, z: slot.quat.z, w: slot.quat.w })
-        playImpact(slot.id, 0.6)
-        haptic(16)
-        flashT.current = Math.max(flashT.current, 0.5)
-        count++
+      seat.current = {
+        t: 0,
+        dur: 0.35,
+        id: s.id,
+        fromP: new THREE.Vector3(t.x, t.y, t.z),
+        fromQ: new THREE.Quaternion(),
+        toP: s.pos.clone(),
+        toQ: s.quat.clone(),
       }
     }
-    if (!revealRef.current) {
-      if (count === slots.length) {
-        dwell.current += dt
-        if (dwell.current > 0.4) {
-          revealRef.current = true
-          flashT.current = 1
+
+    if (idx < FIVE_ORDER.length) {
+      const s = slots[idx]
+      const body = bodies.current[s.id]
+      if (body) {
+        body.wakeUp() // keep the piloted block awake so kinematic moves apply
+        if (!spawned.current) {
+          const [ex, ey] = FIVE_ENTRY[idx]
+          cell.current = [ex, ey]
+          spawned.current = true
+          hop.current = null
+          seat.current = null
+          body.setTranslation({ x: ex * FIVE_CELL, y: CARRY, z: ey * FIVE_CELL }, true)
+          body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true)
+        } else if (seat.current) {
+          const S = seat.current
+          S.t = Math.min(S.dur, S.t + dt)
+          const k = THREE.MathUtils.smoothstep(S.t / S.dur, 0, 1)
+          const p = S.fromP.clone().lerp(S.toP, k)
+          const q = S.fromQ.clone().slerp(S.toQ, k)
+          body.setNextKinematicTranslation({ x: p.x, y: p.y, z: p.z })
+          body.setNextKinematicRotation({ x: q.x, y: q.y, z: q.z, w: q.w })
+          if (S.t >= S.dur) {
+            placed.current.add(S.id)
+            seat.current = null
+            active.current = idx + 1
+            spawned.current = false
+            playImpact(S.id, 0.7)
+            haptic(20)
+            flashT.current = Math.max(flashT.current, 0.6)
+          }
+        } else if (hop.current) {
+          const H = hop.current
+          H.t = Math.min(H.dur, H.t + dt)
+          const k = H.t / H.dur
+          const p = H.from.clone().lerp(H.to, k)
+          p.y = CARRY + Math.sin(Math.PI * k) * 0.22 // a little arc
+          body.setNextKinematicTranslation({ x: p.x, y: p.y, z: p.z })
+          body.setNextKinematicRotation({ x: 0, y: 0, z: 0, w: 1 })
+          if (H.t >= H.dur) {
+            hop.current = null
+            if (cell.current[0] === s.cellX && cell.current[1] === s.cellY) beginSeat(s, body)
+          }
+        } else {
+          const [gx, gy] = cell.current
+          body.setNextKinematicTranslation({ x: gx * FIVE_CELL, y: CARRY, z: gy * FIVE_CELL })
+          body.setNextKinematicRotation({ x: 0, y: 0, z: 0, w: 1 })
+          if (gx === s.cellX && gy === s.cellY) {
+            beginSeat(s, body)
+          } else if (heldDir.current && cool.current === 0) {
+            const [dx, dy] = heldDir.current
+            const tx = THREE.MathUtils.clamp(gx + dx, -FIVE_BOUND, FIVE_BOUND)
+            const ty = THREE.MathUtils.clamp(gy + dy, -FIVE_BOUND, FIVE_BOUND)
+            if (tx !== gx || ty !== gy) {
+              hop.current = {
+                t: 0,
+                dur: 0.2,
+                from: new THREE.Vector3(gx * FIVE_CELL, CARRY, gy * FIVE_CELL),
+                to: new THREE.Vector3(tx * FIVE_CELL, CARRY, ty * FIVE_CELL),
+              }
+              cell.current = [tx, ty]
+              cool.current = 0.05
+              haptic(4)
+            }
+          }
         }
-      } else {
-        dwell.current = 0
+      }
+    }
+
+    if (!revealRef.current && placed.current.size === FIVE_ORDER.length) {
+      dwell.current += dt
+      if (dwell.current > 0.4) {
+        revealRef.current = true
+        flashT.current = 1
       }
     }
     flashT.current = Math.max(0, flashT.current - dt * 0.5)
     if (flash.current) flash.current.intensity = flashT.current * 110
+    if (glow.current) glow.current.intensity = 6 + (placed.current.size / FIVE_ORDER.length) * 28 + flashT.current * 30
   })
 
   return (
@@ -2412,10 +2575,11 @@ function FiveController({
             color={BLOCKS.find((b) => b.id === s.id)?.color ?? "#ffffff"}
             toneMapped={false}
             transparent
-            opacity={0.18}
+            opacity={0.22}
           />
         </mesh>
       ))}
+      <pointLight ref={glow} position={[0, 3, 0]} distance={30} decay={2} color="#fff1dc" intensity={6} />
       <pointLight ref={flash} position={[0, 3, 0]} distance={36} decay={2} color="#fff1dc" intensity={0} />
     </>
   )
@@ -3369,7 +3533,7 @@ function SceneContents({
   // body is ever found outside the tray (a freak tunnel, a stale resize), pull
   // it back inside and kill its velocity instead of letting it vanish offscreen.
   useFrame(() => {
-    if (env.maze) return // the maze owns the (kinematic) cube and roams beyond the tray
+    if (env.maze || env.five) return // these own their (kinematic) blocks
     const { bx, bz } = boxRef.current
     for (const b of BLOCKS) {
       const body = bodies.current[b.id]
@@ -3481,8 +3645,8 @@ function SceneContents({
       {/* apart: scatter every block out of the centre ring */}
       {env.apart && <ApartController bodies={bodies} box={box} revealRef={revealRef} />}
 
-      {/* The Five: drag each block to its slot to build the Messias figure */}
-      {env.five && <FiveController bodies={bodies} box={box} dragRef={drag} revealRef={revealRef} />}
+      {/* The Five: pilot each block to its slot to build the Messias figure */}
+      {env.five && <FiveController bodies={bodies} box={box} revealRef={revealRef} />}
 
       {/* blocks — in the maze only the player cube exists; the others aren't
           rendered at all, so nothing else can ever appear in the corridors */}

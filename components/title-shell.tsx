@@ -94,7 +94,7 @@ export default function TitleShell() {
               const level = LEVELS[i]
               const exists = i < LEVELS.length
               const solved = exists && progress.solved.includes(level.id)
-              const unlocked = exists && i <= progress.current
+              const unlocked = exists // every built level is open from the board
               const isCurrent = exists && i === progress.current && !solved
               const fill = solved ? SOLVED_COLORS[i % SOLVED_COLORS.length] : undefined
               return (
