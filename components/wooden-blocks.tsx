@@ -1200,10 +1200,11 @@ const TOTEM_LINKS: Link[] = [
   { id: "plank-short", parent: "plank-long", off: [1.62, 0, 0.81], rot: [0, Math.PI / 2, 0] }, // corner -> foot (across)
   { id: "cylinder", parent: "plank-short", off: [2.16, 0, 0], rot: [0, 0, Math.PI / 2] }, // foot tip (lying)
 ]
-const SNAP_RADIUS = 3.4 // within this a free piece feels a gentle pull toward its partner
-const LOCK_DIST = 1.7 // within this it CLICKS rigidly into place (kinematic) – guaranteed assembly
-const ATTRACT_PULL = 5 // gentle pull velocity toward the partner (no rotation fighting -> no flicker)
-const ATTRACT_EASE = 0.12 // soft application of that pull
+const SNAP_RADIUS = 2.4 // within this a free piece feels a faint pull toward its partner
+const LOCK_DIST = 1.05 // bring it about this close and it CLICKS rigidly into place
+const ATTRACT_PULL = 2.2 // faint pull velocity toward the partner (just a nudge)
+const ATTRACT_EASE = 0.07 // soft application of that pull
+const MAX_ATTRACT_SPEED = 2.0 // hard cap so a piece is nudged, never yanked across the room
 const SPIN_AXIS = new THREE.Vector3(0.28, 1, 0.18).normalize() // the solved L tumbles about this
 const SPIN_SPEED = 0.7 // rad/s of the victory spin
 
@@ -1376,14 +1377,22 @@ function MagnetController({
         connectedCount++
       } else if (dist < SNAP_RADIUS) {
         // gentle attract (position only – orientation is snapped on lock, so the
-        // dynamic body never fights its own rotation -> no flicker)
+        // dynamic body never fights its own rotation -> no flicker). The desired
+        // velocity is capped so a piece is nudged, never yanked across the room.
         snapping.add(link.id)
         const k = 1 - dist / SNAP_RADIUS
         const lv = child.linvel()
         const a = ATTRACT_EASE * (0.4 + 0.6 * k)
-        const dvx = (targetPos.x - cp.x) * ATTRACT_PULL
-        const dvy = (targetPos.y - cp.y) * ATTRACT_PULL
-        const dvz = (targetPos.z - cp.z) * ATTRACT_PULL
+        let dvx = (targetPos.x - cp.x) * ATTRACT_PULL
+        let dvy = (targetPos.y - cp.y) * ATTRACT_PULL
+        let dvz = (targetPos.z - cp.z) * ATTRACT_PULL
+        const sp = Math.hypot(dvx, dvy, dvz)
+        if (sp > MAX_ATTRACT_SPEED) {
+          const s = MAX_ATTRACT_SPEED / sp
+          dvx *= s
+          dvy *= s
+          dvz *= s
+        }
         child.setLinvel(
           { x: lv.x + (dvx - lv.x) * a, y: lv.y + (dvy - lv.y) * a, z: lv.z + (dvz - lv.z) * a },
           true,
