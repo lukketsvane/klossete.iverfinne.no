@@ -2,6 +2,21 @@
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
 
+/* kl.oss.ete — the brand display face, built from the modular glyph sheet */
+@font-face {
+  font-family: 'kl.oss.ete';
+  src:
+    url('/fonts/KlOssEte-Regular.woff2') format('woff2'),
+    url('/fonts/KlOssEte-Regular.woff') format('woff'),
+    url('/fonts/KlOssEte-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+.font-klossete {
+  font-family: 'kl.oss.ete', system-ui, sans-serif;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
