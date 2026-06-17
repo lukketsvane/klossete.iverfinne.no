@@ -376,6 +376,7 @@ type EnvConfig = {
   magnet?: boolean // zero-g: pieces gently magnet-snap (each to one partner) into a totem
   maze?: boolean // a single block "flip-flop" tips through a camera-following maze to an exit
   gather?: boolean // bring every block onto the glowing pad to solve
+  stack?: boolean // stack a block up through the glowing ring to solve
 }
 const ENVIRONMENTS: EnvConfig[] = [
   {
@@ -386,6 +387,7 @@ const ENVIRONMENTS: EnvConfig[] = [
     keyIntensity: 3.1,
     contact: { color: "#332b20", opacity: 0.5 },
     bloom: false,
+    stack: true, // key: stack a block up through the glowing ring
   },
   {
     id: "gold",
@@ -2084,6 +2086,75 @@ function GatherController({
   )
 }
 
+/* ---- stack puzzle: build a block up through the glowing ring ---- */
+// The first room's key, teaching the core verb: lift a block and rest it on
+// another so its top crosses the lit hoop. Cheese-proof — the held block is
+// ignored and the top block must come to rest above the line.
+const STACK_TARGET = 1.35
+function StackController({
+  bodies,
+  dragRef,
+  box,
+  revealRef,
+}: {
+  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  dragRef: React.MutableRefObject<DragState | null>
+  box: Box
+  revealRef: React.MutableRefObject<boolean>
+}) {
+  const ring = useRef<THREE.Mesh>(null)
+  const flash = useRef<THREE.PointLight>(null)
+  const dwell = useRef(0)
+  const flashT = useRef(0)
+  const r = Math.max(Math.min(box.bx, box.bz) * 0.7, 0.8)
+
+  useEffect(() => () => {
+    revealRef.current = false
+  }, [revealRef])
+
+  useFrame((_s, dt) => {
+    const dragged = dragRef.current?.body ?? null
+    let topY = 0
+    let reached = false
+    for (const b of BLOCKS) {
+      const body = bodies.current[b.id]
+      if (!body || body === dragged) continue // ignore the piece you're holding
+      const t = body.translation()
+      const lv = body.linvel()
+      if (Math.hypot(lv.x, lv.y, lv.z) > 0.5) continue // must be at rest
+      if (t.y > topY) topY = t.y
+      if (t.y > STACK_TARGET) reached = true
+    }
+    if (ring.current) {
+      const near = THREE.MathUtils.clamp(topY / STACK_TARGET, 0, 1)
+      ;(ring.current.material as THREE.MeshBasicMaterial).opacity = reached ? 0.85 : 0.22 + 0.4 * near
+    }
+    if (!revealRef.current) {
+      if (reached) {
+        dwell.current += dt
+        if (dwell.current > 0.7) {
+          revealRef.current = true // solved -> progression advances
+          flashT.current = 1
+        }
+      } else {
+        dwell.current = 0
+      }
+    }
+    flashT.current = Math.max(0, flashT.current - dt * 0.7)
+    if (flash.current) flash.current.intensity = flashT.current * 90
+  })
+
+  return (
+    <>
+      <mesh ref={ring} position={[0, STACK_TARGET, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <torusGeometry args={[r, 0.045, 8, 56]} />
+        <meshBasicMaterial color="#ffe1a8" toneMapped={false} transparent opacity={0.3} />
+      </mesh>
+      <pointLight ref={flash} position={[0, 2.4, 0]} distance={30} decay={2} color="#fff0cf" intensity={0} />
+    </>
+  )
+}
+
 // 8 — The Fourth Side room: cold TRON grid floor + walls.
 function FourthRoom({ box, visibleWalls }: RoomProps) {
   const mat = useMemo(
@@ -3158,6 +3229,9 @@ function SceneContents({
 
       {/* gather: rest all five blocks on the glowing pad to solve */}
       {env.gather && <GatherController bodies={bodies} box={box} revealRef={revealRef} />}
+
+      {/* stack: build a block up through the glowing ring to solve */}
+      {env.stack && <StackController bodies={bodies} dragRef={drag} box={box} revealRef={revealRef} />}
 
       {/* blocks */}
       {BLOCKS.map((b) => (
