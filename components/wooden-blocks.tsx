@@ -361,7 +361,8 @@ type EnvKind =
   | "magnet"
   | "maze"
 type EnvConfig = {
-  id: EnvKind
+  id: string
+  look?: EnvKind // which room's visuals to render (defaults to a matching id)
   name: string
   bg: string // canvas + page background
   keyColor: string
@@ -380,8 +381,9 @@ type EnvConfig = {
   corners?: boolean // rest a block in each lit corner
   lineup?: boolean // line all five blocks along the glowing centre line
   plate?: boolean // rest a block on the glowing plate
+  apart?: boolean // scatter every block out of the centre ring to solve
 }
-const ENVIRONMENTS: EnvConfig[] = [
+const BASE_ENVIRONMENTS: EnvConfig[] = [
   {
     id: "concrete",
     name: "Concrete",
@@ -441,7 +443,7 @@ const ENVIRONMENTS: EnvConfig[] = [
     keyIntensity: 2.2,
     contact: { color: "#37332a", opacity: 0.3 },
     bloom: false,
-    plate: true, // key: rest a block on the glowing plate
+    apart: true, // key: scatter the blocks out of the centre ring ("uncover")
   },
   {
     id: "texturemiss",
@@ -451,7 +453,7 @@ const ENVIRONMENTS: EnvConfig[] = [
     keyIntensity: 1.8,
     contact: { color: "#000000", opacity: 0.4 },
     bloom: true,
-    plate: true, // key: rest a block on the glowing plate
+    corners: true, // key: rest a block in each lit corner
   },
   {
     id: "fourthside",
@@ -462,7 +464,7 @@ const ENVIRONMENTS: EnvConfig[] = [
     contact: { color: "#0b2f3a", opacity: 0.55 }, // cold, sharp 2D projection on the floor
     bloom: true, // makes the wireframe shells glow like TRON
     fourthSide: true,
-    plate: true, // key: rest a block on the glowing plate
+    lineup: true, // key: line the blocks along the centre line
   },
   {
     id: "klossete",
@@ -505,6 +507,38 @@ const ENVIRONMENTS: EnvConfig[] = [
     maze: true,
   },
 ]
+
+// Pull the visual theme of a base "look" so extra levels can reuse it.
+const VISUAL = (look: EnvKind) => {
+  const b = BASE_ENVIRONMENTS.find((e) => e.id === look) ?? BASE_ENVIRONMENTS[0]
+  return { look, bg: b.bg, keyColor: b.keyColor, keyIntensity: b.keyIntensity, contact: b.contact, bloom: b.bloom }
+}
+type KeyFlag = "stack" | "gather" | "corners" | "lineup" | "plate" | "apart"
+// Extra levels that fill the board toward 25: each pairs a distinct room look
+// with a key it doesn't already use, so every square is a fresh, solvable combo.
+const EXTRA_SPECS: { name: string; look: EnvKind; key: KeyFlag }[] = [
+  { name: "Glass · stack", look: "glass", key: "stack" },
+  { name: "Gold · corners", look: "gold", key: "corners" },
+  { name: "Play mat · gather", look: "playmat", key: "gather" },
+  { name: "Concrete · line", look: "concrete", key: "lineup" },
+  { name: "Video · scatter", look: "video", key: "apart" },
+  { name: "Peel · stack", look: "peel", key: "stack" },
+  { name: "Texture · gather", look: "texturemiss", key: "gather" },
+  { name: "Fourth · scatter", look: "fourthside", key: "apart" },
+  { name: "Glass · line", look: "glass", key: "lineup" },
+  { name: "Gold · plate", look: "gold", key: "plate" },
+  { name: "Play mat · stack", look: "playmat", key: "stack" },
+  { name: "Concrete · corners", look: "concrete", key: "corners" },
+  { name: "Peel · gather", look: "peel", key: "gather" },
+]
+const EXTRA_ENVIRONMENTS: EnvConfig[] = EXTRA_SPECS.map((s, i) => ({
+  id: `x${i + 13}`,
+  name: s.name,
+  ...VISUAL(s.look),
+  [s.key]: true,
+}))
+
+const ENVIRONMENTS: EnvConfig[] = [...BASE_ENVIRONMENTS, ...EXTRA_ENVIRONMENTS]
 
 // Public level list (id + name, in play order) for the title/level-select UI.
 export const LEVELS: { id: string; name: string }[] = ENVIRONMENTS.map((e) => ({ id: e.id, name: e.name }))
@@ -839,17 +873,18 @@ function puzzleZones(box: Box): Zone[] {
 }
 
 function Room(props: RoomProps) {
-  if (props.env.id === "gold") return <GoldRoom {...props} />
-  if (props.env.id === "glass") return <GlassRoom {...props} />
-  if (props.env.id === "playmat") return <PlayMatRoom {...props} />
-  if (props.env.id === "video") return <VideoRoom {...props} />
-  if (props.env.id === "peel") return <PeelRoom {...props} />
-  if (props.env.id === "texturemiss") return <TextureMissRoom {...props} />
-  if (props.env.id === "fourthside") return <FourthRoom {...props} />
-  if (props.env.id === "klossete") return <KlosseRoom {...props} />
-  if (props.env.id === "projection") return <ProjectionRoom {...props} />
-  if (props.env.id === "magnet") return <MagnetRoom />
-  if (props.env.id === "maze") return <MazeRoom />
+  const look = props.env.look ?? props.env.id // extra levels reuse a base look
+  if (look === "gold") return <GoldRoom {...props} />
+  if (look === "glass") return <GlassRoom {...props} />
+  if (look === "playmat") return <PlayMatRoom {...props} />
+  if (look === "video") return <VideoRoom {...props} />
+  if (look === "peel") return <PeelRoom {...props} />
+  if (look === "texturemiss") return <TextureMissRoom {...props} />
+  if (look === "fourthside") return <FourthRoom {...props} />
+  if (look === "klossete") return <KlosseRoom {...props} />
+  if (look === "projection") return <ProjectionRoom {...props} />
+  if (look === "magnet") return <MagnetRoom />
+  if (look === "maze") return <MazeRoom />
   return <ConcreteRoom {...props} />
 }
 
@@ -2169,6 +2204,69 @@ function PlateController({
   )
 }
 
+/* ---- apart key: clear the centre – scatter every block out of the ring ---- */
+function ApartController({
+  bodies,
+  box,
+  revealRef,
+}: {
+  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  box: Box
+  revealRef: React.MutableRefObject<boolean>
+}) {
+  const ring = useRef<THREE.Mesh>(null)
+  const flash = useRef<THREE.PointLight>(null)
+  const dwell = useRef(0)
+  const flashT = useRef(0)
+  const RAD = Math.min(1.7, Math.min(box.bx, box.bz) - 0.6)
+
+  useEffect(() => () => {
+    revealRef.current = false
+  }, [revealRef])
+
+  useFrame((_s, dt) => {
+    let outCount = 0
+    let allOut = true
+    for (const b of BLOCKS) {
+      const body = bodies.current[b.id]
+      if (!body) {
+        allOut = false
+        continue
+      }
+      const r = blockResting(body)
+      const clear = !!r && Math.hypot(r.x, r.z) > RAD // resting outside the centre ring
+      if (clear) outCount++
+      else allOut = false
+    }
+    if (ring.current) {
+      ;(ring.current.material as THREE.MeshBasicMaterial).opacity = 0.28 - 0.045 * outCount
+    }
+    if (!revealRef.current) {
+      if (allOut) {
+        dwell.current += dt
+        if (dwell.current > 0.5) {
+          revealRef.current = true
+          flashT.current = 1
+        }
+      } else {
+        dwell.current = 0
+      }
+    }
+    flashT.current = Math.max(0, flashT.current - dt * 0.7)
+    if (flash.current) flash.current.intensity = flashT.current * 90
+  })
+
+  return (
+    <>
+      <mesh ref={ring} position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[RAD, 48]} />
+        <meshBasicMaterial color="#8a8276" toneMapped={false} transparent opacity={0.28} />
+      </mesh>
+      <pointLight ref={flash} position={[0, 2.4, 0]} distance={32} decay={2} color="#fff2dc" intensity={0} />
+    </>
+  )
+}
+
 // 8 — The Fourth Side room: cold TRON grid floor + walls.
 function FourthRoom({ box, visibleWalls }: RoomProps) {
   const mat = useMemo(
@@ -3224,6 +3322,9 @@ function SceneContents({
 
       {/* plate: rest a block on the glowing plate */}
       {env.plate && <PlateController bodies={bodies} revealRef={revealRef} />}
+
+      {/* apart: scatter every block out of the centre ring */}
+      {env.apart && <ApartController bodies={bodies} box={box} revealRef={revealRef} />}
 
       {/* blocks — in the maze only the player cube exists; the others aren't
           rendered at all, so nothing else can ever appear in the corridors */}
