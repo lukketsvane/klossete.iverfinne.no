@@ -40,7 +40,7 @@ export default function TitleShell() {
       {screen === "title" ? (
         <div className="flex flex-col items-center gap-8">
           {/* the mark */}
-          <img src="/icon.svg" alt="" width={108} height={108} className="rounded-[22%] shadow-sm" />
+          <img src="/icons/icon-512.png" alt="" width={108} height={108} className="rounded-[22%] shadow-sm" />
           {/* wordmark: each letter in a block colour */}
           <h1 className="font-klossete text-7xl leading-none tracking-tight sm:text-8xl">
             {"kl.oss.ete".split("").map((ch, i) =>
