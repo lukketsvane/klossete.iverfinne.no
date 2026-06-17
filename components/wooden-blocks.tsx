@@ -1606,30 +1606,43 @@ function mazeWorld(gx: number, gy: number): [number, number] {
 
 // — Maze room: dark floor, a forest of wall blocks, a glowing exit tile.
 function MazeRoom() {
-  const walls = useMemo(() => {
-    const out: [number, number][] = []
-    for (let y = 0; y < MAZE.H; y++) for (let x = 0; x < MAZE.W; x++) if (MAZE.wall[y][x]) out.push([x, y])
-    return out
+  // All wall cubes drawn as ONE instanced mesh (one draw call, no shadows) so
+  // even the large maze stays light on mobile GPUs.
+  const wallMesh = useMemo(() => {
+    const cells: [number, number][] = []
+    for (let y = 0; y < MAZE.H; y++) for (let x = 0; x < MAZE.W; x++) if (MAZE.wall[y][x]) cells.push([x, y])
+    const geo = new THREE.BoxGeometry(MAZE_CELL, MAZE_CELL, MAZE_CELL)
+    const mat = new THREE.MeshStandardMaterial({ color: "#27345c", roughness: 0.78, metalness: 0.06 })
+    const mesh = new THREE.InstancedMesh(geo, mat, cells.length)
+    mesh.castShadow = false
+    mesh.receiveShadow = false
+    const o = new THREE.Object3D()
+    cells.forEach(([x, y], i) => {
+      const [wx, wz] = mazeWorld(x, y)
+      o.position.set(wx, MAZE_CELL * 0.5, wz)
+      o.updateMatrix()
+      mesh.setMatrixAt(i, o.matrix)
+    })
+    mesh.instanceMatrix.needsUpdate = true
+    return mesh
   }, [])
+  useEffect(
+    () => () => {
+      wallMesh.geometry.dispose()
+      ;(wallMesh.material as THREE.Material).dispose()
+    },
+    [wallMesh],
+  )
   return (
     <>
       <ambientLight intensity={0.4} color="#22304c" />
       <pointLight position={[0, 14, 0]} intensity={26} distance={70} decay={2} color="#bcd0ff" />
       {/* a large dark floor under the whole maze */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
         <planeGeometry args={[MAZE.W * MAZE_CELL + 6, MAZE.H * MAZE_CELL + 6]} />
         <meshStandardMaterial color="#0b1020" roughness={0.96} metalness={0} />
       </mesh>
-      {/* maze walls */}
-      {walls.map(([x, y], i) => {
-        const [wx, wz] = mazeWorld(x, y)
-        return (
-          <mesh key={i} position={[wx, MAZE_CELL * 0.5, wz]} castShadow receiveShadow>
-            <boxGeometry args={[MAZE_CELL, MAZE_CELL, MAZE_CELL]} />
-            <meshStandardMaterial color="#27345c" roughness={0.75} metalness={0.08} />
-          </mesh>
-        )
-      })}
+      <primitive object={wallMesh} />
       {/* the exit: a lit tile + a tall beacon you can steer toward */}
       <MazeExit />
     </>
@@ -3215,6 +3228,7 @@ function SceneContents({
   // body is ever found outside the tray (a freak tunnel, a stale resize), pull
   // it back inside and kill its velocity instead of letting it vanish offscreen.
   useFrame(() => {
+    if (env.maze) return // the maze owns the (kinematic) cube and roams beyond the tray
     const { bx, bz } = boxRef.current
     for (const b of BLOCKS) {
       const body = bodies.current[b.id]
@@ -3250,7 +3264,7 @@ function SceneContents({
         position={[KEY.x, KEY.y, KEY.z]}
         intensity={env.keyIntensity}
         color={env.keyColor}
-        castShadow
+        castShadow={!env.maze}
         shadow-mapSize-width={4096}
         shadow-mapSize-height={4096}
         shadow-camera-near={1}
