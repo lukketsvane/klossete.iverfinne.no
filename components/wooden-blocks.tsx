@@ -377,6 +377,9 @@ type EnvConfig = {
   maze?: boolean // a single block "flip-flop" tips through a camera-following maze to an exit
   gather?: boolean // bring every block onto the glowing pad to solve
   stack?: boolean // stack a block up through the glowing ring to solve
+  corners?: boolean // rest a block in each lit corner
+  lineup?: boolean // line all five blocks along the glowing centre line
+  plate?: boolean // rest a block on the glowing plate
 }
 const ENVIRONMENTS: EnvConfig[] = [
   {
@@ -408,6 +411,7 @@ const ENVIRONMENTS: EnvConfig[] = [
     contact: { color: "#3a4452", opacity: 0.28 },
     bloom: true,
     reactive: true, // each glass tile lights up where a block strikes it
+    corners: true, // key: rest a block in each lit corner
   },
   {
     id: "playmat",
@@ -417,6 +421,7 @@ const ENVIRONMENTS: EnvConfig[] = [
     keyIntensity: 2.5,
     contact: { color: "#5a4f63", opacity: 0.34 },
     bloom: false,
+    lineup: true, // key: line all five blocks along the centre line
   },
   {
     id: "video",
@@ -426,6 +431,7 @@ const ENVIRONMENTS: EnvConfig[] = [
     keyIntensity: 1.5,
     contact: { color: "#000000", opacity: 0.45 },
     bloom: true,
+    plate: true, // key: rest a block on the glowing plate
   },
   {
     id: "peel",
@@ -435,6 +441,7 @@ const ENVIRONMENTS: EnvConfig[] = [
     keyIntensity: 2.2,
     contact: { color: "#37332a", opacity: 0.3 },
     bloom: false,
+    plate: true, // key: rest a block on the glowing plate
   },
   {
     id: "texturemiss",
@@ -444,6 +451,7 @@ const ENVIRONMENTS: EnvConfig[] = [
     keyIntensity: 1.8,
     contact: { color: "#000000", opacity: 0.4 },
     bloom: true,
+    plate: true, // key: rest a block on the glowing plate
   },
   {
     id: "fourthside",
@@ -454,6 +462,7 @@ const ENVIRONMENTS: EnvConfig[] = [
     contact: { color: "#0b2f3a", opacity: 0.55 }, // cold, sharp 2D projection on the floor
     bloom: true, // makes the wireframe shells glow like TRON
     fourthSide: true,
+    plate: true, // key: rest a block on the glowing plate
   },
   {
     id: "klossete",
@@ -2155,6 +2164,198 @@ function StackController({
   )
 }
 
+// shared rest test: a block sitting still on the floor (not lifted / held)
+function blockResting(body: RapierRigidBody): { x: number; z: number } | null {
+  const t = body.translation()
+  const lv = body.linvel()
+  if (t.y > 1.4 || Math.hypot(lv.x, lv.y, lv.z) > 0.6) return null
+  return { x: t.x, z: t.z }
+}
+
+/* ---- corners key: rest a block in each lit corner ---- */
+function CornersController({
+  bodies,
+  box,
+  revealRef,
+}: {
+  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  box: Box
+  revealRef: React.MutableRefObject<boolean>
+}) {
+  const flash = useRef<THREE.PointLight>(null)
+  const pads = useRef<(THREE.Mesh | null)[]>([])
+  const dwell = useRef(0)
+  const flashT = useRef(0)
+  const cx = Math.max(box.bx - 0.75, 0.5)
+  const cz = Math.max(box.bz - 0.75, 0.5)
+  const corners: [number, number][] = [
+    [cx, cz],
+    [cx, -cz],
+    [-cx, cz],
+    [-cx, -cz],
+  ]
+  const RAD = 1.05
+
+  useEffect(() => () => {
+    revealRef.current = false
+  }, [revealRef])
+
+  useFrame((_s, dt) => {
+    const filled = corners.map(([px, pz]) =>
+      BLOCKS.some((b) => {
+        const body = bodies.current[b.id]
+        if (!body) return false
+        const r = blockResting(body)
+        return !!r && Math.hypot(r.x - px, r.z - pz) < RAD
+      }),
+    )
+    filled.forEach((on, i) => {
+      const pad = pads.current[i]
+      if (pad) (pad.material as THREE.MeshBasicMaterial).opacity = on ? 0.85 : 0.22
+    })
+    const all = filled.every(Boolean)
+    if (!revealRef.current) {
+      if (all) {
+        dwell.current += dt
+        if (dwell.current > 0.5) {
+          revealRef.current = true
+          flashT.current = 1
+        }
+      } else {
+        dwell.current = 0
+      }
+    }
+    flashT.current = Math.max(0, flashT.current - dt * 0.7)
+    if (flash.current) flash.current.intensity = flashT.current * 90
+  })
+
+  return (
+    <>
+      {corners.map(([px, pz], i) => (
+        <mesh key={i} ref={(el) => (pads.current[i] = el)} position={[px, 0.02, pz]} rotation={[-Math.PI / 2, 0, 0]}>
+          <circleGeometry args={[RAD * 0.8, 32]} />
+          <meshBasicMaterial color="#9fe6ff" toneMapped={false} transparent opacity={0.22} />
+        </mesh>
+      ))}
+      <pointLight ref={flash} position={[0, 2.4, 0]} distance={34} decay={2} color="#bfeaff" intensity={0} />
+    </>
+  )
+}
+
+/* ---- line-up key: rest all five blocks along the glowing centre line ---- */
+function LineupController({
+  bodies,
+  box,
+  revealRef,
+}: {
+  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  box: Box
+  revealRef: React.MutableRefObject<boolean>
+}) {
+  const flash = useRef<THREE.PointLight>(null)
+  const line = useRef<THREE.Mesh>(null)
+  const dwell = useRef(0)
+  const flashT = useRef(0)
+  const BAND = 0.8 // how close to the centre line each block must rest
+
+  useEffect(() => () => {
+    revealRef.current = false
+  }, [revealRef])
+
+  useFrame((_s, dt) => {
+    let onLine = 0
+    let allReady = true
+    for (const b of BLOCKS) {
+      const body = bodies.current[b.id]
+      if (!body) {
+        allReady = false
+        continue
+      }
+      const r = blockResting(body)
+      if (r && Math.abs(r.z) < BAND) onLine++
+      else allReady = false
+    }
+    if (line.current) {
+      ;(line.current.material as THREE.MeshBasicMaterial).opacity = 0.18 + 0.12 * onLine
+    }
+    if (!revealRef.current) {
+      if (allReady) {
+        dwell.current += dt
+        if (dwell.current > 0.5) {
+          revealRef.current = true
+          flashT.current = 1
+        }
+      } else {
+        dwell.current = 0
+      }
+    }
+    flashT.current = Math.max(0, flashT.current - dt * 0.7)
+    if (flash.current) flash.current.intensity = flashT.current * 90
+  })
+
+  return (
+    <>
+      <mesh ref={line} position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[box.bx * 2, BAND * 2]} />
+        <meshBasicMaterial color="#f4c8e6" toneMapped={false} transparent opacity={0.2} />
+      </mesh>
+      <pointLight ref={flash} position={[0, 2.4, 0]} distance={34} decay={2} color="#ffd8f0" intensity={0} />
+    </>
+  )
+}
+
+/* ---- plate key: rest any block on the glowing plate ---- */
+function PlateController({
+  bodies,
+  revealRef,
+}: {
+  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  revealRef: React.MutableRefObject<boolean>
+}) {
+  const flash = useRef<THREE.PointLight>(null)
+  const plate = useRef<THREE.Mesh>(null)
+  const dwell = useRef(0)
+  const flashT = useRef(0)
+  const RAD = 0.95
+
+  useEffect(() => () => {
+    revealRef.current = false
+  }, [revealRef])
+
+  useFrame((_s, dt) => {
+    const on = BLOCKS.some((b) => {
+      const body = bodies.current[b.id]
+      if (!body) return false
+      const r = blockResting(body)
+      return !!r && Math.hypot(r.x, r.z) < RAD
+    })
+    if (plate.current) (plate.current.material as THREE.MeshBasicMaterial).opacity = on ? 0.9 : 0.3
+    if (!revealRef.current) {
+      if (on) {
+        dwell.current += dt
+        if (dwell.current > 0.55) {
+          revealRef.current = true
+          flashT.current = 1
+        }
+      } else {
+        dwell.current = 0
+      }
+    }
+    flashT.current = Math.max(0, flashT.current - dt * 0.7)
+    if (flash.current) flash.current.intensity = flashT.current * 90
+  })
+
+  return (
+    <>
+      <mesh ref={plate} position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[RAD * 0.7, RAD, 40]} />
+        <meshBasicMaterial color="#ffe7a0" toneMapped={false} transparent opacity={0.3} side={THREE.DoubleSide} />
+      </mesh>
+      <pointLight ref={flash} position={[0, 2.2, 0]} distance={28} decay={2} color="#fff0cf" intensity={0} />
+    </>
+  )
+}
+
 // 8 — The Fourth Side room: cold TRON grid floor + walls.
 function FourthRoom({ box, visibleWalls }: RoomProps) {
   const mat = useMemo(
@@ -3199,6 +3400,15 @@ function SceneContents({
 
       {/* stack: build a block up through the glowing ring to solve */}
       {env.stack && <StackController bodies={bodies} dragRef={drag} box={box} revealRef={revealRef} />}
+
+      {/* corners: rest a block in each lit corner */}
+      {env.corners && <CornersController bodies={bodies} box={box} revealRef={revealRef} />}
+
+      {/* line-up: rest all five blocks along the centre line */}
+      {env.lineup && <LineupController bodies={bodies} box={box} revealRef={revealRef} />}
+
+      {/* plate: rest a block on the glowing plate */}
+      {env.plate && <PlateController bodies={bodies} revealRef={revealRef} />}
 
       {/* blocks */}
       {BLOCKS.map((b) => (
