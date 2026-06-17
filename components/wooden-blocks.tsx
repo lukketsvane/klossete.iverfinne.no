@@ -1183,23 +1183,26 @@ function ProjectionController({
   )
 }
 
-/* ---- magnet L-puzzle: each piece snaps to ONE partner, building a long L ---- */
-// A chain: each piece (except the root) snaps to one partner at a fixed pose.
-// Snapped together they interlock into a long L – a vertical arm of three with a
-// foot of two turning off the bottom. Offsets are world-axis, relative to the
+/* ---- magnet line-puzzle: each piece snaps to ONE partner, end to end ---- */
+// A simple chain: every piece (except the root) snaps to the next at a fixed
+// pose, each oriented so its LONGEST dimension runs along z, joined end-to-end
+// into the longest possible single bar. Offsets are world-axis, relative to the
 // partner's position; orientations are fixed (the magnet keeps pieces aligned).
+// Per-piece half-length along z: cube .54, orange .81, plank-short 1.08,
+// cylinder (laid on its side) 1.08, plank-long 1.35. Each gap = sum of the two
+// touching half-lengths.
 type Link = {
   id: string
   parent: string
   off: [number, number, number] // world-axis offset from the partner's position
   rot: [number, number, number] // fixed target orientation (world euler)
 }
-const TOTEM_ROOT = "cube" // top of the L's long arm – the seed
+const TOTEM_ROOT = "cube" // one end of the bar – the seed
 const TOTEM_LINKS: Link[] = [
-  { id: "orange", parent: "cube", off: [0, 0, 1.35], rot: [0, 0, 0] }, // arm
-  { id: "plank-long", parent: "orange", off: [0, 0, 2.16], rot: [0, 0, 0] }, // arm (long, upright)
-  { id: "plank-short", parent: "plank-long", off: [1.62, 0, 0.81], rot: [0, Math.PI / 2, 0] }, // corner -> foot (across)
-  { id: "cylinder", parent: "plank-short", off: [2.16, 0, 0], rot: [0, 0, Math.PI / 2] }, // foot tip (lying)
+  { id: "orange", parent: "cube", off: [0, 0, 1.35], rot: [0, 0, 0] }, // .54 + .81
+  { id: "plank-short", parent: "orange", off: [0, 0, 1.89], rot: [0, 0, 0] }, // .81 + 1.08
+  { id: "cylinder", parent: "plank-short", off: [0, 0, 2.16], rot: [Math.PI / 2, 0, 0] }, // 1.08 + 1.08, laid along z
+  { id: "plank-long", parent: "cylinder", off: [0, 0, 2.43], rot: [0, 0, 0] }, // 1.08 + 1.35
 ]
 const SNAP_RADIUS = 2.4 // within this a free piece feels a faint pull toward its partner
 const LOCK_DIST = 1.05 // bring it about this close and it CLICKS rigidly into place
