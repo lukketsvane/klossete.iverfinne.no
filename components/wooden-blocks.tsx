@@ -1660,12 +1660,16 @@ function MazeRoom() {
           </mesh>
         )
       })}
-      {/* the glowing exit */}
+      {/* the glowing exit + a tall beacon so you can navigate toward it */}
       <mesh position={[gx, 0.03, gz]} rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[MAZE_CELL * 0.92, MAZE_CELL * 0.92]} />
         <meshBasicMaterial color="#7cf6c8" toneMapped={false} transparent opacity={0.9} />
       </mesh>
-      <pointLight position={[gx, 1.6, gz]} intensity={12} distance={7} decay={2} color="#7cf6c8" />
+      <mesh position={[gx, 9, gz]}>
+        <cylinderGeometry args={[0.12, 0.12, 18, 8, 1, true]} />
+        <meshBasicMaterial color="#7cf6c8" toneMapped={false} transparent opacity={0.32} side={THREE.DoubleSide} />
+      </mesh>
+      <pointLight position={[gx, 1.6, gz]} intensity={12} distance={9} decay={2} color="#7cf6c8" />
     </>
   )
 }
@@ -1690,9 +1694,12 @@ function MazeController({
   const cell = useRef<[number, number]>([MAZE.start[0], MAZE.start[1]])
   const tip = useRef<TipState | null>(null)
   const moveReq = useRef<[number, number] | null>(null)
-  const camY = useRef<number | null>(null)
+  const camY = useRef<number | null>(null) // follow height (a touch higher = wider view)
+  const origCamY = useRef(0) // the rig's height, restored when we leave
   const flash = useRef<THREE.PointLight>(null)
   const flashT = useRef(0)
+  const glow = useRef<THREE.PointLight>(null) // a soft light riding the player
+  const landT = useRef(0) // brief brighten as it lands
 
   // seat the cube at the start cell; park the other four blocks off-screen
   useEffect(() => {
@@ -1726,7 +1733,9 @@ function MazeController({
       }
       camera.position.x = 0
       camera.position.z = 0
+      if (origCamY.current) camera.position.y = origCamY.current
       camera.lookAt(0, 0, 0)
+      camY.current = null
       revealRef.current = false
     }
   }, [bodies, revealRef, camera])
@@ -1776,7 +1785,10 @@ function MazeController({
   useFrame((_s, dt) => {
     const cube = bodies.current["cube"]
     if (!cube) return
-    if (camY.current == null) camY.current = camera.position.y
+    if (camY.current == null) {
+      origCamY.current = camera.position.y
+      camY.current = camera.position.y * 1.32 // pull back a little so more maze reads
+    }
     if (cube.bodyType() !== BODY_KINEMATIC_POSITION) cube.setBodyType(BODY_KINEMATIC_POSITION, true)
 
     // start a tip if idle, a move is queued, and the target cell is open
@@ -1804,13 +1816,16 @@ function MazeController({
           startQ: new THREE.Quaternion(),
           target: [tx, ty],
         }
+        haptic(5) // a tick as it tips off
       }
     }
 
     if (tip.current) {
       const T = tip.current
       T.t = Math.min(T.dur, T.t + dt)
-      const theta = (Math.PI / 2) * (T.t / T.dur)
+      // ease the tip so it accelerates off the edge and settles flat
+      const k = T.t / T.dur
+      const theta = (Math.PI / 2) * (k * k * (3 - 2 * k))
       const q = new THREE.Quaternion().setFromAxisAngle(T.axis, theta)
       const c = T.pivot.clone().add(T.startCenter.clone().sub(T.pivot).applyQuaternion(q))
       const rot = q.clone().multiply(T.startQ)
@@ -1823,7 +1838,11 @@ function MazeController({
         cube.setNextKinematicTranslation({ x: fx, y: MAZE_CELL / 2, z: fz })
         cube.setNextKinematicRotation({ x: 0, y: 0, z: 0, w: 1 })
         tip.current = null
-        if (T.target[0] === MAZE.goal[0] && T.target[1] === MAZE.goal[1] && !revealRef.current) {
+        const won = T.target[0] === MAZE.goal[0] && T.target[1] === MAZE.goal[1]
+        playImpact("cube", won ? 0.9 : 0.42) // a wooden knock as it lands
+        haptic(won ? 26 : 9)
+        landT.current = 1 // pop the player glow as it settles
+        if (won && !revealRef.current) {
           revealRef.current = true // solved -> progression advances
           flashT.current = 1
         }
@@ -1835,12 +1854,19 @@ function MazeController({
       cube.setNextKinematicRotation({ x: 0, y: 0, z: 0, w: 1 })
     }
 
-    // camera follows the cube, straight down
+    // keep the player PERFECTLY centred: the camera sits straight above it, so
+    // wherever the cube flops to, it stays dead-centre on screen
     const t = cube.translation()
-    camera.position.x += (t.x - camera.position.x) * 0.14
-    camera.position.z += (t.z - camera.position.z) * 0.14
-    camera.position.y = camY.current
-    camera.lookAt(camera.position.x, 0, camera.position.z)
+    const cy = camY.current ?? camera.position.y
+    camera.position.set(t.x, cy, t.z)
+    camera.lookAt(t.x, 0, t.z)
+
+    // a soft light rides the player and pops as it lands
+    landT.current = Math.max(0, landT.current - dt * 2.4)
+    if (glow.current) {
+      glow.current.position.set(t.x, t.y + 0.6, t.z)
+      glow.current.intensity = 7 + landT.current * 20
+    }
 
     flashT.current = Math.max(0, flashT.current - dt * 0.6)
     if (flash.current) {
@@ -1850,7 +1876,12 @@ function MazeController({
     }
   })
 
-  return <pointLight ref={flash} distance={60} decay={2} color="#7cf6c8" intensity={0} />
+  return (
+    <>
+      <pointLight ref={flash} distance={60} decay={2} color="#7cf6c8" intensity={0} />
+      <pointLight ref={glow} distance={6} decay={2} color="#dcebff" intensity={7} />
+    </>
+  )
 }
 
 // 8 — The Fourth Side room: cold TRON grid floor + walls.
@@ -2695,6 +2726,47 @@ function SceneContents({
       el.removeEventListener("touchcancel", onEnd)
     }
   }, [gl, pushGlow])
+
+  /* ---- desktop rotate: wheel / Q / E spin the held block (mirrors the twist) ---- */
+  // So the same easy right-angle alignment works without a touchscreen.
+  useEffect(() => {
+    const el = gl.domElement
+    const UP = new THREE.Vector3(0, 1, 0)
+    const QUARTER = Math.PI / 2
+    const rotateHeld = (angle: number, snap: boolean) => {
+      const d = drag.current
+      if (!d) return
+      const r = d.body.rotation()
+      let q = new THREE.Quaternion().setFromAxisAngle(UP, angle).multiply(new THREE.Quaternion(r.x, r.y, r.z, r.w))
+      if (snap) {
+        const e = new THREE.Euler().setFromQuaternion(q, "YXZ")
+        e.y = Math.round(e.y / QUARTER) * QUARTER
+        q = new THREE.Quaternion().setFromEuler(e)
+      }
+      d.body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
+      d.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+      haptic(6)
+    }
+    const onWheel = (e: WheelEvent) => {
+      if (!drag.current) return
+      e.preventDefault()
+      rotateHeld((e.deltaY > 0 ? 1 : -1) * (Math.PI / 8), false) // 22.5° detents
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (!drag.current) return
+      const k = e.key.toLowerCase()
+      if (k === "q") rotateHeld(-QUARTER, true)
+      else if (k === "e") rotateHeld(QUARTER, true)
+      else return
+      e.preventDefault()
+    }
+    el.addEventListener("wheel", onWheel, { passive: false })
+    window.addEventListener("keydown", onKey)
+    return () => {
+      el.removeEventListener("wheel", onWheel)
+      window.removeEventListener("keydown", onKey)
+    }
+  }, [gl])
 
   /* ---- light rig: blend the shift-drag base position with the tilt offset ---- */
   useFrame(() => {
