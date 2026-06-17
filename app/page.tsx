@@ -1,5 +1,5 @@
-import WoodenBlocks from "@/components/wooden-blocks"
+import TitleShell from "@/components/title-shell"
 
 export default function Page() {
-  return <WoodenBlocks />
+  return <TitleShell />
 }

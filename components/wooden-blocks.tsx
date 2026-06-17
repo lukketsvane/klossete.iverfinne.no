@@ -12,7 +12,7 @@ import {
   type RapierRigidBody,
 } from "@react-three/rapier"
 import * as THREE from "three"
-import { Layers, Smartphone, Volume2, VolumeX } from "lucide-react"
+import { Layers, LayoutGrid, Smartphone, Volume2, VolumeX } from "lucide-react"
 import { audioReady, playBeep, playImpact, playTone, primeBlocks, setMuted, unlockAudio } from "@/lib/impact-sound"
 import { BLOCKS, MESH_FIT, blockBaseFreq, blockRadius, type Block } from "@/lib/blocks"
 import { CameraRig } from "@/components/engine/CameraRig"
@@ -505,6 +505,9 @@ const ENVIRONMENTS: EnvConfig[] = [
     maze: true,
   },
 ]
+
+// Public level list (id + name, in play order) for the title/level-select UI.
+export const LEVELS: { id: string; name: string }[] = ENVIRONMENTS.map((e) => ({ id: e.id, name: e.name }))
 
 // Pastel foam play-mat: a grid of interlocking-feel pastel tiles with dark
 // seam grooves and a little surface wear. Tiled across the floor + walls.
@@ -3256,7 +3259,13 @@ function SceneContents({
 /* ------------------------------------------------------------------ */
 /*  Public component                                                   */
 /* ------------------------------------------------------------------ */
-export default function WoodenBlocks() {
+export default function WoodenBlocks({
+  initialLevel,
+  onExit,
+}: {
+  initialLevel?: number
+  onExit?: () => void
+} = {}) {
   const [measureMode, setMeasureMode] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [tiltOn, setTiltOn] = useState(false)
@@ -3279,7 +3288,7 @@ export default function WoodenBlocks() {
     if (solvedId) markSolved(solvedId)
     window.setTimeout(() => {
       const next = Math.min(currentRef.current + 1, ENVIRONMENTS.length - 1)
-      setCurrent(next)
+      setCurrent(Math.max(getProgress().current, next)) // never regress saved progress when replaying
       setEnvIndex(next)
       resetRef.current()
       advancing.current = false
@@ -3352,11 +3361,13 @@ export default function WoodenBlocks() {
     return cleanup
   }, [])
 
-  // Resume at the saved level (linear progression). Done in an effect (not in
-  // useState) so server + client first render agree – no hydration mismatch.
+  // Open at the requested level (from the level-select grid) or, failing that,
+  // resume at the saved level. Done in an effect (not in useState) so server +
+  // client first render agree – no hydration mismatch.
   useEffect(() => {
-    setEnvIndex(Math.min(getProgress().current, ENVIRONMENTS.length - 1))
-  }, [])
+    const want = initialLevel ?? getProgress().current
+    setEnvIndex(Math.max(0, Math.min(want, ENVIRONMENTS.length - 1)))
+  }, [initialLevel])
 
   // Environment navigation: number keys 1-9 jump straight to an environment
   // (desktop); a two-finger tap-and-hold cycles to the next one (touch).
@@ -3523,6 +3534,16 @@ export default function WoodenBlocks() {
           uiShown ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
         }`}
       >
+        {onExit && (
+          <button
+            type="button"
+            aria-label="Back to levels"
+            onClick={onExit}
+            className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full opacity-40 transition hover:opacity-90"
+          >
+            <LayoutGrid className="h-5 w-5" strokeWidth={2.4} />
+          </button>
+        )}
         <button
           type="button"
           aria-label={`Environment: ${env.name} (press 1-${ENVIRONMENTS.length} or two-finger hold)`}
