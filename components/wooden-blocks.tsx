@@ -1677,7 +1677,7 @@ function buildMaze(rooms: number, seed: number): Maze {
   }
   return { W, H, wall, start, goal, spots }
 }
-const MAZE = buildMaze(5, 20260617)
+const MAZE = buildMaze(8, 20260617) // larger maze
 // grid cell -> world (x,z), with the start cell at the origin
 function mazeWorld(gx: number, gy: number): [number, number] {
   return [(gx - MAZE.start[0]) * MAZE_CELL, (gy - MAZE.start[1]) * MAZE_CELL]
@@ -1709,8 +1709,25 @@ function MazeRoom() {
           </mesh>
         )
       })}
-      {/* no marked exit: the other blocks are hidden out in the maze, found and
-          collected one by one (the controller places + lights them) */}
+      {/* the exit: a lit tile + a tall beacon you can steer toward */}
+      <MazeExit />
+    </>
+  )
+}
+
+function MazeExit() {
+  const [gx, gz] = mazeWorld(MAZE.goal[0], MAZE.goal[1])
+  return (
+    <>
+      <mesh position={[gx, 0.03, gz]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[MAZE_CELL * 0.92, MAZE_CELL * 0.92]} />
+        <meshBasicMaterial color="#7cf6c8" toneMapped={false} transparent opacity={0.9} />
+      </mesh>
+      <mesh position={[gx, 9, gz]}>
+        <cylinderGeometry args={[0.12, 0.12, 18, 8, 1, true]} />
+        <meshBasicMaterial color="#7cf6c8" toneMapped={false} transparent opacity={0.32} side={THREE.DoubleSide} />
+      </mesh>
+      <pointLight position={[gx, 1.6, gz]} intensity={12} distance={9} decay={2} color="#7cf6c8" />
     </>
   )
 }
@@ -1755,22 +1772,20 @@ function MazeController({
   const camera = useThree((s) => s.camera)
   const cell = useRef<[number, number]>([MAZE.start[0], MAZE.start[1]])
   const tip = useRef<TipState | null>(null)
-  const moveReq = useRef<[number, number] | null>(null)
+  const heldDir = useRef<[number, number] | null>(null) // tap-hold steering direction
   const camY = useRef<number | null>(null) // follow height (a touch higher = wider view)
   const origCamY = useRef(0) // the rig's height, restored when we leave
   const flash = useRef<THREE.PointLight>(null)
   const flashT = useRef(0)
   const glow = useRef<THREE.PointLight>(null) // a soft light riding the player
-  const landT = useRef(0) // brief brighten as it lands / collects
-  const collected = useRef<Set<string>>(new Set()) // blocks gathered so far
-  const tAcc = useRef(0) // clock for the collectibles' bob/spin
+  const landT = useRef(0) // brief brighten as it lands
   const assemble = useRef<Assemble | null>(null) // the end-of-journey figure build
 
-  // seat the cube at the start cell; scatter the other blocks out at dead-ends
+  // seat the cube at the start cell; the other blocks are GONE (parked far below)
   useEffect(() => {
     cell.current = [MAZE.start[0], MAZE.start[1]]
     tip.current = null
-    collected.current = new Set()
+    heldDir.current = null
     assemble.current = null
     const cube = bodies.current["cube"]
     if (cube) {
@@ -1778,14 +1793,12 @@ function MazeController({
       cube.setNextKinematicTranslation({ x: 0, y: MAZE_CELL / 2, z: 0 })
       cube.setNextKinematicRotation({ x: 0, y: 0, z: 0, w: 1 })
     }
-    COLLECT_IDS.forEach((id, i) => {
+    for (const id of COLLECT_IDS) {
       const body = bodies.current[id]
-      const spot = MAZE.spots[i]
-      if (!body || !spot) return
-      const [wx, wz] = mazeWorld(spot[0], spot[1])
+      if (!body) continue
       body.setBodyType(BODY_KINEMATIC_POSITION, true)
-      body.setNextKinematicTranslation({ x: wx, y: MAZE_CELL / 2 + 0.35, z: wz })
-    })
+      body.setNextKinematicTranslation({ x: 0, y: -80, z: 0 })
+    }
     return () => {
       // hand the blocks back to physics + recentre the camera when leaving
       for (const b of BLOCKS) {
@@ -1808,45 +1821,66 @@ function MazeController({
     }
   }, [bodies, revealRef, camera])
 
-  // input -> a queued unit grid direction (grid +y is world +z)
+  // input -> a HELD steering direction (grid +y is world +z). Tap-and-hold to
+  // keep rolling that way; release to stop. No more one-tap-per-roll.
   useEffect(() => {
-    const req = (dx: number, dy: number) => {
-      if (!moveReq.current) moveReq.current = [dx, dy]
+    const keys = new Set<string>()
+    const map = (k: string) =>
+      k === "arrowup" || k === "w"
+        ? "up"
+        : k === "arrowdown" || k === "s"
+          ? "down"
+          : k === "arrowleft" || k === "a"
+            ? "left"
+            : k === "arrowright" || k === "d"
+              ? "right"
+              : null
+    const dirOf = (m: string | null): [number, number] | null =>
+      m === "up" ? [0, -1] : m === "down" ? [0, 1] : m === "left" ? [-1, 0] : m === "right" ? [1, 0] : null
+    const fromKeys = (): [number, number] | null => {
+      for (const m of ["up", "down", "left", "right"]) if (keys.has(m)) return dirOf(m)
+      return null
     }
-    const onKey = (e: KeyboardEvent) => {
-      const k = e.key.toLowerCase()
-      if (k === "arrowup" || k === "w") req(0, -1)
-      else if (k === "arrowdown" || k === "s") req(0, 1)
-      else if (k === "arrowleft" || k === "a") req(-1, 0)
-      else if (k === "arrowright" || k === "d") req(1, 0)
-      else return
+    const onDown = (e: KeyboardEvent) => {
+      const m = map(e.key.toLowerCase())
+      if (!m) return
+      keys.add(m)
+      heldDir.current = dirOf(m) // newest press wins
       e.preventDefault()
     }
-    let sx = 0
-    let sy = 0
-    const ts = (e: TouchEvent) => {
+    const onUp = (e: KeyboardEvent) => {
+      const m = map(e.key.toLowerCase())
+      if (!m) return
+      keys.delete(m)
+      heldDir.current = fromKeys()
+    }
+    // touch: hold a finger and the cube rolls toward it (relative to screen centre)
+    const dirFromTouch = (t: Touch): [number, number] | null => {
+      const dx = t.clientX - window.innerWidth / 2
+      const dy = t.clientY - window.innerHeight / 2
+      if (Math.abs(dx) < 18 && Math.abs(dy) < 18) return heldDir.current
+      return Math.abs(dx) > Math.abs(dy) ? [dx > 0 ? 1 : -1, 0] : [0, dy > 0 ? 1 : -1]
+    }
+    const tMove = (e: TouchEvent) => {
       const t = e.touches[0]
-      if (t) {
-        sx = t.clientX
-        sy = t.clientY
-      }
+      if (t && e.touches.length === 1) heldDir.current = dirFromTouch(t)
     }
-    const te = (e: TouchEvent) => {
-      const t = e.changedTouches[0]
-      if (!t) return
-      const dx = t.clientX - sx
-      const dy = t.clientY - sy
-      if (Math.hypot(dx, dy) < 24) return // a tap, not a swipe
-      if (Math.abs(dx) > Math.abs(dy)) req(dx > 0 ? 1 : -1, 0)
-      else req(0, dy > 0 ? 1 : -1)
+    const tEnd = (e: TouchEvent) => {
+      if (e.touches.length === 0) heldDir.current = null
     }
-    window.addEventListener("keydown", onKey)
-    window.addEventListener("touchstart", ts, { passive: true })
-    window.addEventListener("touchend", te, { passive: true })
+    window.addEventListener("keydown", onDown)
+    window.addEventListener("keyup", onUp)
+    window.addEventListener("touchstart", tMove, { passive: true })
+    window.addEventListener("touchmove", tMove, { passive: true })
+    window.addEventListener("touchend", tEnd, { passive: true })
+    window.addEventListener("touchcancel", tEnd, { passive: true })
     return () => {
-      window.removeEventListener("keydown", onKey)
-      window.removeEventListener("touchstart", ts)
-      window.removeEventListener("touchend", te)
+      window.removeEventListener("keydown", onDown)
+      window.removeEventListener("keyup", onUp)
+      window.removeEventListener("touchstart", tMove)
+      window.removeEventListener("touchmove", tMove)
+      window.removeEventListener("touchend", tEnd)
+      window.removeEventListener("touchcancel", tEnd)
     }
   }, [])
 
@@ -1858,7 +1892,6 @@ function MazeController({
       camY.current = camera.position.y * 1.32 // pull back a little so more maze reads
     }
     const cy = camY.current ?? camera.position.y
-    tAcc.current += dt
 
     // ---- journey's end: lay the gathered blocks into the figure, and hold ----
     if (assemble.current) {
@@ -1892,36 +1925,17 @@ function MazeController({
 
     if (cube.bodyType() !== BODY_KINEMATIC_POSITION) cube.setBodyType(BODY_KINEMATIC_POSITION, true)
 
-    // ---- collectibles: the other blocks wait out in the maze (bobbing), unseen
-    // until you roll onto their cell; gathered ones tuck away off-screen ----
-    COLLECT_IDS.forEach((id, i) => {
+    // the other blocks are GONE from the maze – kept far below every frame
+    for (const id of COLLECT_IDS) {
       const body = bodies.current[id]
-      const spot = MAZE.spots[i]
-      if (!body || !spot) return
+      if (!body) continue
       if (body.bodyType() !== BODY_KINEMATIC_POSITION) body.setBodyType(BODY_KINEMATIC_POSITION, true)
-      if (collected.current.has(id)) {
-        body.setNextKinematicTranslation({ x: 0, y: -80, z: 0 })
-        return
-      }
-      const [wx, wz] = mazeWorld(spot[0], spot[1])
-      const bob = 0.18 * Math.sin(tAcc.current * 3 + i)
-      body.setNextKinematicTranslation({ x: wx, y: MAZE_CELL / 2 + 0.4 + bob, z: wz })
-      const yaw = tAcc.current * 1.1 + i
-      const sq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw)
-      body.setNextKinematicRotation({ x: sq.x, y: sq.y, z: sq.z, w: sq.w })
-      if (cell.current[0] === spot[0] && cell.current[1] === spot[1]) {
-        collected.current.add(id) // rolled onto it -> collected
-        playImpact(id, 0.7)
-        haptic(20)
-        landT.current = 1
-        flashT.current = Math.max(flashT.current, 0.6)
-      }
-    })
+      body.setNextKinematicTranslation({ x: 0, y: -80, z: 0 })
+    }
 
-    // start a tip if idle, a move is queued, and the target cell is open
-    if (!tip.current && moveReq.current) {
-      const [dx, dy] = moveReq.current
-      moveReq.current = null
+    // tap-and-hold: while a direction is held and we're idle, keep rolling
+    if (!tip.current && heldDir.current) {
+      const [dx, dy] = heldDir.current
       const [gx, gy] = cell.current
       const tx = gx + dx
       const ty = gy + dy
@@ -1964,38 +1978,35 @@ function MazeController({
         cube.setNextKinematicRotation({ x: 0, y: 0, z: 0, w: 1 })
         tip.current = null
         playImpact("cube", 0.42) // a wooden knock as it lands
-        haptic(9)
+        haptic(8)
         landT.current = 1
+        // reached the exit -> the blocks fly in and lay into the figure here
+        if (T.target[0] === MAZE.goal[0] && T.target[1] === MAZE.goal[1] && !assemble.current) {
+          const center = new THREE.Vector3(fx, 0, fz)
+          const from = new Map<string, { p: THREE.Vector3; q: THREE.Quaternion }>()
+          const to = new Map<string, { p: THREE.Vector3; q: THREE.Quaternion }>()
+          for (const id of Object.keys(FIGURE)) {
+            const body = bodies.current[id]
+            if (!body) continue
+            const bp = body.translation()
+            const bq = body.rotation()
+            from.set(id, { p: new THREE.Vector3(bp.x, bp.y, bp.z), q: new THREE.Quaternion(bq.x, bq.y, bq.z, bq.w) })
+            const pose = FIGURE[id]
+            to.set(id, {
+              p: new THREE.Vector3(center.x + pose.pos[0], pose.pos[1], center.z + pose.pos[2]),
+              q: new THREE.Quaternion().setFromEuler(new THREE.Euler(...pose.rot)),
+            })
+          }
+          assemble.current = { t: 0, dur: 1.4, from, to, center }
+          flashT.current = 1
+          revealRef.current = true // solved -> progression advances (figure persists)
+        }
       }
     } else {
       // idle: pin the cube to its cell so nothing (e.g. a reset) drifts it
       const [wx, wz] = mazeWorld(cell.current[0], cell.current[1])
       cube.setNextKinematicTranslation({ x: wx, y: MAZE_CELL / 2, z: wz })
       cube.setNextKinematicRotation({ x: 0, y: 0, z: 0, w: 1 })
-    }
-
-    // gathered them all -> begin the figure assembly at the player's spot
-    if (!assemble.current && collected.current.size === COLLECT_IDS.length) {
-      const pt = cube.translation()
-      const center = new THREE.Vector3(pt.x, 0, pt.z)
-      const from = new Map<string, { p: THREE.Vector3; q: THREE.Quaternion }>()
-      const to = new Map<string, { p: THREE.Vector3; q: THREE.Quaternion }>()
-      for (const id of Object.keys(FIGURE)) {
-        const body = bodies.current[id]
-        if (!body) continue
-        const bp = body.translation()
-        const bq = body.rotation()
-        from.set(id, { p: new THREE.Vector3(bp.x, bp.y, bp.z), q: new THREE.Quaternion(bq.x, bq.y, bq.z, bq.w) })
-        const pose = FIGURE[id]
-        to.set(id, {
-          p: new THREE.Vector3(center.x + pose.pos[0], pose.pos[1], center.z + pose.pos[2]),
-          q: new THREE.Quaternion().setFromEuler(new THREE.Euler(...pose.rot)),
-        })
-      }
-      assemble.current = { t: 0, dur: 1.4, from, to, center }
-      flashT.current = 1
-      revealRef.current = true // solved -> progression advances (figure persists)
-      return
     }
 
     // keep the player PERFECTLY centred straight below the camera
@@ -3366,14 +3377,16 @@ function SceneContents({
       <TiltController tiltRef={tiltRef} zeroG={env.magnet === true} />
 
       {/* static world: floor + tall invisible containment walls */}
-      <RigidBody type="fixed" colliders={false} friction={0.7} restitution={0.1}>
+      {/* dead, non-bouncy containment: solid walls that hold blocks in without
+          ever shoving them around (no restitution -> no "push") */}
+      <RigidBody type="fixed" colliders={false} friction={0.8} restitution={0}>
         {/* the space level has no floor – pieces float freely (the magnet room's
             own edge force-field keeps them on screen) */}
         {!env.magnet && !env.maze && <CuboidCollider args={[60, 1, 60]} position={[0, -1, 0]} />}
         {!env.magnet &&
           !env.maze &&
           colliderWalls.map((w, i) => (
-            <CuboidCollider key={i} args={w.half} position={w.pos} restitution={0.12} />
+            <CuboidCollider key={i} args={w.half} position={w.pos} restitution={0} />
           ))}
       </RigidBody>
 
