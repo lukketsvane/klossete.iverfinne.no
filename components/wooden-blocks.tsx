@@ -18,6 +18,7 @@ import { BLOCKS, MESH_FIT, blockBaseFreq, blockRadius, type Block } from "@/lib/
 import { CameraRig } from "@/components/engine/CameraRig"
 import { PostFx } from "@/components/engine/PostFx"
 import { CRT_VERT, CRT_FRAG, PEEL_FRAG, MISS_FRAG, GRID_FRAG } from "@/components/rooms/shaders"
+import { getProgress, markSolved, setCurrent } from "@/lib/progression"
 import {
   CAM_FOV,
   FLOOR,
@@ -2064,6 +2065,7 @@ function SceneContents({
   registerReset,
   tiltRef,
   grabbingRef,
+  onSolved,
 }: {
   env: EnvConfig
   muted: boolean
@@ -2073,6 +2075,7 @@ function SceneContents({
   registerReset: (fn: () => void) => void
   tiltRef: React.MutableRefObject<TiltState>
   grabbingRef: React.MutableRefObject<boolean>
+  onSolved?: () => void
 }) {
   const { camera, gl, size } = useThree()
   const box = useBox()
@@ -2094,9 +2097,22 @@ function SceneContents({
   const drag = useRef<DragState | null>(null)
   const puzzleLock = useRef(false) // blocks become impervious during the win celebration
   const revealRef = useRef(false) // projection room: solved -> 3D forms appear in colour
+  const solvedFired = useRef(false) // edge-detect the solve so onSolved fires once
   useEffect(() => {
     revealRef.current = false // reset the reveal when the environment changes
+    solvedFired.current = false
   }, [env.id])
+  // Watch the per-room win signals (klossete lock / projection+magnet reveal);
+  // fire onSolved exactly once when a level is solved.
+  useFrame(() => {
+    const solved = revealRef.current || puzzleLock.current
+    if (solved && !solvedFired.current) {
+      solvedFired.current = true
+      onSolved?.()
+    } else if (!solved) {
+      solvedFired.current = false
+    }
+  })
   const lightDragging = useRef(false)
   const pointerNdc = useRef(new THREE.Vector2())
   const raycaster = useMemo(() => new THREE.Raycaster(), [])
@@ -2529,6 +2545,27 @@ export default function WoodenBlocks() {
   const [envIndex, setEnvIndex] = useState(0)
   const env = ENVIRONMENTS[envIndex] ?? ENVIRONMENTS[0] // never crash on a stale/out-of-range index
   const resetRef = useRef<() => void>(() => {})
+  // linear progression: remember the live level for stable callbacks + guard
+  const currentRef = useRef(0)
+  currentRef.current = envIndex
+  const advancing = useRef(false)
+
+  // A level was solved (its secret found): record it, let the victory play, then
+  // advance to the next level and reset the pieces. Manual navigation still works
+  // for the rooms that don't yet have a key.
+  const onSolved = useCallback(() => {
+    if (advancing.current) return
+    advancing.current = true
+    const solvedId = ENVIRONMENTS[currentRef.current]?.id
+    if (solvedId) markSolved(solvedId)
+    window.setTimeout(() => {
+      const next = Math.min(currentRef.current + 1, ENVIRONMENTS.length - 1)
+      setCurrent(next)
+      setEnvIndex(next)
+      resetRef.current()
+      advancing.current = false
+    }, 2600)
+  }, [])
   const tiltRef = useRef<TiltState>({ enabled: false, beta: 0, gamma: 0, sx: 0, sz: 0 })
   const iconRef = useRef<HTMLSpanElement>(null)
   // true while a block is held – so a 2nd finger squeezes it instead of the
@@ -2596,10 +2633,10 @@ export default function WoodenBlocks() {
     return cleanup
   }, [])
 
-  // Open on a RANDOM environment each visit. Done in an effect (not in useState)
-  // so server + client first render agree – no hydration mismatch.
+  // Resume at the saved level (linear progression). Done in an effect (not in
+  // useState) so server + client first render agree – no hydration mismatch.
   useEffect(() => {
-    setEnvIndex(Math.floor(Math.random() * ENVIRONMENTS.length))
+    setEnvIndex(Math.min(getProgress().current, ENVIRONMENTS.length - 1))
   }, [])
 
   // Environment navigation: number keys 1-9 jump straight to an environment
@@ -2747,6 +2784,7 @@ export default function WoodenBlocks() {
               registerReset={(fn) => (resetRef.current = fn)}
               tiltRef={tiltRef}
               grabbingRef={grabbingRef}
+              onSolved={onSolved}
             />
           </Suspense>
         </Physics>
