@@ -383,6 +383,8 @@ type EnvConfig = {
   plate?: boolean // rest a block on the glowing plate
   apart?: boolean // scatter every block out of the centre ring to solve
   five?: boolean // bring each block to its glowing slot -> build the Messias figure
+  solo?: string // a one-block stage: pilot just this block (by id) to the exit
+  mosaic?: number // which mosaic floor (1-4) a solo stage stands on
 }
 const BASE_ENVIRONMENTS: EnvConfig[] = [
   {
@@ -508,6 +510,17 @@ const BASE_ENVIRONMENTS: EnvConfig[] = [
     maze: true,
   },
   {
+    id: "solo-cylinder",
+    name: "Cylinder",
+    bg: "#0c0b0a",
+    keyColor: "#fff1dc",
+    keyIntensity: 1.8,
+    contact: { color: "#000000", opacity: 0.4 },
+    bloom: true,
+    solo: "cylinder", // pilot just the red cylinder (it rolls) to the exit
+    mosaic: 4,
+  },
+  {
     id: "five",
     name: "The Five",
     bg: "#0b0d12",
@@ -539,7 +552,6 @@ const EXTRA_SPECS: { name: string; look: EnvKind; key: KeyFlag }[] = [
   { name: "Glass · line", look: "glass", key: "lineup" },
   { name: "Gold · plate", look: "gold", key: "plate" },
   { name: "Play mat · stack", look: "playmat", key: "stack" },
-  { name: "Concrete · corners", look: "concrete", key: "corners" },
 ]
 const EXTRA_ENVIRONMENTS: EnvConfig[] = EXTRA_SPECS.map((s, i) => ({
   id: `x${i + 13}`,
@@ -883,6 +895,7 @@ function puzzleZones(box: Box): Zone[] {
 }
 
 function Room(props: RoomProps) {
+  if (props.env.solo) return <SoloRoom {...props} />
   const look = props.env.look ?? props.env.id // extra levels reuse a base look
   if (look === "gold") return <GoldRoom {...props} />
   if (look === "glass") return <GlassRoom {...props} />
@@ -2650,6 +2663,244 @@ function FiveController({
   )
 }
 
+/* ---- a solo stage: pilot ONE block (its own move set) to the exit ---- */
+const SOLO_CELL = 1.0
+const SOLO_BOUND = 4
+const SOLO_START: [number, number] = [-3, 3]
+const SOLO_GOAL: [number, number] = [3, -3]
+
+// — Solo room: a mosaic floor (chosen by env.mosaic) + soft warm light.
+function SoloRoom({ env }: RoomProps) {
+  const texs = useTexture(FIVE_MOSAICS)
+  useMemo(() => {
+    texs.forEach((t) => {
+      t.wrapS = t.wrapT = THREE.RepeatWrapping
+      t.repeat.set(10, 10)
+      t.colorSpace = THREE.SRGBColorSpace
+      t.anisotropy = 4
+    })
+  }, [texs])
+  const i = (((env.mosaic ?? 1) - 1) % texs.length + texs.length) % texs.length
+  const [gx, gz] = [SOLO_GOAL[0] * SOLO_CELL, SOLO_GOAL[1] * SOLO_CELL]
+  return (
+    <>
+      <ambientLight intensity={0.42} color="#fff1df" />
+      <pointLight position={[0, 11, 2]} intensity={18} distance={55} decay={2} color="#fff0d8" />
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
+        <planeGeometry args={[90, 90]} />
+        <meshStandardMaterial map={texs[i]} color="#8d887e" roughness={0.92} metalness={0} />
+      </mesh>
+      {/* the exit */}
+      <mesh position={[gx, 0.03, gz]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.34, 0.5, 32]} />
+        <meshBasicMaterial color="#7cf6c8" toneMapped={false} transparent opacity={0.95} side={THREE.DoubleSide} />
+      </mesh>
+      <pointLight position={[gx, 1.4, gz]} intensity={9} distance={7} decay={2} color="#7cf6c8" />
+    </>
+  )
+}
+
+function SoloController({
+  blockId,
+  bodies,
+  revealRef,
+}: {
+  blockId: string
+  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  revealRef: React.MutableRefObject<boolean>
+}) {
+  const camera = useThree((s) => s.camera)
+  const cell = useRef<[number, number]>([...SOLO_START])
+  const heldDir = useRef<[number, number] | null>(null)
+  const baseQ = useRef(new THREE.Quaternion())
+  const hop = useRef<{
+    t: number
+    dur: number
+    from: THREE.Vector3
+    to: THREE.Vector3
+    fromQ: THREE.Quaternion
+    toQ: THREE.Quaternion
+  } | null>(null)
+  const cool = useRef(0)
+  const camY = useRef<number | null>(null)
+  const origCamY = useRef(0)
+  const flash = useRef<THREE.PointLight>(null)
+  const flashT = useRef(0)
+  const glow = useRef<THREE.PointLight>(null)
+  const landT = useRef(0)
+  const CARRY = 0.55
+
+  useEffect(() => {
+    cell.current = [...SOLO_START]
+    hop.current = null
+    heldDir.current = null
+    baseQ.current = new THREE.Quaternion()
+    const body = bodies.current[blockId]
+    if (body) {
+      body.setBodyType(BODY_KINEMATIC_POSITION, true)
+      body.setTranslation({ x: SOLO_START[0] * SOLO_CELL, y: CARRY, z: SOLO_START[1] * SOLO_CELL }, true)
+      body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true)
+    }
+    return () => {
+      const b = bodies.current[blockId]
+      if (b) {
+        b.setBodyType(BODY_DYNAMIC, true)
+        b.setLinvel({ x: 0, y: 0, z: 0 }, true)
+        b.setAngvel({ x: 0, y: 0, z: 0 }, true)
+      }
+      camera.position.x = 0
+      camera.position.z = 0
+      if (origCamY.current) camera.position.y = origCamY.current
+      camera.lookAt(0, 0, 0)
+      camY.current = null
+      revealRef.current = false
+    }
+  }, [blockId, bodies, revealRef, camera])
+
+  useEffect(() => {
+    const keys = new Set<string>()
+    const map = (k: string) =>
+      k === "arrowup" || k === "w"
+        ? "up"
+        : k === "arrowdown" || k === "s"
+          ? "down"
+          : k === "arrowleft" || k === "a"
+            ? "left"
+            : k === "arrowright" || k === "d"
+              ? "right"
+              : null
+    const dirOf = (m: string | null): [number, number] | null =>
+      m === "up" ? [0, -1] : m === "down" ? [0, 1] : m === "left" ? [-1, 0] : m === "right" ? [1, 0] : null
+    const onDown = (e: KeyboardEvent) => {
+      const m = map(e.key.toLowerCase())
+      if (!m) return
+      keys.add(m)
+      heldDir.current = dirOf(m)
+      e.preventDefault()
+    }
+    const onUp = (e: KeyboardEvent) => {
+      const m = map(e.key.toLowerCase())
+      if (!m) return
+      keys.delete(m)
+      heldDir.current = null
+      for (const k of ["up", "down", "left", "right"]) if (keys.has(k)) heldDir.current = dirOf(k)
+    }
+    const dirFromTouch = (t: Touch): [number, number] | null => {
+      const dx = t.clientX - window.innerWidth / 2
+      const dy = t.clientY - window.innerHeight / 2
+      if (Math.abs(dx) < 18 && Math.abs(dy) < 18) return heldDir.current
+      return Math.abs(dx) > Math.abs(dy) ? [dx > 0 ? 1 : -1, 0] : [0, dy > 0 ? 1 : -1]
+    }
+    const tMove = (e: TouchEvent) => {
+      const t = e.touches[0]
+      if (t && e.touches.length === 1) heldDir.current = dirFromTouch(t)
+    }
+    const tEnd = (e: TouchEvent) => {
+      if (e.touches.length === 0) heldDir.current = null
+    }
+    window.addEventListener("keydown", onDown)
+    window.addEventListener("keyup", onUp)
+    window.addEventListener("touchstart", tMove, { passive: true })
+    window.addEventListener("touchmove", tMove, { passive: true })
+    window.addEventListener("touchend", tEnd, { passive: true })
+    window.addEventListener("touchcancel", tEnd, { passive: true })
+    return () => {
+      window.removeEventListener("keydown", onDown)
+      window.removeEventListener("keyup", onUp)
+      window.removeEventListener("touchstart", tMove)
+      window.removeEventListener("touchmove", tMove)
+      window.removeEventListener("touchend", tEnd)
+      window.removeEventListener("touchcancel", tEnd)
+    }
+  }, [])
+
+  useFrame((_s, dt) => {
+    const body = bodies.current[blockId]
+    if (!body) return
+    if (camY.current == null) {
+      origCamY.current = camera.position.y
+      camY.current = camera.position.y * 1.35
+    }
+    const cy = camY.current ?? camera.position.y
+    if (body.bodyType() !== BODY_KINEMATIC_POSITION) body.setBodyType(BODY_KINEMATIC_POSITION, true)
+    body.wakeUp()
+    cool.current = Math.max(0, cool.current - dt)
+
+    const atGoal = () => cell.current[0] === SOLO_GOAL[0] && cell.current[1] === SOLO_GOAL[1]
+
+    if (hop.current) {
+      const H = hop.current
+      H.t = Math.min(H.dur, H.t + dt)
+      const k = H.t / H.dur
+      const p = H.from.clone().lerp(H.to, k)
+      p.y = CARRY + Math.sin(Math.PI * k) * 0.16
+      const q = H.fromQ.clone().slerp(H.toQ, k)
+      body.setNextKinematicTranslation({ x: p.x, y: p.y, z: p.z })
+      body.setNextKinematicRotation({ x: q.x, y: q.y, z: q.z, w: q.w })
+      if (H.t >= H.dur) {
+        baseQ.current = H.toQ.clone()
+        hop.current = null
+        landT.current = 1
+        playImpact(blockId, 0.4)
+        if (atGoal() && !revealRef.current) {
+          revealRef.current = true
+          flashT.current = 1
+          haptic(26)
+        }
+      }
+    } else {
+      const [gx, gy] = cell.current
+      body.setNextKinematicTranslation({ x: gx * SOLO_CELL, y: CARRY, z: gy * SOLO_CELL })
+      body.setNextKinematicRotation({ x: baseQ.current.x, y: baseQ.current.y, z: baseQ.current.z, w: baseQ.current.w })
+      if (heldDir.current && cool.current === 0 && !revealRef.current) {
+        const [dx, dy] = heldDir.current
+        const tx = THREE.MathUtils.clamp(gx + dx, -SOLO_BOUND, SOLO_BOUND)
+        const ty = THREE.MathUtils.clamp(gy + dy, -SOLO_BOUND, SOLO_BOUND)
+        if (tx !== gx || ty !== gy) {
+          const mv = FIVE_MOVE[blockId] ?? { angle: Math.PI / 2, dur: 0.2 }
+          const axis = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx, 0, dy)).normalize()
+          const step = new THREE.Quaternion().setFromAxisAngle(axis, mv.angle)
+          hop.current = {
+            t: 0,
+            dur: mv.dur,
+            from: new THREE.Vector3(gx * SOLO_CELL, CARRY, gy * SOLO_CELL),
+            to: new THREE.Vector3(tx * SOLO_CELL, CARRY, ty * SOLO_CELL),
+            fromQ: baseQ.current.clone(),
+            toQ: step.multiply(baseQ.current),
+          }
+          cell.current = [tx, ty]
+          cool.current = 0.05
+          haptic(4)
+        }
+      }
+    }
+
+    const t = body.translation()
+    camera.position.x += (t.x - camera.position.x) * 0.18
+    camera.position.z += (t.z - camera.position.z) * 0.18
+    camera.position.y = cy
+    camera.lookAt(camera.position.x, 0, camera.position.z)
+
+    landT.current = Math.max(0, landT.current - dt * 2.4)
+    if (glow.current) {
+      glow.current.position.set(t.x, t.y + 0.7, t.z)
+      glow.current.intensity = 6 + landT.current * 16
+    }
+    flashT.current = Math.max(0, flashT.current - dt * 0.6)
+    if (flash.current) {
+      flash.current.position.set(SOLO_GOAL[0] * SOLO_CELL, 2, SOLO_GOAL[1] * SOLO_CELL)
+      flash.current.intensity = flashT.current * 120
+    }
+  })
+
+  return (
+    <>
+      <pointLight ref={glow} distance={7} decay={2} color="#fff1dc" intensity={6} />
+      <pointLight ref={flash} distance={40} decay={2} color="#7cf6c8" intensity={0} />
+    </>
+  )
+}
+
 // 8 — The Fourth Side room: cold TRON grid floor + walls.
 function FourthRoom({ box, visibleWalls }: RoomProps) {
   const mat = useMemo(
@@ -3598,7 +3849,7 @@ function SceneContents({
   // body is ever found outside the tray (a freak tunnel, a stale resize), pull
   // it back inside and kill its velocity instead of letting it vanish offscreen.
   useFrame(() => {
-    if (env.maze || env.five) return // these own their (kinematic) blocks
+    if (env.maze || env.five || env.solo) return // these own their (kinematic) blocks
     const { bx, bz } = boxRef.current
     for (const b of BLOCKS) {
       const body = bodies.current[b.id]
@@ -3666,9 +3917,10 @@ function SceneContents({
       <RigidBody type="fixed" colliders={false} friction={0.8} restitution={0}>
         {/* the space level has no floor – pieces float freely (the magnet room's
             own edge force-field keeps them on screen) */}
-        {!env.magnet && !env.maze && <CuboidCollider args={[60, 1, 60]} position={[0, -1, 0]} />}
+        {!env.magnet && !env.maze && !env.solo && <CuboidCollider args={[60, 1, 60]} position={[0, -1, 0]} />}
         {!env.magnet &&
           !env.maze &&
+          !env.solo &&
           colliderWalls.map((w, i) => (
             <CuboidCollider key={i} args={w.half} position={w.pos} restitution={0} />
           ))}
@@ -3713,9 +3965,11 @@ function SceneContents({
       {/* The Five: pilot each block to its slot to build the Messias figure */}
       {env.five && <FiveController bodies={bodies} box={box} revealRef={revealRef} />}
 
-      {/* blocks — in the maze only the player cube exists; the others aren't
-          rendered at all, so nothing else can ever appear in the corridors */}
-      {BLOCKS.filter((b) => !env.maze || b.id === "cube").map((b) => (
+      {/* solo stage: pilot just one block (its own move set) to the exit */}
+      {env.solo && <SoloController blockId={env.solo} bodies={bodies} revealRef={revealRef} />}
+
+      {/* blocks — a solo stage shows only its one block; the maze only the cube */}
+      {BLOCKS.filter((b) => (env.solo ? b.id === env.solo : !env.maze || b.id === "cube")).map((b) => (
         <BlockBody
           key={b.id}
           block={b}
