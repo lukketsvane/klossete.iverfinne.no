@@ -9,12 +9,29 @@ const geistMono = Geist_Mono({
   subsets: ['latin'],
 })
 
+const DESCRIPTION =
+  'An interactive physics sandbox of realistic wooden building blocks. Drag, slide and throw the blocks around.'
+
 export const metadata: Metadata = {
+  metadataBase: new URL('https://klossete.iverfinne.no'),
   title: 'kl.oss.ete',
-  description: 'An interactive physics sandbox of realistic wooden building blocks. Drag, slide and throw the blocks around.',
-  icons: {
-    icon: { url: '/icon.svg', type: 'image/svg+xml' },
-    apple: '/icon.svg',
+  description: DESCRIPTION,
+  applicationName: 'kl.oss.ete',
+  manifest: '/manifest.webmanifest',
+  appleWebApp: { capable: true, statusBarStyle: 'default', title: 'kl.oss.ete' },
+  // favicon.ico, icon.svg, apple-icon.png and the opengraph/twitter images are
+  // picked up from the app/ directory by Next's file conventions.
+  openGraph: {
+    type: 'website',
+    siteName: 'kl.oss.ete',
+    title: 'kl.oss.ete',
+    description: DESCRIPTION,
+    url: 'https://klossete.iverfinne.no',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'kl.oss.ete',
+    description: DESCRIPTION,
   },
 }
 
