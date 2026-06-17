@@ -2916,22 +2916,12 @@ function SceneContents({
     const twoAngle = (e: TouchEvent) =>
       Math.atan2(e.touches[1].clientY - e.touches[0].clientY, e.touches[1].clientX - e.touches[0].clientX)
     const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a))
-    const QUARTER = Math.PI / 2
-    // magnetic assist: gently pull the live yaw toward the nearest right angle as
-    // it gets close, so aligning a block feels effortless (the "prediction").
-    const softSnap = (a: number) => {
-      const n = Math.round(a / QUARTER) * QUARTER
-      const d = a - n
-      return Math.abs(d) < 0.22 ? n + d * 0.35 : a
-    }
-    let lastSnap = 99
     const onStart = (e: TouchEvent) => {
       if (e.touches.length === 2 && drag.current) {
         startDist = span(e)
         squeeze = 0
         const r = drag.current.body.rotation()
         twist.current = { base: new THREE.Quaternion(r.x, r.y, r.z, r.w), start: twoAngle(e), delta: 0, active: true }
-        lastSnap = 99
       }
     }
     const onMove = (e: TouchEvent) => {
@@ -2942,32 +2932,15 @@ function SceneContents({
         lastBuzz = now
         haptic(2 + squeeze * 10) // tighter pinch -> stronger buzz
       }
-      // twist -> yaw (screen rotation maps to world yaw under the top-down camera)
+      // twist -> free yaw (no magnetic snapping; just follow the fingers)
       const tw = twist.current
-      if (tw) {
-        const raw = -wrap(twoAngle(e) - tw.start)
-        tw.delta = softSnap(raw)
-        // a tick each time we pass into a fresh right-angle bucket
-        const bucket = Math.round(tw.delta / QUARTER)
-        if (bucket !== lastSnap && Math.abs(tw.delta - bucket * QUARTER) < 0.05) {
-          lastSnap = bucket
-          haptic(6)
-        }
-      }
+      if (tw) tw.delta = -wrap(twoAngle(e) - tw.start)
     }
     const onEnd = (e: TouchEvent) => {
       if (startDist <= 0) return
       if (e.touches.length < 2) {
         const d = drag.current
-        // settle the twist on the exact nearest right angle
-        const tw = twist.current
-        if (d && tw) {
-          const snapped = Math.round(tw.delta / QUARTER) * QUARTER
-          const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), snapped).multiply(tw.base)
-          d.body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
-          d.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
-          if (Math.abs(snapped) > 0.01) haptic(12)
-        }
+        // leave the block at exactly the angle you turned it to – no snap
         twist.current = null
         if (d && squeeze > 0.15) {
           // "pop": release the squeezed block with force proportional to squeeze
@@ -2999,21 +2972,15 @@ function SceneContents({
   }, [gl, pushGlow])
 
   /* ---- desktop rotate: wheel / Q / E spin the held block (mirrors the twist) ---- */
-  // So the same easy right-angle alignment works without a touchscreen.
+  // So you can rotate a held block without a touchscreen (free yaw, no snapping).
   useEffect(() => {
     const el = gl.domElement
     const UP = new THREE.Vector3(0, 1, 0)
-    const QUARTER = Math.PI / 2
-    const rotateHeld = (angle: number, snap: boolean) => {
+    const rotateHeld = (angle: number) => {
       const d = drag.current
       if (!d) return
       const r = d.body.rotation()
-      let q = new THREE.Quaternion().setFromAxisAngle(UP, angle).multiply(new THREE.Quaternion(r.x, r.y, r.z, r.w))
-      if (snap) {
-        const e = new THREE.Euler().setFromQuaternion(q, "YXZ")
-        e.y = Math.round(e.y / QUARTER) * QUARTER
-        q = new THREE.Quaternion().setFromEuler(e)
-      }
+      const q = new THREE.Quaternion().setFromAxisAngle(UP, angle).multiply(new THREE.Quaternion(r.x, r.y, r.z, r.w))
       d.body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
       d.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
       haptic(6)
@@ -3021,13 +2988,13 @@ function SceneContents({
     const onWheel = (e: WheelEvent) => {
       if (!drag.current) return
       e.preventDefault()
-      rotateHeld((e.deltaY > 0 ? 1 : -1) * (Math.PI / 8), false) // 22.5° detents
+      rotateHeld((e.deltaY > 0 ? 1 : -1) * (Math.PI / 12)) // smooth 15° nudges
     }
     const onKey = (e: KeyboardEvent) => {
       if (!drag.current) return
       const k = e.key.toLowerCase()
-      if (k === "q") rotateHeld(-QUARTER, true)
-      else if (k === "e") rotateHeld(QUARTER, true)
+      if (k === "q") rotateHeld(-Math.PI / 12)
+      else if (k === "e") rotateHeld(Math.PI / 12)
       else return
       e.preventDefault()
     }
