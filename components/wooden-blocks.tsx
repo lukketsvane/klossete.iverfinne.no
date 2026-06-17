@@ -375,6 +375,7 @@ type EnvConfig = {
   // are arranged onto the target outline – then the 3D forms appear in colour
   magnet?: boolean // zero-g: pieces gently magnet-snap (each to one partner) into a totem
   maze?: boolean // a single block "flip-flop" tips through a camera-following maze to an exit
+  gather?: boolean // bring every block onto the glowing pad to solve
 }
 const ENVIRONMENTS: EnvConfig[] = [
   {
@@ -394,6 +395,7 @@ const ENVIRONMENTS: EnvConfig[] = [
     keyIntensity: 2.4,
     contact: { color: "#000000", opacity: 0.35 },
     bloom: true,
+    gather: true, // key: gather all five blocks onto the glowing pad
   },
   {
     id: "glass",
@@ -1791,6 +1793,18 @@ function MazeController({
     }
     if (cube.bodyType() !== BODY_KINEMATIC_POSITION) cube.setBodyType(BODY_KINEMATIC_POSITION, true)
 
+    // keep the four non-player blocks parked far below every frame – mount-time
+    // parking can miss (bodies not ready yet, or a level reset respawns them),
+    // which is how they were leaking into the corridors
+    for (const b of BLOCKS) {
+      if (b.id === "cube") continue
+      const body = bodies.current[b.id]
+      if (!body) continue
+      if (body.bodyType() !== BODY_KINEMATIC_POSITION) body.setBodyType(BODY_KINEMATIC_POSITION, true)
+      body.setNextKinematicTranslation({ x: 0, y: -80, z: 0 })
+      body.setNextKinematicRotation({ x: 0, y: 0, z: 0, w: 1 })
+    }
+
     // start a tip if idle, a move is queued, and the target cell is open
     if (!tip.current && moveReq.current && !revealRef.current) {
       const [dx, dy] = moveReq.current
@@ -1880,6 +1894,77 @@ function MazeController({
     <>
       <pointLight ref={flash} distance={60} decay={2} color="#7cf6c8" intensity={0} />
       <pointLight ref={glow} distance={6} decay={2} color="#dcebff" intensity={7} />
+    </>
+  )
+}
+
+/* ---- gather puzzle: bring every block onto the glowing pad ---- */
+// A simple, physical "key": drag all five blocks so they rest inside the lit
+// circle. The ring brightens as more land on it; fill it and the room solves.
+const GATHER_RADIUS = 1.9
+function GatherController({
+  bodies,
+  box,
+  revealRef,
+}: {
+  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  box: Box
+  revealRef: React.MutableRefObject<boolean>
+}) {
+  const ring = useRef<THREE.Mesh>(null)
+  const flash = useRef<THREE.PointLight>(null)
+  const dwell = useRef(0)
+  const flashT = useRef(0)
+  // keep the pad inside the tray on small screens
+  const radius = Math.min(GATHER_RADIUS, Math.min(box.bx, box.bz) - 0.5)
+
+  useEffect(() => () => {
+    revealRef.current = false
+  }, [revealRef])
+
+  useFrame((_s, dt) => {
+    let inCount = 0
+    let allReady = true
+    for (const b of BLOCKS) {
+      const body = bodies.current[b.id]
+      if (!body) {
+        allReady = false
+        continue
+      }
+      const t = body.translation()
+      const lv = body.linvel()
+      const horiz = Math.hypot(t.x, t.z)
+      const speed = Math.hypot(lv.x, lv.y, lv.z)
+      const onPad = horiz < radius && t.y < 1.4 && speed < 0.6 // resting on the floor, inside the ring
+      if (onPad) inCount++
+      else allReady = false
+    }
+    // the ring glows brighter the more blocks are home
+    if (ring.current) {
+      ;(ring.current.material as THREE.MeshBasicMaterial).opacity = 0.16 + 0.13 * inCount
+    }
+    if (!revealRef.current) {
+      if (allReady) {
+        dwell.current += dt
+        if (dwell.current > 0.5) {
+          revealRef.current = true // solved -> progression advances
+          flashT.current = 1
+        }
+      } else {
+        dwell.current = 0
+      }
+    }
+    flashT.current = Math.max(0, flashT.current - dt * 0.7)
+    if (flash.current) flash.current.intensity = flashT.current * 90
+  })
+
+  return (
+    <>
+      <mesh ref={ring} position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[Math.max(radius - 0.2, 0.2), radius, 56]} />
+        <meshBasicMaterial color="#ffd98a" toneMapped={false} transparent opacity={0.2} side={THREE.DoubleSide} />
+      </mesh>
+      <pointLight ref={flash} position={[0, 2.4, 0]} distance={30} decay={2} color="#ffe9b0" intensity={0} />
     </>
   )
 }
@@ -2955,6 +3040,9 @@ function SceneContents({
 
       {/* maze: one block flip-flops through corridors, camera following, to the exit */}
       {env.maze && <MazeController bodies={bodies} revealRef={revealRef} />}
+
+      {/* gather: rest all five blocks on the glowing pad to solve */}
+      {env.gather && <GatherController bodies={bodies} box={box} revealRef={revealRef} />}
 
       {/* blocks */}
       {BLOCKS.map((b) => (
