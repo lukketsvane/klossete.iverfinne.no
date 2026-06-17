@@ -2313,6 +2313,15 @@ const FIVE_ENTRY: [number, number][] = [
   [2, 3],
   [0, 3],
 ]
+// each block moves with its own character: how far it rotates per step about the
+// axis perpendicular to motion, and how long that step takes.
+const FIVE_MOVE: Record<string, { angle: number; dur: number }> = {
+  cube: { angle: Math.PI / 2, dur: 0.2 }, // tips 90° edge-over-edge
+  cylinder: { angle: FIVE_CELL / ((30 * 0.036) / 2), dur: 0.16 }, // rolls (arc = dist / radius)
+  orange: { angle: Math.PI, dur: 0.26 }, // a heavy slab flips end-over-end
+  "plank-long": { angle: Math.PI, dur: 0.28 }, // long plank tumbles
+  "plank-short": { angle: Math.PI, dur: 0.24 }, // short plank tumbles
+}
 
 // — The Five room: a calm dark stage with one soft warm key light.
 function FiveRoom() {
@@ -2353,7 +2362,15 @@ function FiveController({
   const cell = useRef<[number, number]>([0, 0])
   const spawned = useRef(false)
   const heldDir = useRef<[number, number] | null>(null)
-  const hop = useRef<{ t: number; dur: number; from: THREE.Vector3; to: THREE.Vector3 } | null>(null)
+  const baseQ = useRef(new THREE.Quaternion()) // active block's accumulated orientation
+  const hop = useRef<{
+    t: number
+    dur: number
+    from: THREE.Vector3
+    to: THREE.Vector3
+    fromQ: THREE.Quaternion
+    toQ: THREE.Quaternion
+  } | null>(null)
   const seat = useRef<FiveSeat | null>(null)
   const cool = useRef(0)
   const dwell = useRef(0)
@@ -2479,7 +2496,7 @@ function FiveController({
         dur: 0.35,
         id: s.id,
         fromP: new THREE.Vector3(t.x, t.y, t.z),
-        fromQ: new THREE.Quaternion(),
+        fromQ: baseQ.current.clone(),
         toP: s.pos.clone(),
         toQ: s.quat.clone(),
       }
@@ -2496,6 +2513,7 @@ function FiveController({
           spawned.current = true
           hop.current = null
           seat.current = null
+          baseQ.current = new THREE.Quaternion()
           body.setTranslation({ x: ex * FIVE_CELL, y: CARRY, z: ey * FIVE_CELL }, true)
           body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true)
         } else if (seat.current) {
@@ -2520,17 +2538,24 @@ function FiveController({
           H.t = Math.min(H.dur, H.t + dt)
           const k = H.t / H.dur
           const p = H.from.clone().lerp(H.to, k)
-          p.y = CARRY + Math.sin(Math.PI * k) * 0.22 // a little arc
+          p.y = CARRY + Math.sin(Math.PI * k) * 0.18 // a little arc
+          const q = H.fromQ.clone().slerp(H.toQ, k) // its own tumble / roll
           body.setNextKinematicTranslation({ x: p.x, y: p.y, z: p.z })
-          body.setNextKinematicRotation({ x: 0, y: 0, z: 0, w: 1 })
+          body.setNextKinematicRotation({ x: q.x, y: q.y, z: q.z, w: q.w })
           if (H.t >= H.dur) {
+            baseQ.current = H.toQ.clone()
             hop.current = null
             if (cell.current[0] === s.cellX && cell.current[1] === s.cellY) beginSeat(s, body)
           }
         } else {
           const [gx, gy] = cell.current
           body.setNextKinematicTranslation({ x: gx * FIVE_CELL, y: CARRY, z: gy * FIVE_CELL })
-          body.setNextKinematicRotation({ x: 0, y: 0, z: 0, w: 1 })
+          body.setNextKinematicRotation({
+            x: baseQ.current.x,
+            y: baseQ.current.y,
+            z: baseQ.current.z,
+            w: baseQ.current.w,
+          })
           if (gx === s.cellX && gy === s.cellY) {
             beginSeat(s, body)
           } else if (heldDir.current && cool.current === 0) {
@@ -2538,11 +2563,17 @@ function FiveController({
             const tx = THREE.MathUtils.clamp(gx + dx, -FIVE_BOUND, FIVE_BOUND)
             const ty = THREE.MathUtils.clamp(gy + dy, -FIVE_BOUND, FIVE_BOUND)
             if (tx !== gx || ty !== gy) {
+              // rotate about the horizontal axis perpendicular to the motion
+              const mv = FIVE_MOVE[s.id] ?? { angle: Math.PI / 2, dur: 0.2 }
+              const axis = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx, 0, dy)).normalize()
+              const step = new THREE.Quaternion().setFromAxisAngle(axis, mv.angle)
               hop.current = {
                 t: 0,
-                dur: 0.2,
+                dur: mv.dur,
                 from: new THREE.Vector3(gx * FIVE_CELL, CARRY, gy * FIVE_CELL),
                 to: new THREE.Vector3(tx * FIVE_CELL, CARRY, ty * FIVE_CELL),
+                fromQ: baseQ.current.clone(),
+                toQ: step.multiply(baseQ.current),
               }
               cell.current = [tx, ty]
               cool.current = 0.05
