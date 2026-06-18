@@ -521,6 +521,39 @@ const BASE_ENVIRONMENTS: EnvConfig[] = [
     mosaic: 4,
   },
   {
+    id: "solo-plank-long",
+    name: "Long plank",
+    bg: "#0b0c0a",
+    keyColor: "#eaf0ff",
+    keyIntensity: 1.8,
+    contact: { color: "#000000", opacity: 0.4 },
+    bloom: true,
+    solo: "plank-long", // the long blue plank tumbles end-over-end
+    mosaic: 1,
+  },
+  {
+    id: "solo-plank-short",
+    name: "Short plank",
+    bg: "#0a0b0c",
+    keyColor: "#eaf0ff",
+    keyIntensity: 1.8,
+    contact: { color: "#000000", opacity: 0.4 },
+    bloom: true,
+    solo: "plank-short", // the short blue plank tumbles
+    mosaic: 2,
+  },
+  {
+    id: "solo-orange",
+    name: "Slab",
+    bg: "#0c0a08",
+    keyColor: "#fff0dc",
+    keyIntensity: 1.9,
+    contact: { color: "#000000", opacity: 0.4 },
+    bloom: true,
+    solo: "orange", // the orange slab flips end-over-end
+    mosaic: 3,
+  },
+  {
     id: "five",
     name: "The Five",
     bg: "#0b0d12",
@@ -549,9 +582,6 @@ const EXTRA_SPECS: { name: string; look: EnvKind; key: KeyFlag }[] = [
   { name: "Peel · stack", look: "peel", key: "stack" },
   { name: "Texture · gather", look: "texturemiss", key: "gather" },
   { name: "Fourth · scatter", look: "fourthside", key: "apart" },
-  { name: "Glass · line", look: "glass", key: "lineup" },
-  { name: "Gold · plate", look: "gold", key: "plate" },
-  { name: "Play mat · stack", look: "playmat", key: "stack" },
 ]
 const EXTRA_ENVIRONMENTS: EnvConfig[] = EXTRA_SPECS.map((s, i) => ({
   id: `x${i + 13}`,
