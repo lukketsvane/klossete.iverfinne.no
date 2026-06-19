@@ -558,7 +558,6 @@ const TUT_LOOK = {
 // block's colour). Shown briefly when a tutorial level opens, then fade out.
 const CARD_MOVE = "/tutorials/01_move.png" // 1-finger drag the cube
 const CARD_ROTATE = "/tutorials/02_rotate.png" // 2-finger twist the plank
-const CARD_LIFT = "/tutorials/03_lift.png" // press & hold to lift the orange block
 const CARD_FLIP = "/tutorials/04_flip.png" // 2-finger swipe to flip the cylinder upright
 const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
   {
@@ -583,13 +582,13 @@ const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
   },
   {
     id: "t3-lift",
-    name: "Løft",
+    name: "Saman",
     ...TUT_LOOK,
     only: ["cube", "orange"],
-    hint: "Løft den oransje klossen og set han oppå den blå.",
-    pictogram: CARD_LIFT,
-    // the blue cube sits high up as a base; lift the orange up from below onto it
-    spawn: { cube: { pos: [0, 0.6, -1.3] }, orange: { pos: [0, 0.45, 2.2] } },
+    hint: "Dra begge klossane inn i det oransje feltet.",
+    pictogram: CARD_MOVE,
+    // both pieces start down-screen, outside the field; drag them up into it
+    spawn: { cube: { pos: [-1.0, 0.6, 2.7] }, orange: { pos: [1.0, 0.45, 3.1] } },
     lift: true,
   },
   {
@@ -627,85 +626,93 @@ const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
 // pull a base room config by id so the curated order can reuse its look + keys
 const base = (id: string): EnvConfig => BASE_ENVIRONMENTS.find((e) => e.id === id) ?? BASE_ENVIRONMENTS[0]
 
-// 7–10: more intro practice, still on the calm first-level background
+// 7–10: more intro practice on the calm first-level background. Each now arranges
+// ALL FIVE pieces (not a subset) into its own hand-placed composition, so the
+// whole set is in play from here on. Layouts are spaced so no two crayon
+// silhouettes overlap on either a narrow phone or a wide desktop frame.
 const INTRO_REST: EnvConfig[] = [
+  // 7 – a plus: cylinder upright in the middle, an arm reaching each way
   {
     id: "t7-two",
-    name: "Plasser to",
+    name: "Pluss",
     ...TUT_LOOK,
-    only: ["cube", "orange"],
-    spawn: { cube: { pos: [-0.9, 0.6, 2.4] }, orange: { pos: [0.9, 0.45, 2.4] } },
     place: [
-      { id: "cube", nx: -0.4, nz: -0.45 },
-      { id: "orange", nx: 0.4, nz: -0.45 },
+      { id: "cylinder", nx: 0, nz: 0, upright: true },
+      { id: "cube", nx: 0, nz: -0.6 },
+      { id: "orange", nx: 0, nz: 0.6 },
+      { id: "plank-short", nx: -0.66, nz: 0, align: "z" },
+      { id: "plank-long", nx: 0.66, nz: 0, align: "z" },
     ],
   },
-  // 8 – first little arrangement puzzle: three pieces into a row
+  // 8 – corners + a centre piece
   {
     id: "p-trio",
-    name: "Trio",
+    name: "Samling",
     ...TUT_LOOK,
-    only: ["cube", "orange", "plank-short"],
     place: [
-      { id: "cube", nx: -0.5, nz: 0 },
+      { id: "plank-long", nx: -0.5, nz: -0.55, align: "z" },
+      { id: "plank-short", nx: 0.5, nz: -0.55, align: "z" },
       { id: "orange", nx: 0, nz: 0 },
-      { id: "plank-short", nx: 0.5, nz: 0, align: "z" },
+      { id: "cube", nx: -0.5, nz: 0.55 },
+      { id: "cylinder", nx: 0.5, nz: 0.55, upright: true },
     ],
   },
+  // 9 – the two planks turned upright, set among the others
   {
     id: "t9-rotate2",
-    name: "Roter to",
+    name: "Vri",
     ...TUT_LOOK,
-    only: ["plank-long", "plank-short"],
-    spawn: {
-      "plank-long": { pos: [-1.0, 0.4, 2.4], rot: [0, Math.PI / 2, 0] },
-      "plank-short": { pos: [1.0, 0.4, 2.4], rot: [0, Math.PI / 2, 0] },
-    },
     place: [
-      { id: "plank-long", nx: -0.45, nz: -0.4, align: "z" },
-      { id: "plank-short", nx: 0.45, nz: -0.4, align: "z" },
+      { id: "cylinder", nx: -0.5, nz: -0.55, upright: true },
+      { id: "cube", nx: 0.5, nz: -0.55 },
+      { id: "plank-long", nx: 0, nz: 0, align: "z" },
+      { id: "orange", nx: -0.5, nz: 0.55 },
+      { id: "plank-short", nx: 0.5, nz: 0.55, align: "z" },
     ],
   },
-  // 10 – stand the cylinder, flank it with two pieces
+  // 10 – stand the cylinder, build the rest around it
   {
     id: "p-reis",
     name: "Reis",
     ...TUT_LOOK,
-    only: ["cylinder", "cube", "orange"],
     place: [
-      { id: "cylinder", nx: 0, nz: -0.45, upright: true },
-      { id: "cube", nx: -0.45, nz: 0.4 },
-      { id: "orange", nx: 0.45, nz: 0.4 },
+      { id: "orange", nx: -0.5, nz: -0.55 },
+      { id: "cylinder", nx: 0.5, nz: -0.55, upright: true },
+      { id: "plank-short", nx: 0, nz: 0, align: "z" },
+      { id: "plank-long", nx: -0.5, nz: 0.55, align: "z" },
+      { id: "cube", nx: 0.5, nz: 0.55 },
     ],
   },
 ]
 
 // 12–19: eight bespoke arrangement puzzles, each a hand-placed composition (like
-// level 5 "Alle fem") rather than the old repeated "stack them all" rooms. Each
-// has its own silhouette layout — a square, a cross, a staircase, a chevron, a
-// star, a tight mosaic — and the difficulty climbs: 4 pieces → 5, more pieces
-// asked to rotate (align) or stand (upright), tighter spacing toward the end. Two
-// stacking levels are kept as a change of pace between the placements. The calm
-// tutorial floor is reused with a subtly different backdrop per level so they read
-// as a series. (Eight levels, so the space room still lands on level 25.)
+// level 5 "Alle fem") rather than the old repeated "stack them all" rooms. Every
+// placement uses ALL FIVE pieces, each with its own silhouette layout — a square,
+// a cross, a staircase, a chevron, a star, a tight mosaic — and the difficulty
+// climbs: more pieces asked to rotate (align) or stand (upright), tighter spacing
+// toward the end. Two stacking levels are kept as a change of pace between the
+// placements. Layouts are spaced so no two crayon silhouettes overlap on either a
+// narrow phone or a wide desktop frame. The calm tutorial floor is reused with a
+// subtly different backdrop per level so they read as a series. (Eight levels, so
+// the space room still lands on level 25.)
 const MID_LEVELS: EnvConfig[] = [
-  // 12 — a square: one piece pinned in each corner (two of them rotated upright)
+  // 12 — a square: a piece in each corner with one standing in the middle
   {
     id: "m-square",
     name: "Firkant",
     ...TUT_LOOK,
     bg: "#cdc6b8",
-    only: ["cube", "orange", "plank-short", "plank-long"],
     place: [
-      { id: "cube", nx: -0.5, nz: -0.5 },
-      { id: "orange", nx: 0.5, nz: -0.5 },
-      { id: "plank-short", nx: -0.5, nz: 0.5, align: "z" },
-      { id: "plank-long", nx: 0.5, nz: 0.5, align: "z" },
+      { id: "cube", nx: -0.5, nz: -0.55 },
+      { id: "orange", nx: 0.5, nz: -0.55 },
+      { id: "cylinder", nx: 0, nz: 0, upright: true },
+      { id: "plank-short", nx: -0.5, nz: 0.55, align: "z" },
+      { id: "plank-long", nx: 0.5, nz: 0.55, align: "z" },
     ],
   },
   // 13 — change of pace: build a four-high tower
   { id: "m-stack4", name: "Stable 4", ...TUT_LOOK, bg: "#c9bfb0", stackAll: true, stackCount: 4 },
-  // 14 — a cross: the cylinder stands at the centre with an arm reaching each way
+  // 14 — a cross/plus: the cylinder stands at the centre with an arm reaching each way
   {
     id: "m-cross",
     name: "Kross",
@@ -713,38 +720,38 @@ const MID_LEVELS: EnvConfig[] = [
     bg: "#c4c8be",
     place: [
       { id: "cylinder", nx: 0, nz: 0, upright: true },
-      { id: "cube", nx: 0, nz: -0.55 },
-      { id: "orange", nx: 0, nz: 0.55 },
-      { id: "plank-short", nx: -0.5, nz: 0, align: "z" },
-      { id: "plank-long", nx: 0.5, nz: 0, align: "z" },
+      { id: "cube", nx: 0, nz: -0.6 },
+      { id: "orange", nx: 0, nz: 0.6 },
+      { id: "plank-short", nx: -0.66, nz: 0, align: "z" },
+      { id: "plank-long", nx: 0.66, nz: 0, align: "z" },
     ],
   },
-  // 15 — a staircase climbing across the diagonal
+  // 15 — pieces set out across the floor, the cylinder standing at one corner
   {
     id: "m-stair",
     name: "Trapp",
     ...TUT_LOOK,
     bg: "#ccc3b3",
-    only: ["cube", "orange", "plank-short", "cylinder"],
     place: [
-      { id: "cube", nx: -0.55, nz: -0.5 },
-      { id: "orange", nx: -0.18, nz: -0.16 },
-      { id: "plank-short", nx: 0.2, nz: 0.18, align: "z" },
-      { id: "cylinder", nx: 0.55, nz: 0.52, upright: true },
+      { id: "plank-long", nx: -0.5, nz: -0.55, align: "z" },
+      { id: "cylinder", nx: 0.5, nz: -0.55, upright: true },
+      { id: "cube", nx: 0, nz: 0 },
+      { id: "orange", nx: -0.5, nz: 0.55 },
+      { id: "plank-short", nx: 0.5, nz: 0.55, align: "z" },
     ],
   },
-  // 16 — a chevron / funnel pointing up the screen
+  // 16 — a chevron / funnel pointing down the screen
   {
     id: "m-chevron",
     name: "Vinkel",
     ...TUT_LOOK,
     bg: "#c6c0b4",
     place: [
-      { id: "plank-long", nx: -0.55, nz: -0.32, align: "z" },
-      { id: "plank-short", nx: 0.55, nz: -0.32, align: "z" },
-      { id: "cube", nx: -0.28, nz: 0.18 },
-      { id: "orange", nx: 0.28, nz: 0.18 },
-      { id: "cylinder", nx: 0, nz: 0.55, upright: true },
+      { id: "plank-long", nx: -0.6, nz: -0.45, align: "z" },
+      { id: "plank-short", nx: 0.6, nz: -0.45, align: "z" },
+      { id: "cube", nx: -0.5, nz: 0.22 },
+      { id: "orange", nx: 0.5, nz: 0.22 },
+      { id: "cylinder", nx: 0, nz: 0.8, upright: true },
     ],
   },
   // 17 — change of pace: the full five-high tower
@@ -1331,28 +1338,35 @@ function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
         </group>
       )}
 
-      {/* lift tutorial: a crayon target where the orange goes – on top of the
-          blue cube (high up) – tinted to the orange's colour, like the place
-          levels' outlines */}
+      {/* "Saman" field: a ground-level orange zone you drag BOTH pieces into –
+          a soft tinted area on the floor with a crayon-bright border, sitting
+          flat on the ground (not floating) like the other floor markers */}
       {env.lift && (
-        <mesh position={[0, 1.18, -1.3]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-          <planeGeometry args={[2.0, 2.0]} />
-          <meshStandardMaterial
-            map={texOf("/silhouettes/orange.png")}
-            color="#e07b22"
-            transparent
-            alphaTest={0.6}
-            roughness={0.95}
-            metalness={0}
-            polygonOffset
-            polygonOffsetFactor={-1}
-          />
-        </mesh>
+        <group>
+          <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+            <planeGeometry args={[FIELD_HX * 2, FIELD_HZ * 2]} />
+            <meshStandardMaterial
+              color="#e07b22"
+              transparent
+              opacity={0.26}
+              roughness={0.95}
+              metalness={0}
+              polygonOffset
+              polygonOffsetFactor={-1}
+            />
+          </mesh>
+          <group position={[0, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+            <lineSegments>
+              <edgesGeometry args={[new THREE.PlaneGeometry(FIELD_HX * 2, FIELD_HZ * 2)]} />
+              <lineBasicMaterial color="#e07b22" transparent opacity={0.9} toneMapped={false} />
+            </lineSegments>
+          </group>
+        </group>
       )}
 
-      {/* gesture hint as a floor decal, moved up toward the cube/target on the
-          Lift level so it sits between the orange (below) and the base (above) */}
-      {env.pictogram && <GestureDecal url={env.pictogram} z={env.lift ? 0.5 : 0.4} />}
+      {/* gesture hint as a floor decal, down-screen between the field and where
+          the pieces start, so it never covers either */}
+      {env.pictogram && <GestureDecal url={env.pictogram} z={env.lift ? 2.0 : 0.4} />}
 
       {visibleWalls.map((w, i) => (
         <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
@@ -1502,6 +1516,10 @@ function StackAllController({
 
 // Lift tutorial: win once the orange block has been lifted up and rested on top
 // of the blue cube – teaching the press-and-hold-to-lift verb with a clear goal.
+// The "Saman" field: a ground-level zone both the cube and the orange must be
+// dragged into. Half-extents sized to hold the two pieces side by side.
+const FIELD_HX = 1.7
+const FIELD_HZ = 1.15
 function LiftController({
   bodies,
   revealRef,
@@ -1526,10 +1544,12 @@ function LiftController({
         const c = cube.translation()
         const ov = orange.linvel()
         const cv = cube.linvel()
-        const onTop = o.y - c.y > 0.7 // orange clearly stacked above the cube
-        const aligned = Math.hypot(o.x - c.x, o.z - c.z) < 0.9 // sitting over it
+        // both pieces sit inside the ground field (centre within the zone), resting
+        // on the floor, and have come to rest
+        const inField = (t: { x: number; y: number; z: number }) =>
+          Math.abs(t.x) < FIELD_HX && Math.abs(t.z) < FIELD_HZ && t.y < 0.8
         const settled = Math.hypot(ov.x, ov.y, ov.z) < 0.6 && Math.hypot(cv.x, cv.y, cv.z) < 0.6
-        ok = onTop && aligned && settled
+        ok = inField(o) && inField(c) && settled
       }
       if (ok) {
         dwell.current += dt
