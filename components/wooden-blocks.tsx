@@ -227,8 +227,9 @@ function BlockBody({
 /*  Tilt controller – maps device orientation to gravity + light       */
 /* ------------------------------------------------------------------ */
 // Gravity tuned so blocks settle with weight but stay calm enough to stack
-// without bouncing themselves over (too strong made them impossible to build with).
-const G = 20
+// without bouncing themselves over (too strong made them impossible to build
+// with). Nudged up a touch so falls feel snappier and less floaty / slow-mo.
+const G = 25
 
 // Default resting position of the warm key light. The camera looks straight
 // down with screen-up mapped to -z, so a light on the -z side reads as coming
@@ -4307,9 +4308,14 @@ export default function WoodenBlocks({
         <CameraRig />
         <Physics
           gravity={[0, -G, 0]}
-          timeStep={1 / 120}
-          numSolverIterations={12}
-          maxCcdSubsteps={4}
+          // 60 Hz fixed step matches the display: it stops the simulation
+          // falling behind real time on phones (the occasional "slow-mo"), and
+          // roughly halves the physics cost vs 120 Hz. Interpolation keeps it
+          // smooth on 120 Hz ProMotion screens; fast throws are speed-clamped +
+          // CCD so nothing tunnels at this rate.
+          timeStep={1 / 60}
+          numSolverIterations={8}
+          maxCcdSubsteps={2}
           interpolate
         >
           <Suspense fallback={null}>
@@ -4338,8 +4344,13 @@ export default function WoodenBlocks({
       <div
         onPointerEnter={revealUI}
         onPointerLeave={scheduleHide}
-        style={{ color: env.id === "gold" ? "#efe1c2" : "#262626" }}
-        className={`pointer-events-auto absolute left-2 top-2 z-10 flex flex-col gap-2 p-1 transition-opacity duration-700 ease-out ${
+        style={{
+          color: env.id === "gold" ? "#efe1c2" : "#262626",
+          // sit clear of the status bar / notch now that we draw edge-to-edge
+          top: "calc(env(safe-area-inset-top, 0px) + 0.5rem)",
+          left: "calc(env(safe-area-inset-left, 0px) + 0.5rem)",
+        }}
+        className={`pointer-events-auto absolute z-10 flex flex-col gap-2 p-1 transition-opacity duration-700 ease-out ${
           uiShown ? "opacity-90" : "opacity-30"
         }`}
       >
