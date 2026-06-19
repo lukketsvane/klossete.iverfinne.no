@@ -34,21 +34,6 @@ export default function TitleShell() {
     if (screen !== "game") refresh()
   }, [screen, refresh])
 
-  if (screen === "game") {
-    return (
-      <WoodenBlocks
-        key={launch ?? "resume"}
-        initialLevel={launch ?? undefined}
-        initialMuted={!sound}
-        initialTilt={tilt}
-        onExit={() => {
-          setScreen("title")
-          setOverlay("levels")
-        }}
-      />
-    )
-  }
-
   const startAt = (i: number) => {
     setLaunch(i)
     setScreen("game")
@@ -83,57 +68,89 @@ export default function TitleShell() {
   }
 
   return (
-    <main className="relative flex h-dvh w-full flex-col items-center justify-between overflow-hidden bg-[#f6f2ea] px-6 pb-10 pt-16 text-[#262626]">
-      {/* wordmark */}
-      <h1 className="font-klossete mt-8 text-6xl leading-none tracking-tight sm:text-7xl">
-        {"kl.oss.ete".split("").map((ch, i) =>
-          ch === "." ? (
-            <span key={i} style={{ color: "#7c7264" }}>
-              {ch}
-            </span>
-          ) : (
-            <span key={i} style={{ color: SOLVED_COLORS[i % SOLVED_COLORS.length] }}>
-              {ch}
-            </span>
-          ),
-        )}
-      </h1>
+    <>
+      {screen === "game" ? (
+        <WoodenBlocks
+          key={launch ?? "resume"}
+          initialLevel={launch ?? undefined}
+          initialMuted={!sound}
+          initialTilt={tilt}
+          // the grid button opens the level picker OVER the running level, so it
+          // never throws you back out to the main menu
+          onExit={() => {
+            refresh()
+            setOverlay("levels")
+          }}
+        />
+      ) : (
+        <main className="relative flex h-dvh w-full flex-col items-center justify-between overflow-hidden bg-[#f6f2ea] px-6 pb-10 pt-16 text-[#262626]">
+          {/* wordmark */}
+          <h1 className="font-klossete mt-8 text-6xl leading-none tracking-tight sm:text-7xl">
+            {"kl.oss.ete".split("").map((ch, i) =>
+              ch === "." ? (
+                <span key={i} style={{ color: "#7c7264" }}>
+                  {ch}
+                </span>
+              ) : (
+                <span key={i} style={{ color: SOLVED_COLORS[i % SOLVED_COLORS.length] }}>
+                  {ch}
+                </span>
+              ),
+            )}
+          </h1>
 
-      {/* settings + level access */}
-      <div className="flex w-full max-w-xs flex-col items-stretch gap-3">
-        <SettingRow label="lyd" checked={sound} onClick={toggleSound} />
-        <SettingRow label="rørslesensor" checked={tilt} onClick={toggleTilt} />
+          {/* settings + level access */}
+          <div className="flex w-full max-w-xs flex-col items-stretch gap-3">
+            <SettingRow label="lyd" checked={sound} onClick={toggleSound} />
+            <SettingRow label="rørslesensor" checked={tilt} onClick={toggleTilt} />
 
-        <button
-          type="button"
-          onClick={() => setOverlay("levels")}
-          className="font-klossete mt-1 rounded-2xl bg-[#e7e1d5] px-8 py-3 text-xl text-[#473f33] transition active:scale-95 hover:brightness-105"
-        >
-          nivå
-        </button>
-        <button
-          type="button"
-          onClick={() => setOverlay("help")}
-          className="font-klossete text-base text-[#9a9082] underline-offset-4 transition hover:text-[#6b6155] hover:underline active:scale-95"
-        >
-          korleis spele
-        </button>
-      </div>
+            <button
+              type="button"
+              onClick={() => setOverlay("levels")}
+              className="font-klossete mt-1 rounded-2xl bg-[#e7e1d5] px-8 py-3 text-xl text-[#473f33] transition active:scale-95 hover:brightness-105"
+            >
+              nivå
+            </button>
+            <button
+              type="button"
+              onClick={() => setOverlay("help")}
+              className="font-klossete text-base text-[#9a9082] underline-offset-4 transition hover:text-[#6b6155] hover:underline active:scale-95"
+            >
+              korleis spele
+            </button>
+          </div>
 
-      {/* the primary action lives at the very bottom */}
-      <button
-        type="button"
-        onClick={() => startAt(progress.current)}
-        className="font-klossete w-full max-w-xs rounded-2xl bg-[#2b56be] px-10 py-4 text-2xl text-[#f6f2ea] transition active:scale-95 hover:brightness-105"
-      >
-        start spelet
-      </button>
+          {/* the primary action lives at the very bottom */}
+          <button
+            type="button"
+            onClick={() => startAt(progress.current)}
+            className="font-klossete w-full max-w-xs rounded-2xl bg-[#2b56be] px-10 py-4 text-2xl text-[#f6f2ea] transition active:scale-95 hover:brightness-105"
+          >
+            start spelet
+          </button>
+        </main>
+      )}
 
       {overlay === "levels" && (
-        <LevelOverlay progress={progress} onClose={() => setOverlay(null)} onPick={startAt} />
+        <LevelOverlay
+          progress={progress}
+          onClose={() => setOverlay(null)}
+          onHome={() => {
+            setOverlay(null)
+            setScreen("title")
+          }}
+          onPick={(i) => {
+            if (screen === "game") {
+              setLaunch(i) // switch the running level in place, stay in the game
+              setOverlay(null)
+            } else {
+              startAt(i)
+            }
+          }}
+        />
       )}
       {overlay === "help" && <HelpOverlay onClose={() => setOverlay(null)} />}
-    </main>
+    </>
   )
 }
 
@@ -171,15 +188,17 @@ function SettingRow({
 function LevelOverlay({
   progress,
   onClose,
+  onHome,
   onPick,
 }: {
   progress: Progress
   onClose: () => void
+  onHome: () => void
   onPick: (i: number) => void
 }) {
   return (
     <div
-      className="absolute inset-0 z-20 flex items-center justify-center bg-[#26262699] px-5 backdrop-blur-sm"
+      className="fixed inset-0 z-20 flex items-center justify-center bg-[#26262699] px-5 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
@@ -190,7 +209,7 @@ function LevelOverlay({
           <button
             type="button"
             aria-label="Hovudmeny"
-            onClick={onClose}
+            onClick={onHome}
             className="font-klossete text-lg text-[#6b6155] transition hover:text-[#262626] active:scale-95"
           >
             ‹ hovudmeny
@@ -246,7 +265,7 @@ function LevelOverlay({
 function HelpOverlay({ onClose }: { onClose: () => void }) {
   return (
     <div
-      className="absolute inset-0 z-20 flex items-center justify-center bg-[#26262699] px-5 backdrop-blur-sm"
+      className="fixed inset-0 z-20 flex items-center justify-center bg-[#26262699] px-5 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
