@@ -346,9 +346,10 @@ type EnvConfig = {
   // ---- tutorial stages: a clean room that teaches one skill at a time ----
   only?: string[] // restrict which blocks appear (the rest of the five stay hidden)
   hint?: string // a short on-screen Nynorsk instruction
-  pictogram?: string // a crayon gesture pictogram shown briefly when the level opens
+  pictogram?: string // a crayon gesture pictogram/card shown briefly when the level opens
   spawn?: Record<string, { pos: [number, number, number]; rot?: [number, number, number] }> // per-block start override
   place?: PlaceSpec[] // drag each listed block into its outlined target (with orientation rules)
+  lift?: boolean // win by lifting the single block up into the air (teaches press-and-hold)
   stackAll?: boolean // win by stacking blocks into one tower
   stackCount?: number // how many blocks the tower needs (defaults to all five)
   watchVideo?: boolean // the video room as a "just watch it to the end" level
@@ -524,18 +525,20 @@ const TUT_LOOK = {
   contact: { color: "#332b20", opacity: 0.42 },
   bloom: false,
 }
-// Crayon gesture pictograms shown briefly when a tutorial level opens.
-const PICTO_DRAG = "/pictograms/one-finger.png" // 1-finger drag to move
-const PICTO_ROTATE = "/pictograms/rotate-crayon.png" // 2-finger twist to yaw
-const PICTO_SWIPE = "/pictograms/swipe-vertical.png" // 2-finger swipe to flip a face
+// Full crayon tutorial cards (target shape + gesture in one image, tinted to the
+// block's colour). Shown briefly when a tutorial level opens, then fade out.
+const CARD_MOVE = "/tutorials/01_move.png" // 1-finger drag the cube
+const CARD_ROTATE = "/tutorials/02_rotate.png" // 2-finger twist the plank
+const CARD_LIFT = "/tutorials/03_lift.png" // press & hold to lift the orange block
+const CARD_FLIP = "/tutorials/04_flip.png" // 2-finger swipe to flip the cylinder upright
 const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
   {
-    id: "t1-place",
-    name: "Kloss inn",
+    id: "t1-move",
+    name: "Flytt",
     ...TUT_LOOK,
     only: ["cube"],
     hint: "Dra klossen inn i ruta.",
-    pictogram: PICTO_DRAG,
+    pictogram: CARD_MOVE,
     spawn: { cube: { pos: [0, 0.6, 2.4] } },
     place: [{ id: "cube", nx: 0, nz: -0.5 }],
   },
@@ -545,26 +548,35 @@ const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
     ...TUT_LOOK,
     only: ["plank-long"],
     hint: "Roter med to fingrar så planken passar i ruta.",
-    pictogram: PICTO_ROTATE,
+    pictogram: CARD_ROTATE,
     spawn: { "plank-long": { pos: [0, 0.4, 2.4], rot: [0, Math.PI / 2, 0] } }, // long side across
     place: [{ id: "plank-long", nx: 0, nz: -0.4, align: "z" }], // must turn it upright on screen
   },
   {
-    id: "t3-stand",
-    name: "Reis sylinderen",
+    id: "t3-lift",
+    name: "Løft",
+    ...TUT_LOOK,
+    only: ["orange"],
+    hint: "Trykk og hald for å løfte klossen opp i lufta.",
+    pictogram: CARD_LIFT,
+    spawn: { orange: { pos: [0, 0.45, 1.8] } },
+    lift: true,
+  },
+  {
+    id: "t4-flip",
+    name: "Vend",
     ...TUT_LOOK,
     only: ["cylinder"],
     hint: "Sveip med to fingrar for å reise sylinderen, så set han i ringen.",
-    pictogram: PICTO_SWIPE,
+    pictogram: CARD_FLIP,
     spawn: { cylinder: { pos: [0, 0.55, 2.4], rot: [Math.PI / 2, 0, 0] } }, // lying on its side
     place: [{ id: "cylinder", nx: 0, nz: -0.4, upright: true }],
   },
   {
-    id: "t4-five",
+    id: "t5-five",
     name: "Alle fem",
     ...TUT_LOOK,
     hint: "Få alle fem klossane på rett plass.",
-    pictogram: PICTO_DRAG,
     place: [
       { id: "cube", nx: -0.5, nz: -0.55 },
       { id: "orange", nx: 0.5, nz: -0.55 },
@@ -574,11 +586,10 @@ const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
     ],
   },
   {
-    id: "t5-stack",
+    id: "t6-stack",
     name: "Stable",
     ...TUT_LOOK,
     hint: "Stable alle fem oppå kvarandre.",
-    pictogram: PICTO_DRAG,
     stackAll: true,
   },
 ]
@@ -586,27 +597,25 @@ const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
 // pull a base room config by id so the curated order can reuse its look + keys
 const base = (id: string): EnvConfig => BASE_ENVIRONMENTS.find((e) => e.id === id) ?? BASE_ENVIRONMENTS[0]
 
-// 6–9: more intro practice, still on the calm first-level background
+// 7–10: more intro practice, still on the calm first-level background
 const INTRO_REST: EnvConfig[] = [
   {
-    id: "t6-two",
+    id: "t7-two",
     name: "Plasser to",
     ...TUT_LOOK,
     only: ["cube", "orange"],
-    pictogram: PICTO_DRAG,
     spawn: { cube: { pos: [-0.9, 0.6, 2.4] }, orange: { pos: [0.9, 0.45, 2.4] } },
     place: [
       { id: "cube", nx: -0.4, nz: -0.45 },
       { id: "orange", nx: 0.4, nz: -0.45 },
     ],
   },
-  { id: "t7-stack", name: "Stable", ...TUT_LOOK, pictogram: PICTO_DRAG, stackAll: true },
+  { id: "t8-stack", name: "Stable", ...TUT_LOOK, stackAll: true },
   {
-    id: "t8-rotate2",
+    id: "t9-rotate2",
     name: "Roter to",
     ...TUT_LOOK,
     only: ["plank-long", "plank-short"],
-    pictogram: PICTO_ROTATE,
     spawn: {
       "plank-long": { pos: [-1.0, 0.4, 2.4], rot: [0, Math.PI / 2, 0] },
       "plank-short": { pos: [1.0, 0.4, 2.4], rot: [0, Math.PI / 2, 0] },
@@ -616,7 +625,7 @@ const INTRO_REST: EnvConfig[] = [
       { id: "plank-short", nx: 0.45, nz: -0.4, align: "z" },
     ],
   },
-  { id: "t9-stack", name: "Stable", ...TUT_LOOK, pictogram: PICTO_DRAG, stackAll: true },
+  { id: "t10-stack", name: "Stable", ...TUT_LOOK, stackAll: true },
 ]
 
 // 11–19: nine stacking levels (calm look, subtly different backdrops). Rather
@@ -679,20 +688,20 @@ const CUBEWALK_LEVELS: EnvConfig[] = Array.from({ length: 24 }, (_, i) => {
   }
 })
 
-// The curated 50-level journey, in two sections.
+// The curated journey, in two sections.
 const ENVIRONMENTS: EnvConfig[] = [
-  ...TUTORIAL_ENVIRONMENTS, // 1–5  intro: place, rotate, stand, place-all, stack
-  ...INTRO_REST, // 6–9  more intro practice (same calm background)
-  { ...base("video"), id: "video", name: "Film", plate: undefined, watchVideo: true }, // 10 watch to the end
-  ...STACK_LEVELS, // 11–19 stacking
-  { ...base("glass"), id: "soundbox", look: "glass", name: "Lydboks", corners: undefined, reactive: true, notes: 12 }, // 20 play 12 notes
-  base("gold"), // 21
-  base("peel"), // 22
-  base("playmat"), // 23
-  base("texturemiss"), // 24
-  { ...base("magnet"), id: "magnet", name: "Rommet" }, // 25 the space room closes section one
-  ...CUBEWALK_LEVELS, // 26–49 cube-walk
-  { ...base("five"), id: "five", name: "Totem" }, // 50 assemble the figure
+  ...TUTORIAL_ENVIRONMENTS, // 1–6  intro: move, rotate, lift, flip, place-all, stack
+  ...INTRO_REST, // 7–10  more intro practice (same calm background)
+  { ...base("video"), id: "video", name: "Film", plate: undefined, watchVideo: true }, // 11 watch to the end
+  ...STACK_LEVELS, // 12–20 stacking
+  { ...base("glass"), id: "soundbox", look: "glass", name: "Lydboks", corners: undefined, reactive: true, notes: 12 }, // 21 play 12 notes
+  base("gold"), // 22
+  base("peel"), // 23
+  base("playmat"), // 24
+  base("texturemiss"), // 25
+  { ...base("magnet"), id: "magnet", name: "Rommet" }, // 26 the space room closes section one
+  ...CUBEWALK_LEVELS, // 27–50 cube-walk
+  { ...base("five"), id: "five", name: "Totem" }, // 51 assemble the figure
 ]
 
 // Public level list (id + name, in play order) for the title/level-select UI.
@@ -924,6 +933,7 @@ const TAP_MOVE = 0.3 // world units the centre may travel and still count as a t
 
 const MIN_LIFT = 2.1 // grabbed blocks float well clear of the floor so you can carry them OVER a stacked layer
 const MAX_LIFT = WALL_VIS_HEIGHT - 0.3 // never lift above the tray rim
+const LIFT_TARGET = 5 // the "lift" tutorial wins once a held block floats above this height
 const THROW_MAX = 5.0 // clamp on release speed – allows a light toss, not a hurl
 const ESCAPE_MARGIN = 0.4 // how far past a wall a body must be before we rescue it
 
@@ -1280,6 +1290,45 @@ function StackAllController({
   return <pointLight ref={flash} position={[0, 6, 0]} distance={44} decay={2} color="#fff6e6" intensity={0} />
 }
 
+// Lift tutorial: win once the single block has been picked up and floated above
+// LIFT_TARGET (and held there a beat) – teaching the press-and-hold-to-lift verb.
+function LiftController({
+  blockId,
+  bodies,
+  revealRef,
+}: {
+  blockId: string
+  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  revealRef: React.MutableRefObject<boolean>
+}) {
+  const dwell = useRef(0)
+  const flash = useRef<THREE.PointLight>(null)
+  const flashT = useRef(0)
+  useEffect(() => () => {
+    revealRef.current = false
+  }, [revealRef])
+
+  useFrame((_s, dt) => {
+    if (!revealRef.current) {
+      const body = bodies.current[blockId]
+      if (body && body.translation().y > LIFT_TARGET) {
+        dwell.current += dt
+        if (dwell.current > 0.4) {
+          revealRef.current = true
+          flashT.current = 1
+          haptic(26)
+        }
+      } else {
+        dwell.current = 0
+      }
+    }
+    flashT.current = Math.max(0, flashT.current - dt * 0.8)
+    if (flash.current) flash.current.intensity = flashT.current * 60
+  })
+
+  return <pointLight ref={flash} position={[0, 6, 0]} distance={44} decay={2} color="#fff6e6" intensity={0} />
+}
+
 // Soundbox: a wordless row of pips along the far edge that count the tones still
 // to play. Each tone struck extinguishes one pip; when the last goes dark the
 // room is solved. Driven from the live note ref in useFrame (no React state, so
@@ -1331,7 +1380,7 @@ function NoteCounter({
 
 function Room(props: RoomProps) {
   if (props.env.solo) return <SoloRoom {...props} />
-  if (props.env.place || props.env.stackAll) return <TutorialRoom {...props} />
+  if (props.env.place || props.env.stackAll || props.env.lift) return <TutorialRoom {...props} />
   const look = props.env.look ?? props.env.id // extra levels reuse a base look
   if (look === "gold") return <GoldRoom {...props} />
   if (look === "glass") return <GlassRoom {...props} />
@@ -3651,6 +3700,13 @@ function SceneContents({
   const onGrab = useCallback(
     (body: RapierRigidBody, point: THREE.Vector3, block: Block) => {
       gl.domElement.style.cursor = "grabbing"
+      // Seed the cursor reference with the EXACT point that was grabbed. The carry
+      // servo steers toward `pointerNdc`, which is otherwise only updated on
+      // pointer-move – so on a plain tap it would be stale (or the centred
+      // default) and yank the block sideways on the first frame. Projecting the
+      // real contact point makes the block hang from precisely where it was held.
+      const ndc = point.clone().project(camera)
+      pointerNdc.current.set(ndc.x, ndc.y)
       const t = body.translation()
       const r = body.rotation()
       const center = new THREE.Vector3(t.x, t.y, t.z)
@@ -3678,7 +3734,7 @@ function SceneContents({
       grabbingRef.current = true
       haptic(9) // a little "tick" as it lifts into your hand
     },
-    [gl, grabbingRef],
+    [gl, grabbingRef, camera],
   )
 
   /* ---- pointer tracking + light aim + release ---- */
@@ -4167,6 +4223,9 @@ function SceneContents({
       {/* tutorial: stack every block into one tower */}
       {env.stackAll && <StackAllController bodies={bodies} revealRef={revealRef} count={env.stackCount} />}
 
+      {/* lift tutorial: raise the single block up into the air to solve */}
+      {env.lift && <LiftController blockId={env.only?.[0] ?? "orange"} bodies={bodies} revealRef={revealRef} />}
+
       {/* soundbox: a wordless pip row counting down the tones left to play */}
       {noteTarget > 0 && <NoteCounter target={noteTarget} countRef={noteCount} box={box} />}
 
@@ -4504,14 +4563,16 @@ export default function WoodenBlocks({
         <PostFx envId={env.id} />
       </Canvas>
 
-      {/* tutorial gesture pictogram: a crayon hint near the top that fades out */}
+      {/* tutorial crayon card (target shape + gesture, tinted to the block's
+          colour): fills the play area, then fades out so it guides without
+          getting in the way */}
       {env.pictogram && (
         <img
           src={env.pictogram}
           alt=""
           aria-hidden
-          className={`pointer-events-none absolute left-1/2 top-[14%] w-24 -translate-x-1/2 select-none transition-opacity duration-1000 ease-out ${
-            pictoShown ? "opacity-70" : "opacity-0"
+          className={`pointer-events-none absolute inset-0 m-auto max-h-[84%] max-w-[64%] select-none object-contain transition-opacity duration-1000 ease-out ${
+            pictoShown ? "opacity-80" : "opacity-0"
           }`}
         />
       )}
