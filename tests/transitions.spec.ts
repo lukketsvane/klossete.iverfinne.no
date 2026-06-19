@@ -61,10 +61,10 @@ test("bespoke arrangement levels 12–19 load and render", async ({ page }) => {
   // tightest mosaic. They all run through the same place/stack renderer, so this
   // covers the new configs without eight slow reloads.
   const picks: { lvl: number; name: string }[] = [
-    { lvl: 12, name: "Firkant" },
+    { lvl: 12, name: "Gjennom" },
     { lvl: 14, name: "Kross" },
     { lvl: 17, name: "Stable 5" },
-    { lvl: 19, name: "Mosaikk" },
+    { lvl: 19, name: "Sluse" },
   ]
   for (const { lvl, name } of picks) {
     // fresh boot per level – the menu picker is the reliable route. A reload from
