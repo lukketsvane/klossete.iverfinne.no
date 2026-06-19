@@ -39,8 +39,6 @@ export default function TitleShell() {
     <main className="relative flex h-dvh w-full flex-col items-center justify-center overflow-hidden bg-[#f6f2ea] px-6 text-[#262626]">
       {screen === "title" ? (
         <div className="flex flex-col items-center gap-8">
-          {/* the mark */}
-          <img src="/icons/icon-512.png" alt="" width={108} height={108} className="rounded-[22%] shadow-sm" />
           {/* wordmark: each letter in a block colour */}
           <h1 className="font-klossete text-7xl leading-none tracking-tight sm:text-8xl">
             {"kl.oss.ete".split("").map((ch, i) =>
@@ -61,14 +59,14 @@ export default function TitleShell() {
               onClick={() => startAt(progress.current)}
               className="font-klossete rounded-2xl bg-[#2b56be] px-10 py-3 text-2xl text-[#f6f2ea] transition active:scale-95"
             >
-              play
+              spel
             </button>
             <button
               type="button"
               onClick={() => setScreen("levels")}
               className="font-klossete rounded-2xl px-8 py-2 text-xl text-[#6b6155] underline-offset-4 transition hover:underline active:scale-95"
             >
-              levels
+              nivå
             </button>
           </div>
         </div>
@@ -77,13 +75,13 @@ export default function TitleShell() {
           <div className="flex w-full items-center justify-between">
             <button
               type="button"
-              aria-label="Back"
+              aria-label="Tilbake"
               onClick={() => setScreen("title")}
               className="font-klossete text-xl text-[#6b6155] transition hover:text-[#262626] active:scale-95"
             >
-              ‹ back
+              ‹ tilbake
             </button>
-            <h2 className="font-klossete text-2xl text-[#2b56be]">levels</h2>
+            <h2 className="font-klossete text-2xl text-[#2b56be]">nivå</h2>
             <span className="w-12 text-right text-xs text-[#9a9082]">
               {progress.solved.length}/{LEVELS.length}
             </span>
@@ -104,9 +102,9 @@ export default function TitleShell() {
                   disabled={!unlocked}
                   onClick={() => unlocked && startAt(i)}
                   aria-label={
-                    exists ? `Level ${i + 1}: ${level.name}${solved ? " (passed)" : ""}` : `Level ${i + 1} (locked)`
+                    exists ? `Nivå ${i + 1}: ${level.name}${solved ? " (klart)" : ""}` : `Nivå ${i + 1} (låst)`
                   }
-                  title={exists ? level.name : "locked"}
+                  title={exists ? level.name : "låst"}
                   className={`font-klossete relative flex aspect-square items-center justify-center rounded-xl text-xl transition ${
                     unlocked ? "active:scale-95 hover:brightness-105" : "cursor-not-allowed"
                   } ${isCurrent ? "ring-2 ring-[#2b56be] ring-offset-2 ring-offset-[#f6f2ea]" : ""}`}
@@ -125,14 +123,14 @@ export default function TitleShell() {
           <button
             type="button"
             onClick={() => {
-              if (typeof window !== "undefined" && window.confirm("Reset all progress?")) {
+              if (typeof window !== "undefined" && window.confirm("Nullstill all framgang?")) {
                 resetProgress()
                 refresh()
               }
             }}
             className="mt-1 text-xs text-[#b3aa9a] underline-offset-4 transition hover:underline"
           >
-            reset progress
+            nullstill framgang
           </button>
         </div>
       )}

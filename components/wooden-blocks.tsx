@@ -12,7 +12,7 @@ import {
   type RapierRigidBody,
 } from "@react-three/rapier"
 import * as THREE from "three"
-import { Layers, LayoutGrid, Smartphone, Volume2, VolumeX } from "lucide-react"
+import { LayoutGrid, Smartphone, Volume2, VolumeX } from "lucide-react"
 import { audioReady, playBeep, playImpact, playTone, primeBlocks, setMuted, unlockAudio } from "@/lib/impact-sound"
 import { BLOCKS, MESH_FIT, blockBaseFreq, blockRadius, type Block } from "@/lib/blocks"
 import { CameraRig } from "@/components/engine/CameraRig"
@@ -2699,26 +2699,30 @@ const SOLO_BOUND = 4
 const SOLO_START: [number, number] = [-3, 3]
 const SOLO_GOAL: [number, number] = [3, -3]
 
-// — Solo room: a mosaic floor (chosen by env.mosaic) + soft warm light.
+// Per-axis hop distance for a piloted block: a block tipping end-over-end
+// pivots on its leading edge and lands a FULL footprint-length ahead, so the
+// step must equal the block's own size along the direction it travels (an even
+// cube steps one edge; a long plank steps its whole length down its long side).
+// The cylinder keeps a uniform roll step. Returns world units [alongX, alongZ].
+function soloStep(id: string): [number, number] {
+  const b = BLOCKS.find((bb) => bb.id === id)
+  if (!b) return [SOLO_CELL, SOLO_CELL]
+  if (b.shape === "cylinder") return [SOLO_CELL, SOLO_CELL]
+  return [b.half[0] * 2, b.half[2] * 2]
+}
+
+// — Solo room: a calm, plain floor + soft warm light (no photo tiles, so the
+// piloted block stays the clear focus).
 function SoloRoom({ env }: RoomProps) {
-  const texs = useTexture(FIVE_MOSAICS)
-  useMemo(() => {
-    texs.forEach((t) => {
-      t.wrapS = t.wrapT = THREE.RepeatWrapping
-      t.repeat.set(10, 10)
-      t.colorSpace = THREE.SRGBColorSpace
-      t.anisotropy = 4
-    })
-  }, [texs])
-  const i = (((env.mosaic ?? 1) - 1) % texs.length + texs.length) % texs.length
-  const [gx, gz] = [SOLO_GOAL[0] * SOLO_CELL, SOLO_GOAL[1] * SOLO_CELL]
+  const [sx, sz] = soloStep(env.solo ?? "")
+  const [gx, gz] = [SOLO_GOAL[0] * sx, SOLO_GOAL[1] * sz]
   return (
     <>
       <ambientLight intensity={0.42} color="#fff1df" />
       <pointLight position={[0, 11, 2]} intensity={18} distance={55} decay={2} color="#fff0d8" />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
         <planeGeometry args={[90, 90]} />
-        <meshStandardMaterial map={texs[i]} color="#8d887e" roughness={0.92} metalness={0} />
+        <meshStandardMaterial color="#241f18" roughness={0.96} metalness={0} />
       </mesh>
       {/* the exit */}
       <mesh position={[gx, 0.03, gz]} rotation={[-Math.PI / 2, 0, 0]}>
@@ -2746,6 +2750,7 @@ function SoloController({
   const hop = useRef<{
     t: number
     dur: number
+    lift: number // arc height – taller for a longer end-over-end flip
     from: THREE.Vector3
     to: THREE.Vector3
     fromQ: THREE.Quaternion
@@ -2759,6 +2764,9 @@ function SoloController({
   const glow = useRef<THREE.PointLight>(null)
   const landT = useRef(0)
   const CARRY = 0.55
+  // each cell is one footprint-length along that axis, so a flip lands the block
+  // exactly its own length ahead (the long plank covers ground down its long side)
+  const [stepX, stepZ] = soloStep(blockId)
 
   useEffect(() => {
     cell.current = [...SOLO_START]
@@ -2768,7 +2776,7 @@ function SoloController({
     const body = bodies.current[blockId]
     if (body) {
       body.setBodyType(BODY_KINEMATIC_POSITION, true)
-      body.setTranslation({ x: SOLO_START[0] * SOLO_CELL, y: CARRY, z: SOLO_START[1] * SOLO_CELL }, true)
+      body.setTranslation({ x: SOLO_START[0] * stepX, y: CARRY, z: SOLO_START[1] * stepZ }, true)
       body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true)
     }
     return () => {
@@ -2863,7 +2871,7 @@ function SoloController({
       H.t = Math.min(H.dur, H.t + dt)
       const k = H.t / H.dur
       const p = H.from.clone().lerp(H.to, k)
-      p.y = CARRY + Math.sin(Math.PI * k) * 0.16
+      p.y = CARRY + Math.sin(Math.PI * k) * H.lift
       const q = H.fromQ.clone().slerp(H.toQ, k)
       body.setNextKinematicTranslation({ x: p.x, y: p.y, z: p.z })
       body.setNextKinematicRotation({ x: q.x, y: q.y, z: q.z, w: q.w })
@@ -2880,7 +2888,7 @@ function SoloController({
       }
     } else {
       const [gx, gy] = cell.current
-      body.setNextKinematicTranslation({ x: gx * SOLO_CELL, y: CARRY, z: gy * SOLO_CELL })
+      body.setNextKinematicTranslation({ x: gx * stepX, y: CARRY, z: gy * stepZ })
       body.setNextKinematicRotation({ x: baseQ.current.x, y: baseQ.current.y, z: baseQ.current.z, w: baseQ.current.w })
       if (heldDir.current && cool.current === 0 && !revealRef.current) {
         const [dx, dy] = heldDir.current
@@ -2889,12 +2897,20 @@ function SoloController({
         if (tx !== gx || ty !== gy) {
           const mv = FIVE_MOVE[blockId] ?? { angle: Math.PI / 2, dur: 0.2 }
           const axis = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx, 0, dy)).normalize()
-          const step = new THREE.Quaternion().setFromAxisAngle(axis, mv.angle)
+          // distance travelled this hop is the footprint length along the move axis;
+          // a rolling cylinder turns by arc = distance / radius, everything else
+          // tips/flips by its own fixed angle (90° tip, 180° end-over-end flip)
+          const dist = dx !== 0 ? stepX : stepZ
+          const b = BLOCKS.find((bb) => bb.id === blockId)
+          const angle = b?.shape === "cylinder" ? dist / b.radius : mv.angle
+          const step = new THREE.Quaternion().setFromAxisAngle(axis, angle)
           hop.current = {
             t: 0,
             dur: mv.dur,
-            from: new THREE.Vector3(gx * SOLO_CELL, CARRY, gy * SOLO_CELL),
-            to: new THREE.Vector3(tx * SOLO_CELL, CARRY, ty * SOLO_CELL),
+            // a longer flip arcs higher as it goes up and over its leading edge
+            lift: 0.12 + dist * 0.16,
+            from: new THREE.Vector3(gx * stepX, CARRY, gy * stepZ),
+            to: new THREE.Vector3(tx * stepX, CARRY, ty * stepZ),
             fromQ: baseQ.current.clone(),
             toQ: step.multiply(baseQ.current),
           }
@@ -2918,7 +2934,7 @@ function SoloController({
     }
     flashT.current = Math.max(0, flashT.current - dt * 0.6)
     if (flash.current) {
-      flash.current.position.set(SOLO_GOAL[0] * SOLO_CELL, 2, SOLO_GOAL[1] * SOLO_CELL)
+      flash.current.position.set(SOLO_GOAL[0] * stepX, 2, SOLO_GOAL[1] * stepZ)
       flash.current.intensity = flashT.current * 120
     }
   })
@@ -4309,7 +4325,7 @@ export default function WoodenBlocks({
         {onExit && (
           <button
             type="button"
-            aria-label="Back to levels"
+            aria-label="Tilbake til nivå"
             onClick={onExit}
             className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full opacity-40 transition hover:opacity-90"
           >
@@ -4318,15 +4334,7 @@ export default function WoodenBlocks({
         )}
         <button
           type="button"
-          aria-label={`Environment: ${env.name} (press 1-${ENVIRONMENTS.length} or two-finger hold)`}
-          onClick={() => setEnvIndex((i) => (i + 1) % ENVIRONMENTS.length)}
-          className="pointer-events-auto relative flex h-11 w-11 items-center justify-center rounded-full opacity-40 transition hover:opacity-90"
-        >
-          <Layers className="h-5 w-5" strokeWidth={2.4} />
-        </button>
-        <button
-          type="button"
-          aria-label={muted ? "Unmute impact sounds" : "Mute impact sounds"}
+          aria-label={muted ? "Slå på lyd" : "Demp lyd"}
           aria-pressed={muted}
           onClick={() => {
             const next = !muted
@@ -4343,7 +4351,7 @@ export default function WoodenBlocks({
         </button>
         <button
           type="button"
-          aria-label="Tilt to control gravity"
+          aria-label="Vipp for å styre tyngdekrafta"
           aria-pressed={tiltOn}
           onClick={toggleTilt}
           className={`pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full transition ${
