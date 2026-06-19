@@ -30,6 +30,8 @@ type Phase = "ready" | "run" | "paused" | "finish"
 // per-frame loop can drive the readout without re-rendering React every frame.
 type Hud = {
   progEl: HTMLSpanElement | null
+  speedEl: HTMLSpanElement | null
+  timeEl: HTMLSpanElement | null
 }
 
 export default function GrandPrix() {
@@ -42,7 +44,7 @@ export default function GrandPrix() {
   const steerRef = useRef(0) // -1 (left) .. 1 (right)
   const phaseRef = useRef<Phase>("ready")
   phaseRef.current = phase
-  const hud = useRef<Hud>({ progEl: null }).current
+  const hud = useRef<Hud>({ progEl: null, speedEl: null, timeEl: null }).current
   const containerRef = useRef<HTMLDivElement>(null)
 
   const running = phase === "run"
@@ -143,6 +145,8 @@ export default function GrandPrix() {
     tiltBase.current = null
     setResult({ time: 0 })
     if (hud.progEl) hud.progEl.textContent = "0%"
+    if (hud.speedEl) hud.speedEl.textContent = "0"
+    if (hud.timeEl) hud.timeEl.textContent = "0.0"
     setRunId((n) => n + 1)
     setPhase("run")
   }
@@ -168,7 +172,8 @@ export default function GrandPrix() {
         }}
       >
         <color attach="background" args={[HAZE]} />
-        <fog attach="fog" args={[HAZE, 26, 120]} />
+        <fog attach="fog" args={[HAZE, 30, 150]} />
+        <Sky />
         <Physics gravity={[0, -16, 0]} timeStep={1 / 60} maxCcdSubsteps={4} interpolate paused={!running}>
           <Suspense fallback={null}>
             <Scene track={track} steerRef={steerRef} phaseRef={phaseRef} hud={hud} onFinish={onFinish} />
@@ -191,8 +196,11 @@ export default function GrandPrix() {
           </button>
         )}
 
-        {/* progress */}
-        <div className="absolute right-4 top-4 font-klossete text-lg text-[#473f33]">
+        {/* timer + progress */}
+        <div className="absolute right-4 top-4 flex items-center gap-2 font-klossete text-lg text-[#473f33]">
+          <span className="rounded-full bg-white/65 px-3 py-1 shadow-sm backdrop-blur-sm tabular-nums">
+            <span ref={(el) => { hud.timeEl = el }}>0.0</span>s
+          </span>
           <span
             data-testid="gp-progress"
             className="rounded-full bg-white/65 px-3 py-1 shadow-sm backdrop-blur-sm"
@@ -200,6 +208,17 @@ export default function GrandPrix() {
           >
             0%
           </span>
+        </div>
+
+        {/* speedometer */}
+        <div className="absolute bottom-5 left-4 flex items-baseline gap-1 font-klossete text-[#473f33]">
+          <span
+            className="rounded-2xl bg-white/65 px-3 py-1 text-3xl tabular-nums shadow-sm backdrop-blur-sm"
+            ref={(el) => { hud.speedEl = el }}
+          >
+            0
+          </span>
+          <span className="text-sm text-[#9a9082]">km/t</span>
         </div>
 
         {/* decorative sparkle, as in the reference */}
@@ -278,6 +297,7 @@ function Scene({
   const lightRef = useRef<THREE.DirectionalLight>(null)
   const lightTarget = useMemo(() => new THREE.Object3D(), [])
   const camera = useThree((s) => s.camera)
+  const sound = useEngineSound()
 
   // Mutable sim state kept out of React.
   const sim = useRef({
@@ -354,7 +374,7 @@ function Scene({
       const imp = right.multiplyScalar(steer * STEER * dt)
       // A forward nudge keeps momentum through flat patches and overcomes the
       // rolling friction that would otherwise stall a gentle downhill.
-      imp.addScaledVector(fwd, 7 * dt)
+      imp.addScaledVector(fwd, 10 * dt)
       rb.applyImpulse({ x: imp.x, y: 0, z: imp.z }, true)
 
       // Speed clamp so the can never tunnels or runs away downhill.
@@ -374,11 +394,25 @@ function Scene({
         onFinish(sim.time)
       }
 
-      // Progress readout.
+      // HUD readouts.
       if (hud.progEl) {
         const pct = Math.round((best / (track.samples.length - 1)) * 100)
         hud.progEl.textContent = `${pct}%`
       }
+      if (hud.speedEl) hud.speedEl.textContent = String(Math.round(speed * 7)) // arcade km/t
+      if (hud.timeEl) hud.timeEl.textContent = sim.time.toFixed(1)
+    }
+
+    // Rolling engine note: louder + higher as the can picks up speed (hushed
+    // when paused / finished / on the line).
+    sound.setSpeed(running && !sim.finished ? speed / MAX_SPEED : 0)
+
+    // Speed-based field of view: it widens as you go faster, for a real rush.
+    const cam = camera as THREE.PerspectiveCamera
+    const fovGoal = 56 + 16 * THREE.MathUtils.clamp(speed / MAX_SPEED, 0, 1)
+    if (Math.abs(cam.fov - fovGoal) > 0.05) {
+      cam.fov += (fovGoal - cam.fov) * (1 - Math.pow(0.05, dtRaw))
+      cam.updateProjectionMatrix()
     }
 
     // --- Visual barrel-roll, integrated incrementally so it never snaps when
@@ -445,6 +479,8 @@ function Scene({
 
       <Scenery decos={track.decos} />
       <Flags gates={track.gates} />
+      <Banner sample={track.startSample} half={track.halfWidth + track.curbWidth} kind="start" />
+      <Banner sample={track.finishSample} half={track.halfWidth + track.curbWidth} kind="finish" />
 
       {/* The red can */}
       <RigidBody
@@ -541,3 +577,139 @@ function Can() {
   return <primitive object={model} scale={CAN_SCALE} dispose={null} />
 }
 useGLTF.preload(CAN_GLB)
+
+/* A soft vertical sky gradient sitting behind the fog — warm haze low, a cool
+   pale blue up high, like the reference clips. A big back-side sphere. */
+function Sky() {
+  const mat = useMemo(
+    () =>
+      new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        depthWrite: false,
+        fog: false,
+        uniforms: {
+          top: { value: new THREE.Color("#aebfcf") },
+          bottom: { value: new THREE.Color("#e6e0d4") },
+        },
+        vertexShader: `varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+        fragmentShader: `varying vec3 vP; uniform vec3 top; uniform vec3 bottom;
+          void main(){ float h = clamp(normalize(vP).y * 0.5 + 0.5, 0.0, 1.0);
+            vec3 c = mix(bottom, top, smoothstep(0.35, 0.85, h));
+            gl_FragColor = vec4(pow(c, vec3(2.2)), 1.0); }`,
+      }),
+    [],
+  )
+  return (
+    <mesh scale={300} renderOrder={-1}>
+      <sphereGeometry args={[1, 24, 16]} />
+      <primitive object={mat} attach="material" />
+    </mesh>
+  )
+}
+
+/* A checkered start / finish banner spanning the road on two posts. */
+function Banner({ sample, half, kind }: { sample: Track["samples"][number]; half: number; kind: "start" | "finish" }) {
+  const tex = useMemo(() => makeCheckerTexture(), [])
+  const q = useMemo(() => {
+    const m = new THREE.Matrix4().makeBasis(
+      sample.r.clone().normalize(),
+      sample.n.clone().normalize(),
+      new THREE.Vector3().crossVectors(sample.r, sample.n).normalize(),
+    )
+    return new THREE.Quaternion().setFromRotationMatrix(m)
+  }, [sample])
+  const W = half * 2 + 0.4
+  const postH = 5.5
+  return (
+    <group position={sample.p} quaternion={q}>
+      {/* posts */}
+      <mesh position={[-half, postH / 2 - 0.5, 0]} castShadow>
+        <boxGeometry args={[0.35, postH, 0.35]} />
+        <meshStandardMaterial color="#efe9dd" roughness={0.9} />
+      </mesh>
+      <mesh position={[half, postH / 2 - 0.5, 0]} castShadow>
+        <boxGeometry args={[0.35, postH, 0.35]} />
+        <meshStandardMaterial color="#efe9dd" roughness={0.9} />
+      </mesh>
+      {/* checkered crossbar */}
+      <mesh position={[0, postH - 0.9, 0]}>
+        <boxGeometry args={[W, 1.4, 0.18]} />
+        <meshStandardMaterial map={tex} color={kind === "finish" ? "#ffffff" : "#d8392c"} roughness={0.7} />
+      </mesh>
+    </group>
+  )
+}
+
+/* ------------------------------------------------------------------------- */
+/*  Rolling engine sound — a low rumble that rises in pitch and volume with     */
+/*  speed, built once on the Web Audio graph and driven each frame.            */
+/* ------------------------------------------------------------------------- */
+function useEngineSound() {
+  const ref = useRef<{ setSpeed: (v: number) => void } | null>(null)
+  if (!ref.current) {
+    let osc: OscillatorNode | null = null
+    let osc2: OscillatorNode | null = null
+    let gain: GainNode | null = null
+    let ctx: AudioContext | null = null
+    const ensure = () => {
+      if (ctx || typeof window === "undefined") return
+      const AC = window.AudioContext || (window as any).webkitAudioContext
+      if (!AC) return
+      try {
+        ctx = new AC()
+        gain = ctx.createGain()
+        gain.gain.value = 0
+        const filt = ctx.createBiquadFilter()
+        filt.type = "lowpass"
+        filt.frequency.value = 700
+        osc = ctx.createOscillator()
+        osc.type = "sawtooth"
+        osc.frequency.value = 60
+        osc2 = ctx.createOscillator()
+        osc2.type = "square"
+        osc2.frequency.value = 90
+        osc.connect(filt)
+        osc2.connect(filt)
+        filt.connect(gain)
+        gain.connect(ctx.destination)
+        osc.start()
+        osc2.start()
+      } catch {
+        ctx = null
+      }
+    }
+    ref.current = {
+      setSpeed: (v: number) => {
+        ensure()
+        if (!ctx || !gain || !osc || !osc2) return
+        if (ctx.state === "suspended") void ctx.resume()
+        const t = ctx.currentTime
+        const k = THREE.MathUtils.clamp(v, 0, 1)
+        gain.gain.setTargetAtTime(k > 0.02 ? 0.04 + k * 0.07 : 0, t, 0.08)
+        osc.frequency.setTargetAtTime(55 + k * 150, t, 0.08)
+        osc2.frequency.setTargetAtTime(82 + k * 210, t, 0.08)
+      },
+    }
+  }
+  useEffect(() => () => ref.current?.setSpeed(0), [])
+  return ref.current
+}
+
+function makeCheckerTexture() {
+  if (typeof document === "undefined") return null
+  const n = 8
+  const c = document.createElement("canvas")
+  c.width = c.height = 64
+  const ctx = c.getContext("2d")!
+  const s = 64 / n
+  for (let y = 0; y < n; y++)
+    for (let x = 0; x < n; x++) {
+      ctx.fillStyle = (x + y) % 2 ? "#1c1c1c" : "#f4f0e8"
+      ctx.fillRect(x * s, y * s, s, s)
+    }
+  const tex = new THREE.CanvasTexture(c)
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+  tex.repeat.set(10, 1)
+  tex.needsUpdate = true
+  return tex
+}

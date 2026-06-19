@@ -39,15 +39,18 @@ export type Track = {
   decos: Deco[]
   start: THREE.Vector3
   startDir: THREE.Vector3
+  startSample: TrackSample
+  finishSample: TrackSample
   halfWidth: number
+  curbWidth: number
   length: number
 }
 
 const SEG = 4.0 // spacing between centreline samples
 const COUNT = 360 // ~1440 units of road
 const HALF_W = 5.5 // road half-width — a big, drivable course
-const CURB_W = 1.2 // raised lip width either side
-const CURB_H = 2.0 // lip height — a real wall that bounces the can back on
+const CURB_W = 1.3 // raised lip width either side
+const CURB_H = 1.5 // lip height — a curb tall enough to bounce the can back on
 
 // Road + curb cross-section, as (across, height) pairs. The two middle points
 // are the flat road; the outer two are the curb crests.
@@ -58,7 +61,9 @@ const PROFILE: [number, number][] = [
   [HALF_W + CURB_W, CURB_H],
 ]
 const ROAD_COL = new THREE.Color("#e7ddca") // warm clay
-const CURB_COL = new THREE.Color("#cfc6b4") // slightly greyer lip
+const CURB_RED = new THREE.Color("#d8392c") // racetrack curb stripes
+const CURB_WHITE = new THREE.Color("#fbfaf6")
+const STRIPE = 5 // curb stripe length in world units
 
 export function buildTrack(seed = 7): Track {
   const rng = mulberry32(seed)
@@ -84,13 +89,14 @@ export function buildTrack(seed = 7): Track {
     curv *= active
     curv = THREE.MathUtils.clamp(curv, -0.06, 0.06) // flowing turns on a big course
 
-    // Downhill grade — always present (so the can rolls from the line) and
-    // breathing between shallow and steeper pitches further along. Kept lively
-    // so gravity carries the can at a real clip, as in the reference.
-    const grade = 0.1 + 0.05 * (0.5 + 0.5 * Math.sin(s * 0.03 + 2.0)) * outro
+    // Downhill grade — a steady, lively descent plus a rollercoaster undulation
+    // that makes crests to launch off and dips to dive into. The undulation
+    // never overcomes the base, so it never tips uphill and stalls the can.
+    const undul = (0.08 * Math.sin(s * 0.03 + 1.5) + 0.04 * Math.sin(s * 0.072 + 4.0)) * outro
+    const grade = 0.14 + undul
 
-    // Bank into the curve so fast turns feel planted.
-    const bankTarget = THREE.MathUtils.clamp(-curv * 3.2, -0.28, 0.28)
+    // Bank hard into the curve so fast turns feel planted and bermed.
+    const bankTarget = THREE.MathUtils.clamp(-curv * 4.6, -0.4, 0.4)
     bank = THREE.MathUtils.lerp(bank, bankTarget, 0.18)
 
     const t = new THREE.Vector3(Math.sin(heading), 0, -Math.cos(heading))
@@ -112,10 +118,12 @@ export function buildTrack(seed = 7): Track {
   const colors: number[] = []
   const indices: number[] = []
   for (const sm of samples) {
+    const stripe = Math.floor(sm.dist / STRIPE) % 2 === 0
     for (const [a, h] of PROFILE) {
       const v = sm.p.clone().addScaledVector(sm.r, a).addScaledVector(sm.n, h)
       positions.push(v.x, v.y, v.z)
-      const c = h > 0.01 ? CURB_COL : ROAD_COL
+      // curbs get alternating red/white racetrack stripes, the road stays clay
+      const c = h > 0.01 ? (stripe ? CURB_RED : CURB_WHITE) : ROAD_COL
       colors.push(c.r, c.g, c.b)
     }
   }
@@ -150,7 +158,7 @@ export function buildTrack(seed = 7): Track {
     const sides = rng() < 0.5 ? [-1, 1] : [rng() < 0.5 ? -1 : 1]
     for (const side of sides) {
       if (rng() < 0.32) continue
-      const off = HALF_W + CURB_W + 0.6 + rng() * 7
+      const off = HALF_W + CURB_W + 2.5 + rng() * 6
       const w = 1.4 + rng() * 3.4
       const d = 1.4 + rng() * 3.4
       const ht = 1.2 + rng() * 7
@@ -173,7 +181,10 @@ export function buildTrack(seed = 7): Track {
     decos,
     start,
     startDir: samples[3].t.clone(),
+    startSample: samples[5],
+    finishSample: samples[samples.length - 7],
     halfWidth: HALF_W,
+    curbWidth: CURB_W,
     length: dist,
   }
 }
