@@ -386,6 +386,8 @@ type EnvConfig = {
   soloStart?: [number, number] // cube-walk start cell (overrides the default)
   soloGoal?: [number, number] // cube-walk exit cell (overrides the default)
   soloBound?: number // cube-walk roam radius in cells (overrides the default)
+  soloWalls?: [number, number][] // blocked grid cells in a pilot stage (obstacles to route around)
+  soloVia?: [number, number][] // checkpoint cells that must all be visited before the exit counts
   mazeRooms?: number // maze level size (grid is 2·rooms+1)
   mazeSeed?: number // maze level layout seed
   holes?: WallHole[] // interior barrier walls with a gap you must thread a block through
@@ -839,26 +841,91 @@ const SOLO_LOOK = {
 // one block per slot, cycled, so the section is spread evenly across all five
 const WALK_CYCLE = ["cube", "orange", "plank-long", "plank-short", "cylinder"]
 const SOLO_MOSAIC: Record<string, number> = { orange: 3, "plank-long": 1, "plank-short": 2, cylinder: 4 }
+// distinct backdrops so the piloting stages read as a varied series, not one room
+const SOLO_THEMES = [
+  { bg: "#0c0b0a", keyColor: "#fff1dc" }, // warm
+  { bg: "#0a0c11", keyColor: "#cfe0ff" }, // cool blue
+  { bg: "#110a0d", keyColor: "#ffd2e2" }, // rose
+  { bg: "#0a110d", keyColor: "#c9ffd9" }, // mint
+  { bg: "#110f08", keyColor: "#ffe6a8" }, // amber
+]
+const PILOT_NAMES: Record<string, string> = { orange: "Slaben", "plank-long": "Langferd", "plank-short": "Vippen" }
+// small deterministic PRNG so the obstacle layouts are stable across renders
+function mulberry(seed: number) {
+  let s = seed >>> 0
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0
+    let t = s
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+// Obstacle layout for a pilot stage: up to two horizontal barriers, each with one
+// gap, that the piece must route to and cross — like the wall-hole levels, but in
+// the piloting grid. The gaps narrow and a second barrier appears as the round
+// climbs, so the back half of the journey gets noticeably harder.
+function pilotWalls(bound: number, round: number, seed: number): [number, number][] {
+  if (round < 1) return []
+  const rnd = mulberry(seed)
+  const lo = -(bound - 1)
+  const hi = bound - 1
+  const nBar = Math.min(round, 2)
+  const gapW = round >= 3 ? 0 : 1 // 3-cell gap early, 1-cell gap from round 3 on
+  const walls: [number, number][] = []
+  for (let b = 0; b < nBar; b++) {
+    const row = Math.round(lo + ((b + 1) * (hi - lo)) / (nBar + 1))
+    const gap = Math.round(lo + 1 + rnd() * (hi - lo - 2)) // keep the gap off the edges
+    for (let x = -bound; x <= bound; x++) {
+      if (Math.abs(x - gap) <= gapW) continue
+      walls.push([x, row])
+    }
+  }
+  return walls
+}
+// Checkpoints (must all be visited before the exit opens) for the hardest rounds.
+function pilotVia(bound: number, round: number, seed: number, walls: [number, number][]): [number, number][] {
+  if (round < 3) return []
+  const rnd = mulberry(seed ^ 0x55aa)
+  const blocked = new Set(walls.map(([x, y]) => `${x},${y}`))
+  const lo = -(bound - 1)
+  const hi = bound - 1
+  const start = `${lo},${hi}`
+  const goal = `${hi},${lo}`
+  const want = round >= 4 ? 2 : 1
+  const out: [number, number][] = []
+  for (let t = 0; out.length < want && t < 80; t++) {
+    const x = Math.round(lo + rnd() * (hi - lo))
+    const y = Math.round(lo + rnd() * (hi - lo))
+    const k = `${x},${y}`
+    if (blocked.has(k) || k === start || k === goal || out.some(([a, b]) => a === x && b === y)) continue
+    out.push([x, y])
+  }
+  return out
+}
 const CUBEWALK_LEVELS: EnvConfig[] = Array.from({ length: 24 }, (_, i) => {
   const block = WALK_CYCLE[i % WALK_CYCLE.length]
   const round = Math.floor(i / WALK_CYCLE.length) // 0..4 – difficulty climbs each lap
+  const theme = SOLO_THEMES[i % SOLO_THEMES.length]
   if (block === "cube") {
     const rooms = Math.min(8, 4 + round) // labyrinths grow lap by lap (phone-readable cap)
     return {
       id: `cw-maze-${i}`,
-      name: `Labyrint ${i + 1}`,
+      name: `Labyrint ${round + 1}`,
       ...MAZE_LOOK,
+      bg: theme.bg,
+      keyColor: theme.keyColor,
       maze: true,
       mazeRooms: rooms,
       mazeSeed: 0x9e37 + i * 2654435761,
     }
   }
   if (block === "cylinder") {
-    // the cylinder rolls – give it a long, open "drive" that grows each lap
+    // the cylinder "grand prix" drive stays untouched (its own minigame, later)
     const bnd = 7 + round // 7..11
     return {
       id: `cw-drive-${i}`,
-      name: `Køyr ${i + 1}`,
+      name: `Køyr ${round + 1}`,
       ...SOLO_LOOK,
       solo: "cylinder",
       mosaic: SOLO_MOSAIC.cylinder,
@@ -867,16 +934,25 @@ const CUBEWALK_LEVELS: EnvConfig[] = Array.from({ length: 24 }, (_, i) => {
       soloBound: bnd,
     }
   }
-  const bnd = 4 + round // roam radius 4..8
+  // piloting a plank/slab: roam radius grows, and from round 1 the open ground
+  // gains barriers (and later checkpoints) to navigate – the boss-style ramp.
+  const bnd = 5 + round // roam radius 5..9
+  const seed = (0x1234 + i * 2654435761) >>> 0
+  const walls = pilotWalls(bnd, round, seed)
+  const via = pilotVia(bnd, round, seed, walls)
   return {
     id: `cw-solo-${i}`,
-    name: `Pilot ${i + 1}`,
+    name: `${PILOT_NAMES[block]} ${round + 1}`,
     ...SOLO_LOOK,
+    bg: theme.bg,
+    keyColor: theme.keyColor,
     solo: block,
     mosaic: SOLO_MOSAIC[block],
     soloStart: [-(bnd - 1), bnd - 1] as [number, number],
     soloGoal: [bnd - 1, -(bnd - 1)] as [number, number],
     soloBound: bnd,
+    soloWalls: walls.length ? walls : undefined,
+    soloVia: via.length ? via : undefined,
   }
 })
 
@@ -3298,6 +3374,7 @@ function SoloRoom({ env }: RoomProps) {
   )
 }
 
+const EMPTY_CELLS: [number, number][] = []
 function SoloController({
   blockId,
   bodies,
@@ -3305,6 +3382,8 @@ function SoloController({
   start = SOLO_START,
   goal = SOLO_GOAL,
   bound = SOLO_BOUND,
+  walls = EMPTY_CELLS,
+  via = EMPTY_CELLS,
 }: {
   blockId: string
   bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
@@ -3312,9 +3391,15 @@ function SoloController({
   start?: [number, number]
   goal?: [number, number]
   bound?: number
+  walls?: [number, number][]
+  via?: [number, number][]
 }) {
   const camera = useThree((s) => s.camera)
   const cell = useRef<[number, number]>([...start])
+  const wallSet = useMemo(() => new Set(walls.map(([x, y]) => `${x},${y}`)), [walls])
+  // checkpoints still to visit before the exit opens (consumed as they're reached)
+  const viaLeft = useRef(new Set(via.map(([x, y]) => `${x},${y}`)))
+  const viaLights = useRef<(THREE.PointLight | null)[]>([])
   const heldDir = useRef<[number, number] | null>(null)
   const baseQ = useRef(new THREE.Quaternion())
   const hop = useRef<{
@@ -3343,6 +3428,7 @@ function SoloController({
     hop.current = null
     heldDir.current = null
     baseQ.current = new THREE.Quaternion()
+    viaLeft.current = new Set(via.map(([x, y]) => `${x},${y}`))
     const body = bodies.current[blockId]
     if (body) {
       body.setBodyType(BODY_KINEMATIC_POSITION, true)
@@ -3363,7 +3449,7 @@ function SoloController({
       camY.current = null
       revealRef.current = false
     }
-  }, [blockId, bodies, revealRef, camera, start])
+  }, [blockId, bodies, revealRef, camera, start, via])
 
   useEffect(() => {
     const keys = new Set<string>()
@@ -3434,7 +3520,8 @@ function SoloController({
     body.wakeUp()
     cool.current = Math.max(0, cool.current - dt)
 
-    const atGoal = () => cell.current[0] === goal[0] && cell.current[1] === goal[1]
+    // the exit only counts once every checkpoint has been visited
+    const atGoal = () => cell.current[0] === goal[0] && cell.current[1] === goal[1] && viaLeft.current.size === 0
 
     // the exact position we command the block to this frame – the camera follows
     // THIS (not the interpolated physics read) so the character never drifts /
@@ -3460,6 +3547,13 @@ function SoloController({
         hop.current = null
         landT.current = 1
         playImpact(blockId, 0.4)
+        // tick off a checkpoint the moment we land on it
+        const key = `${cell.current[0]},${cell.current[1]}`
+        if (viaLeft.current.has(key)) {
+          viaLeft.current.delete(key)
+          flashT.current = 1
+          haptic(14)
+        }
         if (atGoal() && !revealRef.current) {
           revealRef.current = true
           flashT.current = 1
@@ -3476,7 +3570,7 @@ function SoloController({
         const [dx, dy] = heldDir.current
         const tx = THREE.MathUtils.clamp(gx + dx, -bound, bound)
         const ty = THREE.MathUtils.clamp(gy + dy, -bound, bound)
-        if (tx !== gx || ty !== gy) {
+        if ((tx !== gx || ty !== gy) && !wallSet.has(`${tx},${ty}`)) {
           const mv = FIVE_MOVE[blockId] ?? { angle: Math.PI / 2, dur: 0.2 }
           const axis = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx, 0, dy)).normalize()
           // distance travelled this hop is the footprint length along the move axis;
@@ -3518,12 +3612,34 @@ function SoloController({
       flash.current.position.set(goal[0] * stepX, 2, goal[1] * stepZ)
       flash.current.intensity = flashT.current * 120
     }
+    // checkpoints glow until visited, then fade to a dim afterglow
+    for (let i = 0; i < via.length; i++) {
+      const l = viaLights.current[i]
+      if (l) l.intensity = viaLeft.current.has(`${via[i][0]},${via[i][1]}`) ? 7 : 0.5
+    }
   })
 
   return (
     <>
       <pointLight ref={glow} distance={7} decay={2} color="#fff1dc" intensity={6} />
       <pointLight ref={flash} distance={40} decay={2} color="#7cf6c8" intensity={0} />
+      {/* obstacle pillars: the cells the piece cannot enter, so you route around them */}
+      {walls.map(([cx, cy], i) => (
+        <mesh key={`wall-${i}`} position={[cx * stepX, 0.8, cy * stepZ]} castShadow receiveShadow>
+          <boxGeometry args={[stepX * 0.92, 1.6, stepZ * 0.92]} />
+          <meshStandardMaterial color="#3b352c" roughness={0.95} metalness={0} />
+        </mesh>
+      ))}
+      {/* checkpoint pads: visit every one before the exit opens */}
+      {via.map(([vx, vy], i) => (
+        <group key={`via-${i}`} position={[vx * stepX, 0, vy * stepZ]}>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.03, 0]}>
+            <ringGeometry args={[Math.min(stepX, stepZ) * 0.28, Math.min(stepX, stepZ) * 0.42, 28]} />
+            <meshBasicMaterial color="#9ad8ff" transparent opacity={0.85} toneMapped={false} />
+          </mesh>
+          <pointLight ref={(l) => (viaLights.current[i] = l)} position={[0, 1.0, 0]} distance={5} decay={2} color="#9ad8ff" intensity={7} />
+        </group>
+      ))}
     </>
   )
 }
@@ -4760,6 +4876,8 @@ function SceneContents({
           start={env.soloStart}
           goal={env.soloGoal}
           bound={env.soloBound}
+          walls={env.soloWalls}
+          via={env.soloVia}
         />
       )}
 
