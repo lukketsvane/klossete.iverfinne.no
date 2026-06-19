@@ -11,9 +11,10 @@ type Screen = "title" | "game"
 type Overlay = null | "levels" | "help"
 const GRID = LEVELS.length // one cell per built level
 const SOLVED_COLORS = ["#2b56be", "#eb7f37", "#78b2d6", "#d14332"]
-// the soundtrack, played as a loop; ost-3 (the stitched loop-01/main/bridge/low
-// track) comes round later in the rotation
-const OST_TRACKS = ["/music/ost-1.mp3", "/music/ost-2.mp3", "/music/ost-3.mp3"]
+// the soundtrack, played as a loop. ost-main is the xylophone main/intro theme
+// (it leads); the others come round later in the rotation.
+const OST_TRACKS = ["/music/ost-main.mp3", "/music/ost-1.mp3", "/music/ost-2.mp3", "/music/ost-3.mp3"]
+const SOUNDBOX_ID = "soundbox" // the level where the player makes the music themselves
 
 export default function TitleShell() {
   const [screen, setScreen] = useState<Screen>("title")
@@ -57,15 +58,17 @@ export default function TitleShell() {
     fadeRaf.current = requestAnimationFrame(step)
   }, [])
 
-  // pause the moment music is switched off
+  // the soundbox level falls silent so the player can hear the tiles they strike
+  // (and the music button is locked there – the hush is itself the hint)
+  const onSoundbox = screen === "game" && LEVELS[liveLevel ?? -1]?.id === SOUNDBOX_ID
+  // start (fade) once the game begins / music turns back on; pause when music is
+  // off or while on the soundbox level. Never plays in the menu before a game.
   useEffect(() => {
-    if (!music) musicEl.current?.pause()
-  }, [music])
-  // start (with a fade) once the game begins, or when music is turned back on
-  // while playing – never in the menu before the first game
-  useEffect(() => {
-    if (screen === "game" && music && musicEl.current?.paused) fadeInMusic()
-  }, [screen, music, fadeInMusic])
+    const a = musicEl.current
+    if (!a) return
+    if (!music || onSoundbox) a.pause()
+    else if (screen === "game" && a.paused) fadeInMusic()
+  }, [screen, music, onSoundbox, fadeInMusic])
 
   const onTrackEnded = () => {
     const a = musicEl.current
@@ -134,6 +137,7 @@ export default function TitleShell() {
           initialTilt={tilt}
           musicOn={music}
           onToggleMusic={toggleMusic}
+          musicLocked={onSoundbox}
           onLevel={setLiveLevel}
           // the grid button opens the level picker OVER the running level, so it
           // never throws you back out to the main menu
