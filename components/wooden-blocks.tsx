@@ -1087,6 +1087,39 @@ function soloSilhouette(blockId: string): string {
 
 // Calm, plain floor with a hand-drawn crayon footprint marking each target (and
 // a stack pad for the stacking stage). No photo tiles, so the lesson stays the focus.
+// The tutorial gesture hint, drawn ON the floor (a crayon decal, just like the
+// activation zone) rather than floating over the scene. It sits in the clear band
+// between the target outline (up-screen) and the block (down-screen), tinted to
+// the block's colour and baked into the PNG, so it never covers either and reads
+// as part of the ground. Persistent for the whole level.
+function GestureDecal({ url, z }: { url: string; z: number }) {
+  const tex = useTexture(url)
+  useMemo(() => {
+    tex.colorSpace = THREE.SRGBColorSpace
+    tex.anisotropy = 4
+    tex.generateMipmaps = false
+    tex.minFilter = THREE.LinearFilter
+    tex.needsUpdate = true
+  }, [tex])
+  const img = tex.image as { width: number; height: number } | undefined
+  const aspect = img && img.height ? img.width / img.height : 0.55
+  const depth = 2.2 // extent along the floor toward the camera-down (z) axis
+  return (
+    <mesh position={[0, 0.02, z]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+      <planeGeometry args={[depth * aspect, depth]} />
+      <meshStandardMaterial
+        map={tex}
+        transparent
+        alphaTest={0.4}
+        roughness={0.95}
+        metalness={0}
+        polygonOffset
+        polygonOffsetFactor={-1}
+      />
+    </mesh>
+  )
+}
+
 function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
   const zones = useMemo(() => placeZones(env.place ?? [], box), [env.place, box.bx, box.bz])
   const sils = useTexture(SILHOUETTES)
@@ -1143,6 +1176,9 @@ function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
           </lineSegments>
         </group>
       )}
+
+      {/* gesture hint as a floor decal, in the clear band toward the block */}
+      {env.pictogram && <GestureDecal url={env.pictogram} z={0.4} />}
 
       {visibleWalls.map((w, i) => (
         <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
@@ -4285,7 +4321,6 @@ export default function WoodenBlocks({
   const [tiltOn, setTiltOn] = useState(false)
   const [muted, setMutedState] = useState(initialMuted)
   const [envIndex, setEnvIndex] = useState(0)
-  const [pictoShown, setPictoShown] = useState(true) // tutorial gesture hint, fades after a beat
   const env = ENVIRONMENTS[envIndex] ?? ENVIRONMENTS[0] // never crash on a stale/out-of-range index
   const resetRef = useRef<() => void>(() => {})
   // linear progression: remember the live level for stable callbacks + guard
@@ -4326,15 +4361,6 @@ export default function WoodenBlocks({
       advancing.current = false
     }
   }, [envIndex])
-
-  // Tutorial gesture pictogram: show it when a level with one opens, then fade it
-  // out after a few seconds so it guides without staying in the way.
-  useEffect(() => {
-    if (!env.pictogram) return
-    setPictoShown(true)
-    const t = setTimeout(() => setPictoShown(false), 4200)
-    return () => clearTimeout(t)
-  }, [envIndex, env.pictogram])
   const tiltRef = useRef<TiltState>({ enabled: false, beta: 0, gamma: 0, sx: 0, sz: 0 })
   const iconRef = useRef<HTMLSpanElement>(null)
   // true while a block is held – so a 2nd finger squeezes it instead of the
@@ -4563,19 +4589,6 @@ export default function WoodenBlocks({
         <PostFx envId={env.id} />
       </Canvas>
 
-      {/* tutorial crayon card (target shape + gesture, tinted to the block's
-          colour): fills the play area, then fades out so it guides without
-          getting in the way */}
-      {env.pictogram && (
-        <img
-          src={env.pictogram}
-          alt=""
-          aria-hidden
-          className={`pointer-events-none absolute inset-0 m-auto max-h-[84%] max-w-[64%] select-none object-contain transition-opacity duration-1000 ease-out ${
-            pictoShown ? "opacity-80" : "opacity-0"
-          }`}
-        />
-      )}
 
       {/* UI – control cluster pinned to the top-left corner. Always faintly
           visible so it's never lost, brightening when the pointer comes near.
