@@ -1,10 +1,10 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Check, ChevronLeft, ChevronRight, X } from "lucide-react"
 import WoodenBlocks, { LEVELS } from "@/components/wooden-blocks"
 import { getProgress, type Progress } from "@/lib/progression"
-import { getSettings, setSound, setTiltPref } from "@/lib/settings"
+import { getSettings, setSound, setMusic, setTiltPref } from "@/lib/settings"
 import { setMuted } from "@/lib/impact-sound"
 
 type Screen = "title" | "game"
@@ -19,15 +19,48 @@ export default function TitleShell() {
   const [liveLevel, setLiveLevel] = useState<number | null>(null) // the level currently open in-game
   const [progress, setProgress] = useState<Progress>({ current: 0, solved: [] })
   const [sound, setSoundOn] = useState(true)
+  const [music, setMusicOn] = useState(true)
   const [tilt, setTiltOn] = useState(false)
+  const musicEl = useRef<HTMLAudioElement | null>(null)
 
   // load saved settings once on mount + keep the audio engine in sync
   useEffect(() => {
     const s = getSettings()
     setSoundOn(s.sound)
+    setMusicOn(s.music)
     setTiltOn(s.tilt)
     setMuted(!s.sound)
   }, [])
+
+  // The OST loops quietly under everything. Browsers block autoplay until a real
+  // user gesture, so we (re)try to start it on the first tap as well as whenever
+  // the music toggle turns on.
+  useEffect(() => {
+    const a = musicEl.current
+    if (!a) return
+    a.volume = 0.45
+    if (music) void a.play().catch(() => {})
+    else a.pause()
+  }, [music])
+  useEffect(() => {
+    const kick = () => {
+      if (music) void musicEl.current?.play().catch(() => {})
+      window.removeEventListener("pointerdown", kick)
+    }
+    window.addEventListener("pointerdown", kick)
+    return () => window.removeEventListener("pointerdown", kick)
+  }, [music])
+
+  const toggleMusic = () => {
+    const next = !music
+    setMusicOn(next)
+    setMusic(next)
+    const a = musicEl.current
+    if (a) {
+      if (next) void a.play().catch(() => {})
+      else a.pause()
+    }
+  }
 
   // refresh progress whenever we land back on the menu (so newly passed levels show up)
   const refresh = useCallback(() => setProgress(getProgress()), [])
@@ -70,6 +103,8 @@ export default function TitleShell() {
 
   return (
     <>
+      {/* the OST – loops under the whole experience, gated by the music toggle */}
+      <audio ref={musicEl} src="/music/ost.mp3" loop preload="auto" />
       {screen === "game" ? (
         <WoodenBlocks
           key={launch ?? "resume"}
@@ -104,6 +139,7 @@ export default function TitleShell() {
           {/* settings + level access */}
           <div className="flex w-full max-w-xs flex-col items-stretch gap-3">
             <SettingRow label="lyd" checked={sound} onClick={toggleSound} />
+            <SettingRow label="musikk" checked={music} onClick={toggleMusic} />
             <SettingRow label="rørslesensor" checked={tilt} onClick={toggleTilt} />
 
             <button
