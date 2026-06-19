@@ -11,7 +11,9 @@ type Screen = "title" | "game"
 type Overlay = null | "levels" | "help"
 const GRID = LEVELS.length // one cell per built level
 const SOLVED_COLORS = ["#2b56be", "#eb7f37", "#78b2d6", "#d14332"]
-const OST_TRACKS = ["/music/ost-1.mp3", "/music/ost-2.mp3"] // the soundtrack, played in a loop
+// the soundtrack, played as a loop; ost-3 (the stitched loop-01/main/bridge/low
+// track) comes round later in the rotation
+const OST_TRACKS = ["/music/ost-1.mp3", "/music/ost-2.mp3", "/music/ost-3.mp3"]
 
 export default function TitleShell() {
   const [screen, setScreen] = useState<Screen>("title")
