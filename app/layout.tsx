@@ -10,27 +10,27 @@ const geistMono = Geist_Mono({
 })
 
 const DESCRIPTION =
-  'An interactive physics sandbox of realistic wooden building blocks. Drag, slide and throw the blocks around.'
+  'Klossete Grand Prix — roll the red cylinder through a foggy obstacle course. Tilt, steer and chase the checkpoints.'
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://klossete.iverfinne.no'),
-  title: 'kl.oss.ete',
+  title: 'klossete grand prix',
   description: DESCRIPTION,
-  applicationName: 'kl.oss.ete',
+  applicationName: 'klossete grand prix',
   manifest: '/manifest.webmanifest',
-  appleWebApp: { capable: true, statusBarStyle: 'default', title: 'kl.oss.ete' },
+  appleWebApp: { capable: true, statusBarStyle: 'default', title: 'klossete grand prix' },
   // favicon.ico, icon.svg, apple-icon.png and the opengraph/twitter images are
   // picked up from the app/ directory by Next's file conventions.
   openGraph: {
     type: 'website',
-    siteName: 'kl.oss.ete',
-    title: 'kl.oss.ete',
+    siteName: 'klossete grand prix',
+    title: 'klossete grand prix',
     description: DESCRIPTION,
     url: 'https://klossete.iverfinne.no',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'kl.oss.ete',
+    title: 'klossete grand prix',
     description: DESCRIPTION,
   },
 }
