@@ -213,6 +213,12 @@ export default function TitleShell() {
             >
               korleis spele
             </button>
+            <a
+              href="/grand-prix"
+              className="font-klossete mt-1 text-center text-base text-[#d14332] underline-offset-4 transition hover:underline active:scale-95"
+            >
+              klossete grand prix →
+            </a>
           </div>
 
           {/* the primary action lives at the very bottom */}
