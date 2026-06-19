@@ -154,6 +154,15 @@ export default function TitleShell() {
   )
 }
 
+function ControlRow({ icon, label }: { icon: string; label: string }) {
+  return (
+    <div className="flex items-center gap-3">
+      <img src={icon} alt="" width={40} height={40} className="h-10 w-10 shrink-0 object-contain" />
+      <span>{label}</span>
+    </div>
+  )
+}
+
 function SettingRow({
   label,
   checked,
@@ -312,24 +321,14 @@ function HelpOverlay({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        <div className="flex flex-col gap-2.5 text-[15px] leading-snug text-[#473f33]">
-          <p>
-            <span className="font-semibold">Tap og hald:</span> hald på klossen for å løfte han.
-          </p>
-          <p>
-            <span className="font-semibold">Dra:</span> flytt klossane med fingeren.
-          </p>
-          <p>
-            <span className="font-semibold">Pinch:</span> knip med to fingrar for presisjon når du roterer klossen.
-          </p>
-          <p>
-            <span className="font-semibold">Vipp:</span> vipp telefonen, så dreg tyngdekrafta klossane.
-          </p>
-          <p>Få klossane på plass, så løyser nivået seg.</p>
+        <div className="flex flex-col gap-3 text-[15px] leading-snug text-[#473f33]">
+          <ControlRow icon="/pictograms/one-finger.png" label="Dra med éin finger for å flytte klossen." />
+          <ControlRow icon="/pictograms/two-finger-swipe.png" label="Sveip med to fingrar for å snu klossen til neste side." />
+          <ControlRow icon="/pictograms/rotate.png" label="Roter med to fingrar for å vri klossen." />
         </div>
 
         <div className="rounded-2xl bg-[#efe9dd] p-4 text-sm leading-snug text-[#6b6155]">
-          Spelet er berre laga for mobil. Skru på rørslesensor for best oppleving, og legg klossete til på heimskjermen.
+          Vipp telefonen for å la tyngdekrafta dra klossane (skru på rørslesensor). Spelet er berre laga for mobil, og er finast lagt til på heimskjermen.
         </div>
       </div>
     </div>

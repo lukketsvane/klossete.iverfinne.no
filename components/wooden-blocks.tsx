@@ -4185,11 +4185,17 @@ function SceneContents({
     let startDist = 0
     let squeeze = 0
     let lastBuzz = 0
+    let tipC = { x: 0, y: 0 } // centroid baseline for the swipe-to-flip gesture
+    const TIP_THRESH = 46 // px the two fingers must glide before flipping a face
     const span = (e: TouchEvent) =>
       Math.hypot(
         e.touches[0].clientX - e.touches[1].clientX,
         e.touches[0].clientY - e.touches[1].clientY,
       )
+    const mid = (e: TouchEvent) => ({
+      x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+      y: (e.touches[0].clientY + e.touches[1].clientY) / 2,
+    })
     // angle of the line between the two fingers (screen space)
     const twoAngle = (e: TouchEvent) =>
       Math.atan2(e.touches[1].clientY - e.touches[0].clientY, e.touches[1].clientX - e.touches[0].clientX)
@@ -4198,21 +4204,43 @@ function SceneContents({
       if (e.touches.length === 2 && drag.current) {
         startDist = span(e)
         squeeze = 0
+        tipC = mid(e)
         const r = drag.current.body.rotation()
         twist.current = { base: new THREE.Quaternion(r.x, r.y, r.z, r.w), start: twoAngle(e), delta: 0, active: true }
       }
     }
     const onMove = (e: TouchEvent) => {
       if (e.touches.length !== 2 || !drag.current || startDist <= 0) return
-      squeeze = THREE.MathUtils.clamp((startDist - span(e)) / (startDist * 0.55), 0, 1)
+      const dist = span(e)
+      squeeze = THREE.MathUtils.clamp((startDist - dist) / (startDist * 0.55), 0, 1)
       const now = performance.now()
       if (squeeze > 0.05 && now - lastBuzz > 65) {
         lastBuzz = now
         haptic(2 + squeeze * 10) // tighter pinch -> stronger buzz
       }
-      // twist -> free yaw (no magnetic snapping; just follow the fingers)
+      // twist -> free rotation (yaw; the cylinder tips about its side instead)
       const tw = twist.current
       if (tw) tw.delta = -wrap(twoAngle(e) - tw.start)
+
+      // two-finger swipe (both fingers glide together, distance steady) flips the
+      // held block 90° to the next of its six faces – up/down/left/right
+      const c = mid(e)
+      const mx = c.x - tipC.x
+      const my = c.y - tipC.y
+      const steady = Math.abs(dist - startDist) < startDist * 0.25 // not a pinch
+      if (tw && steady && Math.hypot(mx, my) > TIP_THRESH) {
+        const horizontal = Math.abs(mx) > Math.abs(my)
+        // camera looks straight down: world X = screen-right, world Z = screen-down
+        const axis = horizontal ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0)
+        const sign = horizontal ? (mx > 0 ? 1 : -1) : my > 0 ? 1 : -1
+        const step = new THREE.Quaternion().setFromAxisAngle(axis, (sign * Math.PI) / 2)
+        tw.base = step.multiply(tw.base) // bake the tip into the carried orientation
+        tw.start = twoAngle(e) // re-baseline the twist so it stays continuous
+        tw.delta = 0
+        tipC = c
+        startDist = dist
+        haptic(10)
+      }
     }
     const onEnd = (e: TouchEvent) => {
       if (startDist <= 0) return
