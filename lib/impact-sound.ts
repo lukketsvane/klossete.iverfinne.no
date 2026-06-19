@@ -10,7 +10,12 @@
 let ctx: AudioContext | null = null
 let master: GainNode | null = null
 let muted = false
+let volume = 0.8 // effects volume (the menu slider); the master gain is muted ? 0 : volume
 let lastPlay = 0
+
+function applyGain() {
+  if (master) master.gain.value = muted ? 0 : volume
+}
 
 // id -> base playback rate, derived from the block's size (pitch)
 const baseRate = new Map<string, number>()
@@ -41,7 +46,7 @@ function ensureCtx(): AudioContext | null {
     if (!AC) return null
     ctx = new AC()
     master = ctx.createGain()
-    master.gain.value = 0.7
+    master.gain.value = muted ? 0 : volume
     master.connect(ctx.destination)
   }
   return ctx
@@ -70,7 +75,15 @@ export function audioReady(): boolean {
 
 export function setMuted(value: boolean) {
   muted = value
+  applyGain()
   if (!value) unlockAudio()
+}
+
+/** Set the effects volume (0..1) from the menu slider. */
+export function setVolume(v: number) {
+  volume = Math.max(0, Math.min(1, v))
+  applyGain()
+  if (volume > 0) unlockAudio()
 }
 
 /** Map each block's size-derived frequency to a base pitch. */
