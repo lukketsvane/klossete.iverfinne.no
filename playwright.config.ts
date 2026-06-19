@@ -6,7 +6,12 @@ import { defineConfig, devices } from "@playwright/test"
 // the 3D canvas comes up with a live WebGL context and no fatal errors.
 export default defineConfig({
   testDir: "./tests",
-  fullyParallel: true,
+  // Run serially: each test boots a full WebGL scene, and the CI box renders it in
+  // software (SwiftShader). Two or three of those contexts at once exhausts the
+  // renderer and the browser process drops a context mid-test ("Failed to find
+  // browser context"). One at a time is slower but reliable on a GPU-less runner.
+  fullyParallel: false,
+  workers: 1,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? "github" : "list",
