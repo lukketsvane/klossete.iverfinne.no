@@ -556,10 +556,11 @@ const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
     id: "t3-lift",
     name: "Løft",
     ...TUT_LOOK,
-    only: ["orange"],
-    hint: "Trykk og hald for å løfte klossen opp i lufta.",
+    only: ["cube", "orange"],
+    hint: "Løft den oransje klossen og set han oppå den blå.",
     pictogram: CARD_LIFT,
-    spawn: { orange: { pos: [0, 0.45, 1.8] } },
+    // the blue cube sits in the middle as a base; lift the orange up onto it
+    spawn: { cube: { pos: [0, 0.6, 0] }, orange: { pos: [0, 0.45, 2.2] } },
     lift: true,
   },
   {
@@ -930,10 +931,13 @@ type DragState = {
 // like an accidental nudge.
 const TAP_TIME = 0.2 // seconds
 const TAP_MOVE = 0.3 // world units the centre may travel and still count as a tap
+// A quick, decisive flick across a block "walks" it one step that way (a 90° tip
+// over its leading edge), like the cube-walk later in the game.
+const WALK_TIME = 0.32 // a flick is a short, fast swipe (longer holds carry instead)
+const WALK_MIN = 1.0 // world units the swipe must cover to count as a walk flick
 
 const MIN_LIFT = 2.1 // grabbed blocks float well clear of the floor so you can carry them OVER a stacked layer
-const MAX_LIFT = WALL_VIS_HEIGHT - 0.3 // never lift above the tray rim
-const LIFT_TARGET = 5 // the "lift" tutorial wins once a held block floats above this height
+const MAX_LIFT = WALL_VIS_HEIGHT - 0.3 // initial grab height clamp (eases up from here)
 const THROW_MAX = 5.0 // clamp on release speed – allows a light toss, not a hurl
 const ESCAPE_MARGIN = 0.4 // how far past a wall a body must be before we rescue it
 
@@ -1177,8 +1181,24 @@ function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
         </group>
       )}
 
-      {/* gesture hint as a floor decal, in the clear band toward the block */}
-      {env.pictogram && <GestureDecal url={env.pictogram} z={0.4} />}
+      {/* lift tutorial: an orange target square floating just above the blue cube,
+          showing where to set the orange block down */}
+      {env.lift && (
+        <group position={[0, 1.18, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+          <mesh>
+            <planeGeometry args={[1.7, 1.7]} />
+            <meshBasicMaterial color="#e07b22" transparent opacity={0.22} />
+          </mesh>
+          <lineSegments>
+            <edgesGeometry args={[new THREE.PlaneGeometry(1.7, 1.7)]} />
+            <lineBasicMaterial color="#e07b22" transparent opacity={0.95} toneMapped={false} />
+          </lineSegments>
+        </group>
+      )}
+
+      {/* gesture hint as a floor decal, in the clear band toward the block (sits
+          lower on the Lift level so it never covers the centred cube or block) */}
+      {env.pictogram && <GestureDecal url={env.pictogram} z={env.lift ? 1.5 : 0.4} />}
 
       {visibleWalls.map((w, i) => (
         <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
@@ -1326,14 +1346,12 @@ function StackAllController({
   return <pointLight ref={flash} position={[0, 6, 0]} distance={44} decay={2} color="#fff6e6" intensity={0} />
 }
 
-// Lift tutorial: win once the single block has been picked up and floated above
-// LIFT_TARGET (and held there a beat) – teaching the press-and-hold-to-lift verb.
+// Lift tutorial: win once the orange block has been lifted up and rested on top
+// of the blue cube – teaching the press-and-hold-to-lift verb with a clear goal.
 function LiftController({
-  blockId,
   bodies,
   revealRef,
 }: {
-  blockId: string
   bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
   revealRef: React.MutableRefObject<boolean>
 }) {
@@ -1346,8 +1364,20 @@ function LiftController({
 
   useFrame((_s, dt) => {
     if (!revealRef.current) {
-      const body = bodies.current[blockId]
-      if (body && body.translation().y > LIFT_TARGET) {
+      const orange = bodies.current["orange"]
+      const cube = bodies.current["cube"]
+      let ok = false
+      if (orange && cube) {
+        const o = orange.translation()
+        const c = cube.translation()
+        const ov = orange.linvel()
+        const cv = cube.linvel()
+        const onTop = o.y - c.y > 0.7 // orange clearly stacked above the cube
+        const aligned = Math.hypot(o.x - c.x, o.z - c.z) < 0.9 // sitting over it
+        const settled = Math.hypot(ov.x, ov.y, ov.z) < 0.6 && Math.hypot(cv.x, cv.y, cv.z) < 0.6
+        ok = onTop && aligned && settled
+      }
+      if (ok) {
         dwell.current += dt
         if (dwell.current > 0.4) {
           revealRef.current = true
@@ -3647,6 +3677,20 @@ function SceneContents({
   // to right angles so it's easy to line up. `base` is the orientation when the
   // second finger landed; `delta` is the live yaw the servo applies on top.
   const twist = useRef<{ base: THREE.Quaternion; start: number; delta: number; active: boolean } | null>(null)
+  // swipe-walk: a one-step 90° kinematic tip over the block's leading edge
+  const walk = useRef<{
+    id: string
+    body: RapierRigidBody
+    t: number
+    dur: number
+    axis: THREE.Vector3
+    pivot: THREE.Vector3
+    startCenter: THREE.Vector3
+    startQ: THREE.Quaternion
+  } | null>(null)
+  // current env, readable from stable event handlers without re-binding them
+  const envRef = useRef(env)
+  envRef.current = env
   const revealRef = useRef(false) // solved -> the room plays its reveal / win flash
   const solvedFired = useRef(false) // edge-detect the solve so onSolved fires once
   useEffect(() => {
@@ -3659,6 +3703,7 @@ function SceneContents({
     // while still holding the piece, then it auto-advances under your finger.)
     drag.current = null
     twist.current = null
+    walk.current = null
     grabbingRef.current = false
   }, [env.id, grabbingRef])
   // Watch the per-room win signal and fire onSolved exactly once when solved.
@@ -3833,7 +3878,40 @@ function SceneContents({
       // that case; otherwise clamp the release speed so a flick stays a toss.
       const held = (performance.now() - d.grabTime) / 1000
       const tp = d.body.translation()
-      const moved = Math.hypot(tp.x - d.startPos.x, tp.z - d.startPos.z)
+      const dxw = tp.x - d.startPos.x
+      const dzw = tp.z - d.startPos.z
+      const moved = Math.hypot(dxw, dzw)
+      // A quick, decisive flick across a resting block walks it one step that way
+      // (a 90° tip over its leading edge). Not on the maze/solo/figure stages,
+      // which drive their own blocks.
+      const e = envRef.current
+      const canWalk = !e.maze && !e.solo && !e.five
+      if (canWalk && held < WALK_TIME && moved > WALK_MIN && tp.y < 1.2) {
+        const dir =
+          Math.abs(dxw) > Math.abs(dzw)
+            ? new THREE.Vector3(Math.sign(dxw), 0, 0)
+            : new THREE.Vector3(0, 0, Math.sign(dzw))
+        const b = d.block
+        const half = b.shape === "cylinder" ? b.radius : dir.x !== 0 ? b.half[0] : b.half[2]
+        const center = new THREE.Vector3(tp.x, tp.y, tp.z)
+        const r = d.body.rotation()
+        d.body.setBodyType(BODY_KINEMATIC_POSITION, true)
+        walk.current = {
+          id: b.id,
+          body: d.body,
+          t: 0,
+          dur: 0.26,
+          axis: new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), dir).normalize(),
+          pivot: new THREE.Vector3(center.x + dir.x * half, 0, center.z + dir.z * half), // leading bottom edge
+          startCenter: center,
+          startQ: new THREE.Quaternion(r.x, r.y, r.z, r.w),
+        }
+        drag.current = null
+        twist.current = null
+        grabbingRef.current = false
+        haptic(6)
+        return
+      }
       if (held < TAP_TIME && moved < TAP_MOVE) {
         d.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
         d.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
@@ -4054,7 +4132,8 @@ function SceneContents({
         ? Math.hypot(d.block.radius, d.block.halfHeight)
         : Math.hypot(d.block.half[0], d.block.half[1], d.block.half[2])
     if (twisting) targetLift = Math.max(targetLift, reach + TWIST_LIFT_MARGIN)
-    targetLift = Math.min(targetLift, MAX_LIFT)
+    // (no hard ceiling here: holding lets the piece float up high to inspect it,
+    // and to set the orange up onto the cube in the Lift tutorial)
     d.liftY += (targetLift - d.liftY) * (twisting ? 0.3 : 0.12)
     d.plane.constant = -d.liftY
 
@@ -4123,6 +4202,33 @@ function SceneContents({
     } else {
       const av = d.body.angvel()
       d.body.setAngvel({ x: av.x * GRAB_ANG_DAMP, y: av.y * GRAB_ANG_DAMP, z: av.z * GRAB_ANG_DAMP }, true)
+    }
+  })
+
+  /* ---- swipe-walk: animate the one-step 90° tip, then hand back to physics ---- */
+  useFrame((_s, dt) => {
+    const W = walk.current
+    if (!W) return
+    if (!W.body.isValid()) {
+      walk.current = null
+      return
+    }
+    W.t = Math.min(W.dur, W.t + dt)
+    const k = W.t / W.dur
+    const theta = (Math.PI / 2) * (k * k * (3 - 2 * k)) // ease off the edge, settle flat
+    const q = new THREE.Quaternion().setFromAxisAngle(W.axis, theta)
+    const c = W.pivot.clone().add(W.startCenter.clone().sub(W.pivot).applyQuaternion(q))
+    const rot = q.clone().multiply(W.startQ)
+    W.body.setNextKinematicTranslation({ x: c.x, y: c.y, z: c.z })
+    W.body.setNextKinematicRotation({ x: rot.x, y: rot.y, z: rot.z, w: rot.w })
+    if (W.t >= W.dur) {
+      // hand back to physics and let it settle onto the new face
+      W.body.setBodyType(BODY_DYNAMIC, true)
+      W.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+      W.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+      playImpact(W.id, 0.4) // a wooden knock as it lands
+      haptic(8)
+      walk.current = null
     }
   })
 
@@ -4260,7 +4366,7 @@ function SceneContents({
       {env.stackAll && <StackAllController bodies={bodies} revealRef={revealRef} count={env.stackCount} />}
 
       {/* lift tutorial: raise the single block up into the air to solve */}
-      {env.lift && <LiftController blockId={env.only?.[0] ?? "orange"} bodies={bodies} revealRef={revealRef} />}
+      {env.lift && <LiftController bodies={bodies} revealRef={revealRef} />}
 
       {/* soundbox: a wordless pip row counting down the tones left to play */}
       {noteTarget > 0 && <NoteCounter target={noteTarget} countRef={noteCount} box={box} />}
