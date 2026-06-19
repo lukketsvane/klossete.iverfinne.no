@@ -388,12 +388,22 @@ type EnvConfig = {
   soloBound?: number // cube-walk roam radius in cells (overrides the default)
   mazeRooms?: number // maze level size (grid is 2·rooms+1)
   mazeSeed?: number // maze level layout seed
+  holes?: WallHole[] // interior barrier walls with a gap you must thread a block through
 }
 
 // A target outline a block must be dragged into. nx/nz are -1..1, scaled by the
 // tray; `upright` wants a cylinder stood on its end; `align` wants a plank's long
 // side pointing along that axis (so the player has to rotate it to fit).
 type PlaceSpec = { id: string; nx: number; nz: number; upright?: boolean; align?: "x" | "z" }
+
+// An interior wall that splits the tray, with a single gap the player must steer a
+// block through to reach the far side. `axis` is the world axis the wall runs along
+// ("x" = a wall stretching left↔right, blocking up↔down travel); `at` is its
+// position on the perpendicular axis (-1..1, scaled by the tray); `gapCenter` is
+// where the opening sits along the wall (-1..1); `gapWidth` is the opening width in
+// world units (size it to the block — a 30 mm cube is ~1.08 wide, so a ~1.7 gap
+// gives a snug-but-fair pass). Remember the block scale when picking widths.
+type WallHole = { axis: "x" | "z"; at: number; gapCenter: number; gapWidth: number }
 const BASE_ENVIRONMENTS: EnvConfig[] = [
   {
     id: "concrete",
@@ -696,18 +706,25 @@ const INTRO_REST: EnvConfig[] = [
 // subtly different backdrop per level so they read as a series. (Eight levels, so
 // the space room still lands on level 25.)
 const MID_LEVELS: EnvConfig[] = [
-  // 12 — a square: a piece in each corner with one standing in the middle
+  // 12 — first wall level: a barrier splits the tray, the pieces start below it
+  // and must be threaded up through the single central opening to their outlines.
   {
     id: "m-square",
-    name: "Firkant",
+    name: "Gjennom",
     ...TUT_LOOK,
     bg: "#cdc6b8",
+    only: ["cube", "orange", "cylinder"],
+    hint: "Før klossane gjennom opninga i veggen.",
+    holes: [{ axis: "x", at: 0.12, gapCenter: 0, gapWidth: 1.9 }],
+    spawn: {
+      cube: { pos: [-1.4, 0.6, 2.0] },
+      orange: { pos: [1.4, 0.45, 2.0] },
+      cylinder: { pos: [0, 0.6, 3.3] },
+    },
     place: [
-      { id: "cube", nx: -0.5, nz: -0.55 },
-      { id: "orange", nx: 0.5, nz: -0.55 },
-      { id: "cylinder", nx: 0, nz: 0, upright: true },
-      { id: "plank-short", nx: -0.5, nz: 0.55, align: "z" },
-      { id: "plank-long", nx: 0.5, nz: 0.55, align: "z" },
+      { id: "cube", nx: -0.5, nz: -0.6 },
+      { id: "orange", nx: 0.5, nz: -0.6 },
+      { id: "cylinder", nx: 0, nz: -0.15, upright: true },
     ],
   },
   // 13 — change of pace: build a four-high tower
@@ -770,18 +787,23 @@ const MID_LEVELS: EnvConfig[] = [
       { id: "plank-long", nx: 0.5, nz: 0.45, align: "z" },
     ],
   },
-  // 19 — the tightest one: a compact mosaic, every piece close to its neighbour
+  // 19 — the hardest: two offset walls make a sluice. Each piece has to zig-zag up
+  // through the lower gap, across, then the upper gap to reach its outline on top.
   {
     id: "m-mosaic",
-    name: "Mosaikk",
+    name: "Sluse",
     ...TUT_LOOK,
     bg: "#cac3b3",
+    only: ["cube", "orange"],
+    hint: "Sikksakk klossane gjennom begge opningane.",
+    holes: [
+      { axis: "x", at: 0.26, gapCenter: 0.5, gapWidth: 1.7 },
+      { axis: "x", at: -0.26, gapCenter: -0.5, gapWidth: 1.7 },
+    ],
+    spawn: { cube: { pos: [-0.8, 0.6, 2.7] }, orange: { pos: [0.8, 0.45, 2.7] } },
     place: [
-      { id: "plank-long", nx: -0.3, nz: -0.55, align: "z" },
-      { id: "plank-short", nx: 0.3, nz: -0.55, align: "z" },
-      { id: "cube", nx: -0.45, nz: 0.4 },
-      { id: "cylinder", nx: 0, nz: 0.05, upright: true },
-      { id: "orange", nx: 0.45, nz: 0.4 },
+      { id: "cube", nx: -0.45, nz: -0.6 },
+      { id: "orange", nx: 0.45, nz: -0.6 },
     ],
   },
 ]
@@ -1098,6 +1120,49 @@ const MIN_LIFT = 2.1 // grabbed blocks float well clear of the floor so you can 
 const MAX_LIFT = WALL_VIS_HEIGHT - 0.3 // initial grab height clamp (eases up from here)
 const THROW_MAX = 5.0 // clamp on release speed – allows a light toss, not a hurl
 const ESCAPE_MARGIN = 0.4 // how far past a wall a body must be before we rescue it
+
+// Interior barrier walls: build the solid segments either side of the gap. The
+// wall runs the full width of the tray on its axis, leaving one opening the
+// player must steer a block through. Used for both the visible mesh and the
+// physics collider (just at different heights).
+const GATE_THICK = 0.35 // half-thickness of an interior wall
+function holeSegments(h: WallHole, box: Box, height: number): Wall[] {
+  const segs: Wall[] = []
+  const half = height / 2
+  const g = h.gapWidth / 2
+  if (h.axis === "x") {
+    const z = h.at * box.bz
+    const gc = h.gapCenter * box.bx
+    const gL = gc - g
+    const gR = gc + g
+    if (gL > -box.bx + 0.02) segs.push({ half: [(gL + box.bx) / 2, half, GATE_THICK], pos: [(-box.bx + gL) / 2, half, z] })
+    if (gR < box.bx - 0.02) segs.push({ half: [(box.bx - gR) / 2, half, GATE_THICK], pos: [(gR + box.bx) / 2, half, z] })
+  } else {
+    const x = h.at * box.bx
+    const gc = h.gapCenter * box.bz
+    const gL = gc - g
+    const gR = gc + g
+    if (gL > -box.bz + 0.02) segs.push({ half: [GATE_THICK, half, (gL + box.bz) / 2], pos: [x, half, (-box.bz + gL) / 2] })
+    if (gR < box.bz - 0.02) segs.push({ half: [GATE_THICK, half, (box.bz - gR) / 2], pos: [x, half, (gR + box.bz) / 2] })
+  }
+  return segs
+}
+
+// The visible interior barrier walls (tinted a touch darker than the room walls so
+// the opening reads clearly). Colliders are added separately to the static body.
+function GateWalls({ holes, box }: { holes: WallHole[]; box: Box }) {
+  const segs = useMemo(() => holes.flatMap((h) => holeSegments(h, box, WALL_VIS_HEIGHT)), [holes, box.bx, box.bz])
+  return (
+    <>
+      {segs.map((w, i) => (
+        <mesh key={`gate-${i}`} position={w.pos} castShadow receiveShadow>
+          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
+          <meshStandardMaterial color="#a89f8d" roughness={0.9} metalness={0} />
+        </mesh>
+      ))}
+    </>
+  )
+}
 
 /* Soft "grab spring": the block is held by the exact point you grabbed, via a
    damped spring (PD controller) applied at that point. Because the pull acts at
@@ -4594,10 +4659,18 @@ function SceneContents({
           colliderWalls.map((w, i) => (
             <CuboidCollider key={i} args={w.half} position={w.pos} restitution={0} />
           ))}
+        {/* interior barrier walls (the "hole" levels): solid either side of the gap */}
+        {env.holes &&
+          env.holes
+            .flatMap((h) => holeSegments(h, box, WALL_COL_HEIGHT))
+            .map((w, i) => <CuboidCollider key={`hole-${i}`} args={w.half} position={w.pos} restitution={0} />)}
       </RigidBody>
 
       {/* environment-specific room: floor, walls, fill lighting */}
       <Room env={env} box={box} visibleWalls={visibleWalls} shadowSpan={shadowSpan} roughMap={roughMap} muted={muted} revealRef={revealRef} />
+
+      {/* interior barrier walls with a gap to thread a block through */}
+      {env.holes && <GateWalls holes={env.holes} box={box} />}
 
       {/* reactive floor: tiles flash where blocks strike, brightness ~ force */}
       <ImpactGlows poolRef={glowPool} active={!!env.reactive} tile={GLASS_TILE} />
