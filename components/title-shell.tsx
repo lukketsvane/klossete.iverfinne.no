@@ -16,6 +16,7 @@ export default function TitleShell() {
   const [screen, setScreen] = useState<Screen>("title")
   const [overlay, setOverlay] = useState<Overlay>(null)
   const [launch, setLaunch] = useState<number | null>(null)
+  const [liveLevel, setLiveLevel] = useState<number | null>(null) // the level currently open in-game
   const [progress, setProgress] = useState<Progress>({ current: 0, solved: [] })
   const [sound, setSoundOn] = useState(true)
   const [tilt, setTiltOn] = useState(false)
@@ -75,6 +76,7 @@ export default function TitleShell() {
           initialLevel={launch ?? undefined}
           initialMuted={!sound}
           initialTilt={tilt}
+          onLevel={setLiveLevel}
           // the grid button opens the level picker OVER the running level, so it
           // never throws you back out to the main menu
           onExit={() => {
@@ -134,6 +136,7 @@ export default function TitleShell() {
       {overlay === "levels" && (
         <LevelOverlay
           progress={progress}
+          current={screen === "game" ? liveLevel ?? launch ?? progress.current : progress.current}
           onClose={() => setOverlay(null)}
           onHome={() => {
             setOverlay(null)
@@ -196,19 +199,54 @@ function SettingRow({
 
 const PAGE_SIZE = 25 // levels per page in the picker
 
+// A rough, hand-drawn crayon outline around the level you're currently on. The
+// turbulence + displacement filter roughens the rounded rect so it reads as a
+// wobbly crayon stroke rather than a clean ring.
+function CrayonOutline() {
+  return (
+    <svg
+      className="pointer-events-none absolute -inset-1"
+      viewBox="0 0 100 100"
+      preserveAspectRatio="none"
+      aria-hidden
+    >
+      <defs>
+        <filter id="crayon-rough" x="-20%" y="-20%" width="140%" height="140%">
+          <feTurbulence type="fractalNoise" baseFrequency="0.09" numOctaves="2" seed="7" result="n" />
+          <feDisplacementMap in="SourceGraphic" in2="n" scale="4" />
+        </filter>
+      </defs>
+      <rect
+        x="9"
+        y="9"
+        width="82"
+        height="82"
+        rx="16"
+        fill="none"
+        stroke="#2b56be"
+        strokeWidth="4"
+        strokeLinecap="round"
+        filter="url(#crayon-rough)"
+      />
+    </svg>
+  )
+}
+
 function LevelOverlay({
   progress,
+  current,
   onClose,
   onHome,
   onPick,
 }: {
   progress: Progress
+  current: number // the level the player is on right now (for the page + highlight)
   onClose: () => void
   onHome: () => void
   onPick: (i: number) => void
 }) {
   const pages = Math.max(1, Math.ceil(GRID / PAGE_SIZE))
-  const [page, setPage] = useState(() => Math.min(pages - 1, Math.floor((progress.current ?? 0) / PAGE_SIZE)))
+  const [page, setPage] = useState(() => Math.min(pages - 1, Math.max(0, Math.floor(current / PAGE_SIZE))))
   const startIdx = page * PAGE_SIZE
   const count = Math.min(PAGE_SIZE, GRID - startIdx)
 
@@ -246,24 +284,23 @@ function LevelOverlay({
             const i = startIdx + j
             const level = LEVELS[i]
             const solved = progress.solved.includes(level.id)
-            const isCurrent = i === progress.current && !solved
+            const isCurrent = i === current
             const fill = solved ? SOLVED_COLORS[i % SOLVED_COLORS.length] : undefined
             return (
               <button
                 key={i}
                 type="button"
                 onClick={() => onPick(i)}
-                aria-label={`Nivå ${i + 1}: ${level.name}${solved ? " (klart)" : ""}`}
+                aria-label={`Nivå ${i + 1}: ${level.name}${solved ? " (klart)" : ""}${isCurrent ? " (her er du)" : ""}`}
                 title={level.name}
-                className={`font-klossete relative flex aspect-square items-center justify-center rounded-xl text-xl transition active:scale-95 hover:brightness-105 ${
-                  isCurrent ? "ring-2 ring-[#2b56be] ring-offset-2 ring-offset-[#f6f2ea]" : ""
-                }`}
+                className="font-klossete relative flex aspect-square items-center justify-center rounded-xl text-xl transition active:scale-95 hover:brightness-105"
                 style={{
                   background: fill ?? "#e7e1d5",
                   color: solved ? "#f6f2ea" : "#473f33",
                 }}
               >
                 {i + 1}
+                {isCurrent && <CrayonOutline />}
               </button>
             )
           })}
