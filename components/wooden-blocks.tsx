@@ -561,8 +561,8 @@ const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
     only: ["cube", "orange"],
     hint: "Løft den oransje klossen og set han oppå den blå.",
     pictogram: CARD_LIFT,
-    // the blue cube sits in the middle as a base; lift the orange up onto it
-    spawn: { cube: { pos: [0, 0.6, 0] }, orange: { pos: [0, 0.45, 2.2] } },
+    // the blue cube sits high up as a base; lift the orange up from below onto it
+    spawn: { cube: { pos: [0, 0.6, -1.3] }, orange: { pos: [0, 0.45, 2.2] } },
     lift: true,
   },
   {
@@ -1180,24 +1180,28 @@ function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
         </group>
       )}
 
-      {/* lift tutorial: an orange target square floating just above the blue cube,
-          showing where to set the orange block down */}
+      {/* lift tutorial: a crayon target where the orange goes – on top of the
+          blue cube (high up) – tinted to the orange's colour, like the place
+          levels' outlines */}
       {env.lift && (
-        <group position={[0, 1.18, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <mesh>
-            <planeGeometry args={[1.7, 1.7]} />
-            <meshBasicMaterial color="#e07b22" transparent opacity={0.22} />
-          </mesh>
-          <lineSegments>
-            <edgesGeometry args={[new THREE.PlaneGeometry(1.7, 1.7)]} />
-            <lineBasicMaterial color="#e07b22" transparent opacity={0.95} toneMapped={false} />
-          </lineSegments>
-        </group>
+        <mesh position={[0, 1.18, -1.3]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+          <planeGeometry args={[2.0, 2.0]} />
+          <meshStandardMaterial
+            map={texOf("/silhouettes/orange.png")}
+            color="#e07b22"
+            transparent
+            alphaTest={0.6}
+            roughness={0.95}
+            metalness={0}
+            polygonOffset
+            polygonOffsetFactor={-1}
+          />
+        </mesh>
       )}
 
-      {/* gesture hint as a floor decal, in the clear band toward the block (sits
-          lower on the Lift level so it never covers the centred cube or block) */}
-      {env.pictogram && <GestureDecal url={env.pictogram} z={env.lift ? 1.5 : 0.4} />}
+      {/* gesture hint as a floor decal, moved up toward the cube/target on the
+          Lift level so it sits between the orange (below) and the base (above) */}
+      {env.pictogram && <GestureDecal url={env.pictogram} z={env.lift ? 0.5 : 0.4} />}
 
       {visibleWalls.map((w, i) => (
         <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
