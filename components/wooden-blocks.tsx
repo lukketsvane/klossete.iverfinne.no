@@ -1180,6 +1180,11 @@ function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
     sils.forEach((t) => {
       t.colorSpace = THREE.SRGBColorSpace
       t.anisotropy = 4
+      // no mipmaps: keep the cut-out edge crisp instead of letting minification
+      // bleed a soft semi-transparent halo around the crayon shape
+      t.generateMipmaps = false
+      t.minFilter = THREE.LinearFilter
+      t.needsUpdate = true
     })
   }, [sils])
   const texOf = (url: string) => sils[SILHOUETTES.indexOf(url)]
@@ -1205,7 +1210,8 @@ function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
               map={texOf(zoneSilhouette(z))}
               color={z.color}
               transparent
-              alphaTest={0.35}
+              // only the fully-opaque core shows; any feathered edge erodes inward
+              alphaTest={0.7}
               roughness={0.95}
               metalness={0}
               polygonOffset
