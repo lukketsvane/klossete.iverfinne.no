@@ -743,18 +743,26 @@ const MID_LEVELS: EnvConfig[] = [
       { id: "plank-long", nx: 0.66, nz: 0, align: "z" },
     ],
   },
-  // 15 — pieces set out across the floor, the cylinder standing at one corner
+  // 15 — middle wall level: the opening is OFF to one side, so a piece has to be
+  // threaded through the offset gap and then routed across to its outline (harder
+  // than the centred gap on 12, gentler than the sluice on 19).
   {
     id: "m-stair",
-    name: "Trapp",
+    name: "Smug",
     ...TUT_LOOK,
     bg: "#ccc3b3",
+    only: ["cube", "orange", "cylinder"],
+    hint: "Opninga er på sida – før klossane gjennom og bort til felta.",
+    holes: [{ axis: "x", at: 0.12, gapCenter: -0.45, gapWidth: 1.9 }],
+    spawn: {
+      cube: { pos: [-1.4, 0.6, 2.0] },
+      orange: { pos: [1.4, 0.45, 2.0] },
+      cylinder: { pos: [0, 0.6, 3.3] },
+    },
     place: [
-      { id: "plank-long", nx: -0.5, nz: -0.55, align: "z" },
-      { id: "cylinder", nx: 0.5, nz: -0.55, upright: true },
-      { id: "cube", nx: 0, nz: 0 },
-      { id: "orange", nx: -0.5, nz: 0.55 },
-      { id: "plank-short", nx: 0.5, nz: 0.55, align: "z" },
+      { id: "cube", nx: -0.4, nz: -0.6 },
+      { id: "orange", nx: 0.4, nz: -0.6 },
+      { id: "cylinder", nx: 0, nz: -0.25, upright: true },
     ],
   },
   // 16 — a chevron / funnel pointing down the screen
@@ -1149,9 +1157,39 @@ function holeSegments(h: WallHole, box: Box, height: number): Wall[] {
 }
 
 // The visible interior barrier walls (tinted a touch darker than the room walls so
-// the opening reads clearly). Colliders are added separately to the static body.
+// the opening reads clearly). Each opening is framed by two glowing posts plus a
+// soft light, so the gap reads as "go here" instead of a dead end. Colliders are
+// added separately to the static body.
 function GateWalls({ holes, box }: { holes: WallHole[]; box: Box }) {
   const segs = useMemo(() => holes.flatMap((h) => holeSegments(h, box, WALL_VIS_HEIGHT)), [holes, box.bx, box.bz])
+  const openings = useMemo(
+    () =>
+      holes.map((h) => {
+        const g = h.gapWidth / 2
+        const y = WALL_VIS_HEIGHT / 2
+        if (h.axis === "x") {
+          const z = h.at * box.bz
+          const gc = h.gapCenter * box.bx
+          return {
+            posts: [
+              [gc - g, y, z],
+              [gc + g, y, z],
+            ] as [number, number, number][],
+            light: [gc, 1.3, z] as [number, number, number],
+          }
+        }
+        const x = h.at * box.bx
+        const gc = h.gapCenter * box.bz
+        return {
+          posts: [
+            [x, y, gc - g],
+            [x, y, gc + g],
+          ] as [number, number, number][],
+          light: [x, 1.3, gc] as [number, number, number],
+        }
+      }),
+    [holes, box.bx, box.bz],
+  )
   return (
     <>
       {segs.map((w, i) => (
@@ -1159,6 +1197,17 @@ function GateWalls({ holes, box }: { holes: WallHole[]; box: Box }) {
           <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
           <meshStandardMaterial color="#a89f8d" roughness={0.9} metalness={0} />
         </mesh>
+      ))}
+      {openings.map((o, i) => (
+        <group key={`open-${i}`}>
+          {o.posts.map((p, j) => (
+            <mesh key={j} position={p}>
+              <boxGeometry args={[0.09, WALL_VIS_HEIGHT, 0.09]} />
+              <meshStandardMaterial color="#ffe6a8" emissive="#ffc24a" emissiveIntensity={1.8} toneMapped={false} />
+            </mesh>
+          ))}
+          <pointLight position={o.light} intensity={4} distance={4.5} decay={2} color="#ffd27a" />
+        </group>
       ))}
     </>
   )
