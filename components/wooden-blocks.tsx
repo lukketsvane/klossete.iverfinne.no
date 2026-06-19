@@ -818,10 +818,11 @@ const MID_LEVELS: EnvConfig[] = [
   },
 ]
 
-// 26–49: the piloting section. It cycles through ALL five blocks so each gets a
-// handful of stages (not just the cube): the cube tips through growing labyrinths,
-// each plank/slab is piloted across open ground with its own tumble, and the red
-// cylinder rolls — so its stages play like a little driving game. 50 closes the
+// 26–49: the piloting section. It cycles the four piloted pieces (cube + the
+// three planks/slab) so each gets a handful of stages: the cube tips through
+// growing labyrinths, and each plank/slab is piloted across ground that gains
+// walls-with-gaps and checkpoints as the rounds climb. (The cylinder's rolling
+// "grand prix" is a separate minigame, not part of this journey.) 50 closes the
 // game by assembling the totem figure.
 const MAZE_LOOK = {
   look: "maze" as EnvKind,
@@ -838,9 +839,11 @@ const SOLO_LOOK = {
   contact: { color: "#000000", opacity: 0.4 },
   bloom: true,
 }
-// one block per slot, cycled, so the section is spread evenly across all five
-const WALK_CYCLE = ["cube", "orange", "plank-long", "plank-short", "cylinder"]
-const SOLO_MOSAIC: Record<string, number> = { orange: 3, "plank-long": 1, "plank-short": 2, cylinder: 4 }
+// one block per slot, cycled, so the section is spread evenly across the four
+// piloted pieces (the cylinder's rolling "grand prix" is a separate minigame and
+// is no longer part of the main journey).
+const WALK_CYCLE = ["cube", "orange", "plank-long", "plank-short"]
+const SOLO_MOSAIC: Record<string, number> = { orange: 3, "plank-long": 1, "plank-short": 2 }
 // distinct backdrops so the piloting stages read as a varied series, not one room
 const SOLO_THEMES = [
   { bg: "#0c0b0a", keyColor: "#fff1dc" }, // warm
@@ -905,7 +908,7 @@ function pilotVia(bound: number, round: number, seed: number, walls: [number, nu
 }
 const CUBEWALK_LEVELS: EnvConfig[] = Array.from({ length: 24 }, (_, i) => {
   const block = WALK_CYCLE[i % WALK_CYCLE.length]
-  const round = Math.floor(i / WALK_CYCLE.length) // 0..4 – difficulty climbs each lap
+  const round = Math.floor(i / WALK_CYCLE.length) // 0..5 – difficulty climbs each lap
   const theme = SOLO_THEMES[i % SOLO_THEMES.length]
   if (block === "cube") {
     const rooms = Math.min(8, 4 + round) // labyrinths grow lap by lap (phone-readable cap)
@@ -920,23 +923,10 @@ const CUBEWALK_LEVELS: EnvConfig[] = Array.from({ length: 24 }, (_, i) => {
       mazeSeed: 0x9e37 + i * 2654435761,
     }
   }
-  if (block === "cylinder") {
-    // the cylinder "grand prix" drive stays untouched (its own minigame, later)
-    const bnd = 7 + round // 7..11
-    return {
-      id: `cw-drive-${i}`,
-      name: `Køyr ${round + 1}`,
-      ...SOLO_LOOK,
-      solo: "cylinder",
-      mosaic: SOLO_MOSAIC.cylinder,
-      soloStart: [-(bnd - 1), bnd - 1] as [number, number],
-      soloGoal: [bnd - 1, -(bnd - 1)] as [number, number],
-      soloBound: bnd,
-    }
-  }
   // piloting a plank/slab: roam radius grows, and from round 1 the open ground
-  // gains barriers (and later checkpoints) to navigate – the boss-style ramp.
-  const bnd = 5 + round // roam radius 5..9
+  // gains barriers with gaps (and later checkpoints) to route through – the
+  // walls-and-holes ramp that builds toward the finale.
+  const bnd = 5 + round // roam radius 5..10
   const seed = (0x1234 + i * 2654435761) >>> 0
   const walls = pilotWalls(bnd, round, seed)
   const via = pilotVia(bnd, round, seed, walls)

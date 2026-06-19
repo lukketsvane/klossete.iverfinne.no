@@ -101,8 +101,8 @@ test("piloting stages with obstacles + checkpoints load and render", async ({ pa
   page.on("pageerror", (e) => fatal.push(`pageerror: ${e.message}`))
 
   const picks: { lvl: number; name: string }[] = [
-    { lvl: 32, name: "Slaben 2" }, // one barrier to route around
-    { lvl: 49, name: "Vippen 5" }, // two barriers + two checkpoints (boss ramp peak)
+    { lvl: 32, name: "Langferd 2" }, // one barrier to route around
+    { lvl: 49, name: "Vippen 6" }, // two barriers + two checkpoints (boss ramp peak)
   ]
   for (const { lvl, name } of picks) {
     try {
@@ -115,6 +115,8 @@ test("piloting stages with obstacles + checkpoints load and render", async ({ pa
     // wait for the picker to actually open (page 1) before paging to levels 26–50
     await expect(page.getByRole("button", { name: /^Nivå 1:/ })).toBeVisible({ timeout: 15_000 })
     await page.getByRole("button", { name: "Neste side" }).click()
+    // confirm page 2 loaded (level 26 is its first cell) before hunting the target
+    await expect(page.getByRole("button", { name: /^Nivå 26:/ })).toBeVisible({ timeout: 15_000 })
     const cell = page.getByRole("button", { name: new RegExp(`^Nivå ${lvl}: ${name}`) })
     await expect(cell).toBeVisible({ timeout: 15_000 })
     await cell.click()
