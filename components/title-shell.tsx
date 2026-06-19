@@ -4,8 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { Check, ChevronLeft, ChevronRight, X } from "lucide-react"
 import WoodenBlocks, { LEVELS } from "@/components/wooden-blocks"
 import { getProgress, type Progress } from "@/lib/progression"
-import { getSettings, setSound, setMusic, setTiltPref } from "@/lib/settings"
-import { setMuted } from "@/lib/impact-sound"
+import { getSettings, setSound, setMusic, setSoundVol, setMusicVol, setTiltPref } from "@/lib/settings"
+import { setMuted, setVolume } from "@/lib/impact-sound"
 
 type Screen = "title" | "game"
 type Overlay = null | "levels" | "help"
@@ -24,6 +24,10 @@ export default function TitleShell() {
   const [progress, setProgress] = useState<Progress>({ current: 0, solved: [] })
   const [sound, setSoundOn] = useState(true)
   const [music, setMusicOn] = useState(true)
+  const [soundVol, setSoundVolState] = useState(0.8)
+  const [musicVol, setMusicVolState] = useState(0.5)
+  const musicVolRef = useRef(0.5)
+  musicVolRef.current = musicVol
   const [tilt, setTiltOn] = useState(false)
   const musicEl = useRef<HTMLAudioElement | null>(null)
   const trackIdx = useRef(0)
@@ -34,14 +38,16 @@ export default function TitleShell() {
     const s = getSettings()
     setSoundOn(s.sound)
     setMusicOn(s.music)
+    setSoundVolState(s.soundVol)
+    setMusicVolState(s.musicVol)
     setTiltOn(s.tilt)
     setMuted(!s.sound)
+    setVolume(s.soundVol)
   }, [])
 
-  // The OST (a two-track playlist) waits until you actually start the game, then
-  // fades in quietly and loops (when one track ends we advance to the next and
-  // wrap around). Turning music off pauses it at once.
-  const MUSIC_VOL = 0.45
+  // The OST (a multi-track playlist) waits until you actually start the game, then
+  // fades in to the music-volume slider level and loops (when one track ends we
+  // advance to the next and wrap around). Turning music off pauses it at once.
   const fadeInMusic = useCallback(() => {
     const a = musicEl.current
     if (!a) return
@@ -51,7 +57,7 @@ export default function TitleShell() {
     const t0 = performance.now()
     const step = () => {
       const k = Math.min(1, (performance.now() - t0) / 1600)
-      a.volume = MUSIC_VOL * k
+      a.volume = musicVolRef.current * k
       if (k < 1) fadeRaf.current = requestAnimationFrame(step)
       else fadeRaf.current = null
     }
@@ -75,7 +81,7 @@ export default function TitleShell() {
     if (!a) return
     trackIdx.current = (trackIdx.current + 1) % OST_TRACKS.length
     a.src = OST_TRACKS[trackIdx.current]
-    a.volume = MUSIC_VOL
+    a.volume = musicVolRef.current
     void a.play().catch(() => {})
   }
 
@@ -96,11 +102,29 @@ export default function TitleShell() {
     setScreen("game")
   }
 
-  const toggleSound = () => {
-    const next = !sound
-    setSoundOn(next)
-    setSound(next)
-    setMuted(!next)
+  // menu volume sliders (0..1). Sound feeds the effects master gain; music sets
+  // the OST element volume live. Dragging to 0 also flips the matching in-game
+  // mute flag so the cluster button reads in sync.
+  const onSoundVolChange = (v: number) => {
+    setSoundVolState(v)
+    setSoundVol(v)
+    setVolume(v)
+    const on = v > 0
+    if (on !== sound) {
+      setSoundOn(on)
+      setSound(on)
+      setMuted(!on)
+    }
+  }
+  const onMusicVolChange = (v: number) => {
+    setMusicVolState(v)
+    setMusicVol(v)
+    if (musicEl.current) musicEl.current.volume = v
+    const on = v > 0
+    if (on !== music) {
+      setMusicOn(on)
+      setMusic(on)
+    }
   }
 
   // The accelerometer needs an explicit permission grant on iOS 13+, and it must
@@ -165,8 +189,8 @@ export default function TitleShell() {
 
           {/* settings + level access */}
           <div className="flex w-full max-w-xs flex-col items-stretch gap-3">
-            <SettingRow label="lyd" checked={sound} onClick={toggleSound} />
-            <SettingRow label="musikk" checked={music} onClick={toggleMusic} />
+            <SettingSlider label="lyd" value={soundVol} onChange={onSoundVolChange} />
+            <SettingSlider label="musikk" value={musicVol} onChange={onMusicVolChange} />
             <SettingRow label="rørslesensor" checked={tilt} onClick={toggleTilt} />
 
             <button
@@ -257,6 +281,31 @@ function SettingRow({
         {checked && <Check className="h-4 w-4 text-[#f6f2ea]" strokeWidth={3} />}
       </span>
     </button>
+  )
+}
+
+function SettingSlider({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: number
+  onChange: (v: number) => void
+}) {
+  return (
+    <label className="font-klossete flex items-center gap-4 rounded-2xl bg-[#efe9dd] px-5 py-3 text-lg text-[#473f33]">
+      <span className="w-28 shrink-0">{label}</span>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={Math.round(value * 100)}
+        onChange={(e) => onChange(Number(e.target.value) / 100)}
+        aria-label={label}
+        className="h-2 w-full cursor-pointer appearance-none rounded-full bg-[#d8d0bf] accent-[#2b56be]"
+      />
+    </label>
   )
 }
 
