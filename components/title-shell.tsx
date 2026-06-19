@@ -11,6 +11,7 @@ type Screen = "title" | "game"
 type Overlay = null | "levels" | "help"
 const GRID = LEVELS.length // one cell per built level
 const SOLVED_COLORS = ["#2b56be", "#eb7f37", "#78b2d6", "#d14332"]
+const OST_TRACKS = ["/music/ost-1.mp3", "/music/ost-2.mp3"] // the soundtrack, played in a loop
 
 export default function TitleShell() {
   const [screen, setScreen] = useState<Screen>("title")
@@ -22,6 +23,7 @@ export default function TitleShell() {
   const [music, setMusicOn] = useState(true)
   const [tilt, setTiltOn] = useState(false)
   const musicEl = useRef<HTMLAudioElement | null>(null)
+  const trackIdx = useRef(0)
 
   // load saved settings once on mount + keep the audio engine in sync
   useEffect(() => {
@@ -32,9 +34,10 @@ export default function TitleShell() {
     setMuted(!s.sound)
   }, [])
 
-  // The OST loops quietly under everything. Browsers block autoplay until a real
-  // user gesture, so we (re)try to start it on the first tap as well as whenever
-  // the music toggle turns on.
+  // The OST (a two-track playlist) loops quietly under everything. Browsers block
+  // autoplay until a real user gesture, so we (re)try to start it on the first tap
+  // as well as whenever the music toggle turns on. When one track ends we advance
+  // to the next and wrap around.
   useEffect(() => {
     const a = musicEl.current
     if (!a) return
@@ -50,6 +53,14 @@ export default function TitleShell() {
     window.addEventListener("pointerdown", kick)
     return () => window.removeEventListener("pointerdown", kick)
   }, [music])
+
+  const onTrackEnded = () => {
+    const a = musicEl.current
+    if (!a) return
+    trackIdx.current = (trackIdx.current + 1) % OST_TRACKS.length
+    a.src = OST_TRACKS[trackIdx.current]
+    void a.play().catch(() => {})
+  }
 
   const toggleMusic = () => {
     const next = !music
@@ -103,8 +114,9 @@ export default function TitleShell() {
 
   return (
     <>
-      {/* the OST – loops under the whole experience, gated by the music toggle */}
-      <audio ref={musicEl} src="/music/ost.mp3" loop preload="auto" />
+      {/* the OST – a two-track playlist looping under the whole experience, gated
+          by the music toggle */}
+      <audio ref={musicEl} src={OST_TRACKS[0]} preload="auto" onEnded={onTrackEnded} />
       {screen === "game" ? (
         <WoodenBlocks
           key={launch ?? "resume"}
