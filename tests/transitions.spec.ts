@@ -63,7 +63,9 @@ test("bespoke arrangement levels 12–19 load and render", async ({ page }) => {
   const picks: { lvl: number; name: string }[] = [
     { lvl: 12, name: "Gjennom" },
     { lvl: 14, name: "Kross" },
+    { lvl: 16, name: "Oppå" }, // overlapping target areas (stack the cube on the orange)
     { lvl: 17, name: "Stable 5" },
+    { lvl: 18, name: "Dobbel" }, // two overlapping stacks
     { lvl: 19, name: "Sluse" },
   ]
   for (const { lvl, name } of picks) {
