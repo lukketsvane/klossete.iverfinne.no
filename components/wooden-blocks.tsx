@@ -4331,15 +4331,16 @@ export default function WoodenBlocks({
         <PostFx envId={env.id} />
       </Canvas>
 
-      {/* UI – auto-hiding control cluster (fades in when the pointer is near).
-          pointer-events follow visibility so the faded cluster never blocks the
-          canvas in the corner. */}
+      {/* UI – control cluster pinned to the top-left corner. Always faintly
+          visible so it's never lost, brightening when the pointer comes near.
+          It stays interactive at all times (the buttons are small enough not to
+          get in the way of the toy). */}
       <div
         onPointerEnter={revealUI}
         onPointerLeave={scheduleHide}
         style={{ color: env.id === "gold" ? "#efe1c2" : "#262626" }}
-        className={`absolute bottom-5 right-5 z-10 flex flex-col gap-3 p-2 transition-opacity duration-700 ease-out ${
-          uiShown ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+        className={`pointer-events-auto absolute left-2 top-2 z-10 flex flex-col gap-2 p-1 transition-opacity duration-700 ease-out ${
+          uiShown ? "opacity-90" : "opacity-30"
         }`}
       >
         {onExit && (
@@ -4347,7 +4348,7 @@ export default function WoodenBlocks({
             type="button"
             aria-label="Tilbake til nivå"
             onClick={onExit}
-            className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full opacity-40 transition hover:opacity-90"
+            className="flex h-11 w-11 items-center justify-center rounded-full transition hover:bg-black/5 active:scale-95"
           >
             <LayoutGrid className="h-5 w-5" strokeWidth={2.4} />
           </button>
@@ -4362,7 +4363,7 @@ export default function WoodenBlocks({
             setMuted(next)
             setSound(!next) // keep the menu's saved preference in sync
           }}
-          className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full opacity-40 transition hover:opacity-90"
+          className="flex h-11 w-11 items-center justify-center rounded-full transition hover:bg-black/5 active:scale-95"
         >
           {muted ? (
             <VolumeX className="h-5 w-5" strokeWidth={2.4} />
@@ -4375,8 +4376,8 @@ export default function WoodenBlocks({
           aria-label="Vipp for å styre tyngdekrafta"
           aria-pressed={tiltOn}
           onClick={toggleTilt}
-          className={`pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full transition ${
-            tiltOn ? "opacity-100" : "opacity-40 hover:opacity-90"
+          className={`flex h-11 w-11 items-center justify-center rounded-full transition active:scale-95 ${
+            tiltOn ? "bg-black/10" : "hover:bg-black/5"
           }`}
         >
           <span ref={iconRef} className="flex items-center justify-center [transform-style:preserve-3d]">
