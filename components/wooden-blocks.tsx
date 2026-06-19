@@ -4346,7 +4346,13 @@ function SceneContents({
         d.baseLift = t.y
         d.grabTime = performance.now()
       }
-      playImpact(W.id, 0.4) // a wooden knock as it lands
+      // landing "impact": kinematic tips don't fire the physics collision, so
+      // ring it here ourselves – a wooden knock on normal floors, and on the
+      // reactive music floor this lights + sounds the tile (and counts the note),
+      // so walking a block over the soundbox makes music like a real strike does.
+      const lt = W.body.translation()
+      if (!reactive) playImpact(W.id, 0.45)
+      onBlockImpact(lt.x, lt.z, 0.45)
       haptic(8)
       walk.current = null
     }
