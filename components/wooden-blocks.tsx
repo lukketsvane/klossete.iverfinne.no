@@ -1196,14 +1196,20 @@ function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
         const fpX = z.shape === "cylinder" && z.upright ? z.radius : z.hx
         const fpZ = z.shape === "cylinder" && z.upright ? z.radius : z.hz
         return (
-          <mesh key={z.id} position={[z.x, 0.02, z.z]} rotation={[-Math.PI / 2, 0, 0]}>
+          <mesh key={z.id} position={[z.x, 0.02, z.z]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
             <planeGeometry args={[fpX * 2 + 0.5, fpZ * 2 + 0.5]} />
-            <meshBasicMaterial
+            {/* the PNG is a flat white crayon shape: tint it to the block's single
+                colour and light it with a real (shadow-receiving) material, so the
+                marker takes the blocks' shadows and shows no speckle of its own */}
+            <meshStandardMaterial
               map={texOf(zoneSilhouette(z))}
+              color={z.color}
               transparent
-              opacity={0.62}
-              depthWrite={false}
-              toneMapped={false}
+              alphaTest={0.35}
+              roughness={0.95}
+              metalness={0}
+              polygonOffset
+              polygonOffsetFactor={-1}
             />
           </mesh>
         )
