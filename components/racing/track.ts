@@ -30,14 +30,12 @@ export type TrackSample = {
 }
 
 export type Gate = { p: THREE.Vector3; left: THREE.Vector3; right: THREE.Vector3 }
-export type Coin = { p: THREE.Vector3 }
 export type Deco = { pos: [number, number, number]; size: [number, number, number]; rotY: number; shade: number }
 
 export type Track = {
   samples: TrackSample[]
   geometry: THREE.BufferGeometry
   gates: Gate[]
-  coins: Coin[]
   decos: Deco[]
   start: THREE.Vector3
   startDir: THREE.Vector3
@@ -145,14 +143,6 @@ export function buildTrack(seed = 7): Track {
     gates.push({ p: sm.p.clone(), left, right })
   }
 
-  // --- Coins, weaving gently across the road --------------------------------
-  const coins: Coin[] = []
-  for (let i = 10; i < samples.length - 8; i += 5) {
-    const sm = samples[i]
-    const across = Math.sin(i * 0.5) * HALF_W * 0.55
-    coins.push({ p: sm.p.clone().addScaledVector(sm.r, across).addScaledVector(sm.n, 0.85) })
-  }
-
   // --- Grey block scenery flanking the track (decorative only) --------------
   const decos: Deco[] = []
   for (let i = 6; i < samples.length - 4; i += 2) {
@@ -180,7 +170,6 @@ export function buildTrack(seed = 7): Track {
     samples,
     geometry,
     gates,
-    coins,
     decos,
     start,
     startDir: samples[3].t.clone(),
