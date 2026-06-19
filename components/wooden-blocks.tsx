@@ -397,6 +397,11 @@ type EnvConfig = {
   spawn?: Record<string, { pos: [number, number, number]; rot?: [number, number, number] }> // per-block start override
   place?: PlaceSpec[] // drag each listed block into its outlined target (with orientation rules)
   stackAll?: boolean // win by stacking every block into one tower
+  watchVideo?: boolean // the video room as a "just watch it to the end" level
+  notes?: number // soundbox: play this many tile-notes to solve
+  soloStart?: [number, number] // cube-walk start cell (overrides the default)
+  soloGoal?: [number, number] // cube-walk exit cell (overrides the default)
+  soloBound?: number // cube-walk roam radius in cells (overrides the default)
 }
 
 // A target outline a block must be dragged into. nx/nz are -1..1, scaled by the
@@ -669,7 +674,92 @@ const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
   },
 ]
 
-const ENVIRONMENTS: EnvConfig[] = [...TUTORIAL_ENVIRONMENTS, ...BASE_ENVIRONMENTS, ...EXTRA_ENVIRONMENTS]
+// pull a base room config by id so the curated order can reuse its look + keys
+const base = (id: string): EnvConfig => BASE_ENVIRONMENTS.find((e) => e.id === id) ?? BASE_ENVIRONMENTS[0]
+
+// 6–9: more intro practice, still on the calm first-level background
+const INTRO_REST: EnvConfig[] = [
+  {
+    id: "t6-two",
+    name: "Plasser to",
+    ...TUT_LOOK,
+    only: ["cube", "orange"],
+    spawn: { cube: { pos: [-0.9, 0.6, 2.4] }, orange: { pos: [0.9, 0.45, 2.4] } },
+    place: [
+      { id: "cube", nx: -0.4, nz: -0.45 },
+      { id: "orange", nx: 0.4, nz: -0.45 },
+    ],
+  },
+  { id: "t7-stack", name: "Stable", ...TUT_LOOK, stackAll: true },
+  {
+    id: "t8-rotate2",
+    name: "Roter to",
+    ...TUT_LOOK,
+    only: ["plank-long", "plank-short"],
+    spawn: {
+      "plank-long": { pos: [-1.0, 0.4, 2.4], rot: [0, Math.PI / 2, 0] },
+      "plank-short": { pos: [1.0, 0.4, 2.4], rot: [0, Math.PI / 2, 0] },
+    },
+    place: [
+      { id: "plank-long", nx: -0.45, nz: -0.4, align: "z" },
+      { id: "plank-short", nx: 0.45, nz: -0.4, align: "z" },
+    ],
+  },
+  { id: "t9-stack", name: "Stable", ...TUT_LOOK, stackAll: true },
+]
+
+// 11–19: nine stacking levels (calm look, subtly different backdrops)
+const STACK_BGS = ["#cdc6b8", "#c9bfb0", "#c4c8be", "#ccc3b3", "#c6c0b4", "#cebfac", "#c1c5bd", "#cac3b3", "#c5bdb0"]
+const STACK_LEVELS: EnvConfig[] = STACK_BGS.map((bg, i) => ({
+  id: `stack-${i}`,
+  name: `Stable ${i + 2}`,
+  ...TUT_LOOK,
+  bg,
+  stackAll: true,
+}))
+
+// 26–49: the "cube-walk" section – one tip-walked maze + piloted solo stages of
+// rising reach. 50 closes the game by assembling the totem figure.
+const CW_BLOCKS = ["cube", "plank-long", "plank-short", "orange", "cylinder"]
+const SOLO_LOOK = {
+  bg: "#0c0b0a",
+  keyColor: "#fff1dc",
+  keyIntensity: 1.8,
+  contact: { color: "#000000", opacity: 0.4 },
+  bloom: true,
+}
+const CUBEWALK_LEVELS: EnvConfig[] = [
+  { ...base("maze"), id: "cw-maze", name: "Labyrint" },
+  ...Array.from({ length: 23 }, (_, i) => {
+    const b = CW_BLOCKS[i % CW_BLOCKS.length]
+    const bnd = 4 + (i % 4) // roam radius grows 4..7 for gentle difficulty
+    return {
+      id: `cw-${i}`,
+      name: `Gå ${i + 1}`,
+      ...SOLO_LOOK,
+      solo: b,
+      soloStart: [-(bnd - 1), bnd - 1] as [number, number],
+      soloGoal: [bnd - 1, -(bnd - 1)] as [number, number],
+      soloBound: bnd,
+    }
+  }),
+]
+
+// The curated 50-level journey, in two sections.
+const ENVIRONMENTS: EnvConfig[] = [
+  ...TUTORIAL_ENVIRONMENTS, // 1–5  intro: place, rotate, stand, place-all, stack
+  ...INTRO_REST, // 6–9  more intro practice (same calm background)
+  { ...base("video"), id: "video", name: "Film", plate: undefined, watchVideo: true }, // 10 watch to the end
+  ...STACK_LEVELS, // 11–19 stacking
+  { ...base("glass"), id: "soundbox", look: "glass", name: "Lydboks", corners: undefined, reactive: true, notes: 12 }, // 20 play 12 notes
+  base("gold"), // 21
+  base("peel"), // 22
+  base("playmat"), // 23
+  base("texturemiss"), // 24
+  { ...base("magnet"), id: "magnet", name: "Rommet" }, // 25 the space room closes section one
+  ...CUBEWALK_LEVELS, // 26–49 cube-walk
+  { ...base("five"), id: "five", name: "Totem" }, // 50 assemble the figure
+]
 
 // Public level list (id + name, in play order) for the title/level-select UI.
 export const LEVELS: { id: string; name: string }[] = ENVIRONMENTS.map((e) => ({ id: e.id, name: e.name }))
@@ -927,6 +1017,7 @@ type RoomProps = {
   shadowSpan: number
   roughMap: THREE.Texture
   muted: boolean // global mute state (drives the video room's audio)
+  revealRef?: React.MutableRefObject<boolean> // some rooms (video watch level) raise the solve here
 }
 
 // glass floor is tiled into chunky ~1.9-unit bricks; the glow snaps to this grid
@@ -3038,7 +3129,8 @@ function soloStep(id: string): [number, number] {
 // piloted block stays the clear focus).
 function SoloRoom({ env }: RoomProps) {
   const [sx, sz] = soloStep(env.solo ?? "")
-  const [gx, gz] = [SOLO_GOAL[0] * sx, SOLO_GOAL[1] * sz]
+  const goal = env.soloGoal ?? SOLO_GOAL
+  const [gx, gz] = [goal[0] * sx, goal[1] * sz]
   return (
     <>
       <ambientLight intensity={0.42} color="#fff1df" />
@@ -3061,13 +3153,19 @@ function SoloController({
   blockId,
   bodies,
   revealRef,
+  start = SOLO_START,
+  goal = SOLO_GOAL,
+  bound = SOLO_BOUND,
 }: {
   blockId: string
   bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
   revealRef: React.MutableRefObject<boolean>
+  start?: [number, number]
+  goal?: [number, number]
+  bound?: number
 }) {
   const camera = useThree((s) => s.camera)
-  const cell = useRef<[number, number]>([...SOLO_START])
+  const cell = useRef<[number, number]>([...start])
   const heldDir = useRef<[number, number] | null>(null)
   const baseQ = useRef(new THREE.Quaternion())
   const hop = useRef<{
@@ -3092,14 +3190,14 @@ function SoloController({
   const [stepX, stepZ] = soloStep(blockId)
 
   useEffect(() => {
-    cell.current = [...SOLO_START]
+    cell.current = [...start]
     hop.current = null
     heldDir.current = null
     baseQ.current = new THREE.Quaternion()
     const body = bodies.current[blockId]
     if (body) {
       body.setBodyType(BODY_KINEMATIC_POSITION, true)
-      body.setTranslation({ x: SOLO_START[0] * stepX, y: CARRY, z: SOLO_START[1] * stepZ }, true)
+      body.setTranslation({ x: start[0] * stepX, y: CARRY, z: start[1] * stepZ }, true)
       body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true)
     }
     return () => {
@@ -3116,7 +3214,7 @@ function SoloController({
       camY.current = null
       revealRef.current = false
     }
-  }, [blockId, bodies, revealRef, camera])
+  }, [blockId, bodies, revealRef, camera, start])
 
   useEffect(() => {
     const keys = new Set<string>()
@@ -3187,7 +3285,7 @@ function SoloController({
     body.wakeUp()
     cool.current = Math.max(0, cool.current - dt)
 
-    const atGoal = () => cell.current[0] === SOLO_GOAL[0] && cell.current[1] === SOLO_GOAL[1]
+    const atGoal = () => cell.current[0] === goal[0] && cell.current[1] === goal[1]
 
     if (hop.current) {
       const H = hop.current
@@ -3215,8 +3313,8 @@ function SoloController({
       body.setNextKinematicRotation({ x: baseQ.current.x, y: baseQ.current.y, z: baseQ.current.z, w: baseQ.current.w })
       if (heldDir.current && cool.current === 0 && !revealRef.current) {
         const [dx, dy] = heldDir.current
-        const tx = THREE.MathUtils.clamp(gx + dx, -SOLO_BOUND, SOLO_BOUND)
-        const ty = THREE.MathUtils.clamp(gy + dy, -SOLO_BOUND, SOLO_BOUND)
+        const tx = THREE.MathUtils.clamp(gx + dx, -bound, bound)
+        const ty = THREE.MathUtils.clamp(gy + dy, -bound, bound)
         if (tx !== gx || ty !== gy) {
           const mv = FIVE_MOVE[blockId] ?? { angle: Math.PI / 2, dur: 0.2 }
           const axis = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx, 0, dy)).normalize()
@@ -3257,7 +3355,7 @@ function SoloController({
     }
     flashT.current = Math.max(0, flashT.current - dt * 0.6)
     if (flash.current) {
-      flash.current.position.set(SOLO_GOAL[0] * stepX, 2, SOLO_GOAL[1] * stepZ)
+      flash.current.position.set(goal[0] * stepX, 2, goal[1] * stepZ)
       flash.current.intensity = flashT.current * 120
     }
   })
@@ -3430,7 +3528,8 @@ function TextureMissRoom({ box, visibleWalls }: RoomProps) {
 // through a low-res CRT shader so each surface reads as an old TV display.
 // The <video> + VideoTexture are created inside the effect (one per mount) so
 // React StrictMode's mount/unmount/mount can't leave a dead, src-less element.
-function VideoRoom({ box, visibleWalls, muted }: RoomProps) {
+function VideoRoom({ env, box, visibleWalls, muted, revealRef }: RoomProps) {
+  const watch = env.watchVideo === true
   const [tex, setTex] = useState<THREE.VideoTexture | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const mutedRef = useRef(muted)
@@ -3460,7 +3559,7 @@ function VideoRoom({ box, visibleWalls, muted }: RoomProps) {
     if (typeof document === "undefined") return
     const v = document.createElement("video")
     v.src = "/videoplayback.mp4"
-    v.loop = true
+    v.loop = !watch // the watch-to-the-end level plays once, then solves
     v.muted = true
     v.defaultMuted = true
     v.playsInline = true
@@ -3490,11 +3589,17 @@ function VideoRoom({ box, visibleWalls, muted }: RoomProps) {
       v.muted = mutedRef.current
       start()
     }
+    // the watch level is solved when the clip reaches its end
+    const onEnded = () => {
+      if (watch && revealRef) revealRef.current = true
+    }
+    v.addEventListener("ended", onEnded)
     start()
     window.addEventListener("pointerdown", onGesture)
     window.addEventListener("touchend", onGesture)
 
     return () => {
+      v.removeEventListener("ended", onEnded)
       window.removeEventListener("pointerdown", onGesture)
       window.removeEventListener("touchend", onGesture)
       v.pause()
@@ -3872,12 +3977,24 @@ function SceneContents({
   }, [])
   // a block striking a reactive floor lights a (dim) tile AND plays its note
   const reactive = env.reactive === true
+  // soundbox: count the notes the player strikes; solve once they've played enough
+  const noteCount = useRef(0)
+  const noteTarget = env.notes ?? 0
+  useEffect(() => {
+    noteCount.current = 0
+  }, [env.id])
   const onBlockImpact = useCallback(
     (x: number, z: number, strength: number) => {
       pushGlow(x, z, strength)
-      if (reactive) playTone(tileFreq(x, z), strength)
+      if (reactive && strength > 0.06) {
+        playTone(tileFreq(x, z), strength)
+        if (noteTarget > 0 && !revealRef.current) {
+          noteCount.current += 1
+          if (noteCount.current >= noteTarget) revealRef.current = true
+        }
+      }
     },
-    [pushGlow, reactive],
+    [pushGlow, reactive, noteTarget],
   )
 
   /* ---- keep the shadow camera in sync when the box resizes ---- */
@@ -4318,7 +4435,7 @@ function SceneContents({
       </RigidBody>
 
       {/* environment-specific room: floor, walls, fill lighting */}
-      <Room env={env} box={box} visibleWalls={visibleWalls} shadowSpan={shadowSpan} roughMap={roughMap} muted={muted} />
+      <Room env={env} box={box} visibleWalls={visibleWalls} shadowSpan={shadowSpan} roughMap={roughMap} muted={muted} revealRef={revealRef} />
 
       {/* reactive floor: tiles flash where blocks strike, brightness ~ force */}
       <ImpactGlows poolRef={glowPool} active={!!env.reactive} tile={GLASS_TILE} />
@@ -4357,7 +4474,16 @@ function SceneContents({
       {env.five && <FiveController bodies={bodies} box={box} revealRef={revealRef} />}
 
       {/* solo stage: pilot just one block (its own move set) to the exit */}
-      {env.solo && <SoloController blockId={env.solo} bodies={bodies} revealRef={revealRef} />}
+      {env.solo && (
+        <SoloController
+          blockId={env.solo}
+          bodies={bodies}
+          revealRef={revealRef}
+          start={env.soloStart}
+          goal={env.soloGoal}
+          bound={env.soloBound}
+        />
+      )}
 
       {/* tutorial: drag each block into its outline (with the right orientation) */}
       {env.place && <PlaceController specs={env.place} bodies={bodies} box={box} revealRef={revealRef} />}
