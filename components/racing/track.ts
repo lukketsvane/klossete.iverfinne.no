@@ -43,11 +43,11 @@ export type Track = {
   length: number
 }
 
-const SEG = 3.4 // spacing between centreline samples
-const COUNT = 300 // ~1000 units of road
-const HALF_W = 4.0 // road half-width
-const CURB_W = 0.8 // raised lip width either side
-const CURB_H = 1.7 // lip height — a real wall that bounces the can back on
+const SEG = 4.0 // spacing between centreline samples
+const COUNT = 360 // ~1440 units of road
+const HALF_W = 5.5 // road half-width — a big, drivable course
+const CURB_W = 1.2 // raised lip width either side
+const CURB_H = 2.0 // lip height — a real wall that bounces the can back on
 
 // Road + curb cross-section, as (across, height) pairs. The two middle points
 // are the flat road; the outer two are the curb crests.
@@ -82,7 +82,7 @@ export function buildTrack(seed = 7): Track {
     let curv = 0.05 * Math.sin(s * 0.020 + 1.0) + 0.034 * Math.sin(s * 0.057 + 3.0) + 0.02 * Math.sin(s * 0.011 + 0.4)
     curv += (rng() - 0.5) * 0.012
     curv *= active
-    curv = THREE.MathUtils.clamp(curv, -0.085, 0.085)
+    curv = THREE.MathUtils.clamp(curv, -0.06, 0.06) // flowing turns on a big course
 
     // Downhill grade — always present (so the can rolls from the line) and
     // breathing between shallow and steeper pitches further along. Kept lively

@@ -16,12 +16,13 @@ const HAZE = "#d9d3c7"
 // The player is the very same red cylinder block used in the puzzle levels.
 const CAN_GLB = "/block_red_cylinder.glb"
 const CAN_GLB_R = 0.675 // the block's native cylinder radius before scaling
-const CAN_R = 0.72 // rolling radius we want on the track (physics + roll)
+const CAN_R = 0.95 // rolling radius we want on the track (physics + roll)
 const CAN_SCALE = CAN_R / CAN_GLB_R
-const MAX_SPEED = 20
-const STEER = 17 // lateral acceleration from a full left/right input
-const CAM_BACK = 7.5 // how far behind the can the camera sits
-const CAM_UP = 2.8 // how far above
+const MAX_SPEED = 27
+const STEER = 24 // lateral acceleration from a full left/right input
+const CAM_BACK = 9 // how far behind the can the camera sits
+const CAM_UP = 3.3 // how far above
+const UP3 = new THREE.Vector3(0, 1, 0)
 
 type Phase = "ready" | "run" | "paused" | "finish"
 
@@ -276,7 +277,6 @@ function Scene({
   const canRef = useRef<THREE.Group>(null)
   const lightRef = useRef<THREE.DirectionalLight>(null)
   const lightTarget = useMemo(() => new THREE.Object3D(), [])
-  const dust = useDust()
   const camera = useThree((s) => s.camera)
 
   // Mutable sim state kept out of React.
@@ -284,15 +284,18 @@ function Scene({
     seg: 0, // nearest centreline index (monotonic-ish progress)
     checkpoint: 3, // sample index to respawn at
     time: 0,
-    roll: 0, // accumulated barrel-roll angle
+    q: new THREE.Quaternion(), // the can's visual orientation, integrated per-frame
     forward: track.startDir.clone(),
     camLook: new THREE.Vector3(), // smoothed camera aim point
     finished: false,
   }).current
 
-  // Seed the camera behind the start line and its aim down the course.
+  // Seed the camera behind the start line, its aim down the course, and the
+  // can's orientation so its length axis lies across the start direction.
   useEffect(() => {
     const f = track.startDir
+    const axis0 = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), f).normalize()
+    sim.q.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis0)
     sim.camLook.copy(track.start).addScaledVector(f, 5)
     camera.position.copy(track.start).addScaledVector(f, -CAM_BACK).add(new THREE.Vector3(0, CAM_UP, 0))
     camera.lookAt(sim.camLook)
@@ -309,7 +312,7 @@ function Scene({
     sim.forward.copy(sm.t)
   }, [track, sim])
 
-  useFrame((state, dtRaw) => {
+  useFrame((_state, dtRaw) => {
     const dt = Math.min(dtRaw, 1 / 30) // clamped for stable physics impulses
     const rb = body.current
     if (!rb) return
@@ -378,15 +381,18 @@ function Scene({
       }
     }
 
-    // --- Visual barrel-roll: align the can's length across the travel
-    // direction and spin it about that axis by distance / radius.
-    const axis = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), fwd).normalize()
-    sim.roll += (speed / CAN_R) * dt
-    const qAlign = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis)
-    const qSpin = new THREE.Quaternion().setFromAxisAngle(axis, sim.roll)
+    // --- Visual barrel-roll, integrated incrementally so it never snaps when
+    // steering. Each frame we (1) yaw the can a hair so its length axis keeps
+    // lying across the travel direction, then (2) spin it about that axis by
+    // distance / radius. Small per-frame deltas avoid the twist ambiguity that a
+    // from-scratch alignment hits in the turns.
+    const targetAxis = new THREE.Vector3().crossVectors(UP3, fwd).normalize()
+    const curAxis = UP3.clone().applyQuaternion(sim.q).normalize()
+    sim.q.premultiply(new THREE.Quaternion().setFromUnitVectors(curAxis, targetAxis))
+    sim.q.premultiply(new THREE.Quaternion().setFromAxisAngle(targetAxis, (speed / CAN_R) * dt))
     if (canRef.current) {
       canRef.current.position.copy(pos)
-      canRef.current.quaternion.copy(qSpin.multiply(qAlign))
+      canRef.current.quaternion.copy(sim.q)
     }
 
     // --- Chase camera. The rig is pinned a fixed distance directly behind and
@@ -407,8 +413,6 @@ function Scene({
       lightTarget.position.copy(pos)
       lightTarget.updateMatrixWorld()
     }
-
-    dust.update(dt, pos, fwd, speed, sm.p.y, state.camera as THREE.PerspectiveCamera)
   })
 
   return (
@@ -459,8 +463,6 @@ function Scene({
       <group ref={canRef}>
         <Can />
       </group>
-
-      <primitive object={dust.group} />
     </>
   )
 }
@@ -539,87 +541,3 @@ function Can() {
   return <primitive object={model} scale={CAN_SCALE} dispose={null} />
 }
 useGLTF.preload(CAN_GLB)
-
-/* ------------------------------------------------------------------------- */
-/*  Dust trail: a pool of billboarded smoke sprites kicked up behind the can. */
-/* ------------------------------------------------------------------------- */
-const DUST_N = 22
-function useDust() {
-  return useMemo(() => {
-    const group = new THREE.Group()
-    const tex = makePuffTexture()
-    const sprites: THREE.Sprite[] = []
-    const life = new Float32Array(DUST_N)
-    const grow = new Float32Array(DUST_N)
-    for (let i = 0; i < DUST_N; i++) {
-      const mat = new THREE.SpriteMaterial({
-        map: tex,
-        color: new THREE.Color("#c9c2b4"),
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-      })
-      const sp = new THREE.Sprite(mat)
-      sp.scale.setScalar(0.01)
-      group.add(sp)
-      sprites.push(sp)
-    }
-    let next = 0
-    let acc = 0
-
-    const update = (
-      dt: number,
-      pos: THREE.Vector3,
-      fwd: THREE.Vector3,
-      speed: number,
-      _roadY: number,
-      _cam: THREE.PerspectiveCamera,
-    ) => {
-      // age live puffs
-      for (let i = 0; i < DUST_N; i++) {
-        if (life[i] <= 0) continue
-        life[i] -= dt
-        const sp = sprites[i]
-        const k = Math.max(0, life[i])
-        sp.material.opacity = k * 0.5
-        sp.scale.setScalar(0.4 + grow[i] * (1 - k))
-        sp.position.y += dt * 0.4
-      }
-      // spawn behind the can while it's moving
-      if (speed > 6) {
-        acc += dt * (speed * 0.12)
-        while (acc > 0.05) {
-          acc -= 0.05
-          const sp = sprites[next]
-          sp.position
-            .copy(pos)
-            .addScaledVector(fwd, -CAN_R)
-            .add(new THREE.Vector3((Math.random() - 0.5) * 0.7, -CAN_R + 0.15, (Math.random() - 0.5) * 0.7))
-          life[next] = 0.7 + Math.random() * 0.4
-          grow[next] = 1.6 + Math.random() * 1.4
-          sp.material.opacity = 0.45
-          sp.scale.setScalar(0.4)
-          next = (next + 1) % DUST_N
-        }
-      }
-    }
-    return { group, update }
-  }, [])
-}
-
-function makePuffTexture() {
-  if (typeof document === "undefined") return null
-  const s = 64
-  const c = document.createElement("canvas")
-  c.width = c.height = s
-  const ctx = c.getContext("2d")!
-  const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2)
-  g.addColorStop(0, "rgba(255,255,255,0.9)")
-  g.addColorStop(0.5, "rgba(255,255,255,0.35)")
-  g.addColorStop(1, "rgba(255,255,255,0)")
-  ctx.fillStyle = g
-  ctx.fillRect(0, 0, s, s)
-  const tex = new THREE.CanvasTexture(c)
-  tex.needsUpdate = true
-  return tex
-}
