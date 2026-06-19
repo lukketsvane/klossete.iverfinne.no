@@ -1149,10 +1149,40 @@ function placeZones(specs: PlaceSpec[], box: Box): PlaceZone[] {
   })
 }
 
-// Calm, plain floor with the target outlines drawn on it (and a stack pad for
-// the stacking stage). No photo tiles, so the lesson stays the focus.
+// Hand-drawn crayon footprints used to mark where each block goes (replacing the
+// thin vector outlines). One per shape + orientation.
+const SILHOUETTES = [
+  "/silhouettes/cube.png",
+  "/silhouettes/orange.png",
+  "/silhouettes/plank-long-tall.png",
+  "/silhouettes/plank-long-wide.png",
+  "/silhouettes/plank-short-tall.png",
+  "/silhouettes/plank-short-wide.png",
+  "/silhouettes/cylinder-circle.png",
+  "/silhouettes/cylinder-rect.png",
+]
+function zoneSilhouette(z: PlaceZone): string {
+  if (z.id === "cube") return "/silhouettes/cube.png"
+  if (z.id === "orange") return "/silhouettes/orange.png"
+  if (z.id === "cylinder") return z.upright ? "/silhouettes/cylinder-circle.png" : "/silhouettes/cylinder-rect.png"
+  const tall = z.hz >= z.hx
+  if (z.id === "plank-long") return tall ? "/silhouettes/plank-long-tall.png" : "/silhouettes/plank-long-wide.png"
+  if (z.id === "plank-short") return tall ? "/silhouettes/plank-short-tall.png" : "/silhouettes/plank-short-wide.png"
+  return "/silhouettes/cube.png"
+}
+
+// Calm, plain floor with a hand-drawn crayon footprint marking each target (and
+// a stack pad for the stacking stage). No photo tiles, so the lesson stays the focus.
 function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
   const zones = useMemo(() => placeZones(env.place ?? [], box), [env.place, box.bx, box.bz])
+  const sils = useTexture(SILHOUETTES)
+  useMemo(() => {
+    sils.forEach((t) => {
+      t.colorSpace = THREE.SRGBColorSpace
+      t.anisotropy = 4
+    })
+  }, [sils])
+  const texOf = (url: string) => sils[SILHOUETTES.indexOf(url)]
   return (
     <>
       <ambientLight intensity={0.5} color="#fff3e3" />
@@ -1162,33 +1192,22 @@ function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
         <meshStandardMaterial color="#c7c0b1" roughness={0.95} metalness={0} />
       </mesh>
 
-      {zones.map((z) => (
-        <group key={z.id} position={[z.x, 0.014, z.z]} rotation={[-Math.PI / 2, 0, 0]}>
-          {z.shape === "cylinder" && z.upright ? (
-            <>
-              <mesh>
-                <circleGeometry args={[z.radius + 0.22, 40]} />
-                <meshBasicMaterial color={z.color} transparent opacity={0.22} />
-              </mesh>
-              <lineSegments>
-                <edgesGeometry args={[new THREE.CircleGeometry(z.radius + 0.22, 40)]} />
-                <lineBasicMaterial color={z.color} transparent opacity={0.85} toneMapped={false} />
-              </lineSegments>
-            </>
-          ) : (
-            <>
-              <mesh>
-                <planeGeometry args={[(z.hx + 0.22) * 2, (z.hz + 0.22) * 2]} />
-                <meshBasicMaterial color={z.color} transparent opacity={0.22} />
-              </mesh>
-              <lineSegments>
-                <edgesGeometry args={[new THREE.PlaneGeometry((z.hx + 0.22) * 2, (z.hz + 0.22) * 2)]} />
-                <lineBasicMaterial color={z.color} transparent opacity={0.85} toneMapped={false} />
-              </lineSegments>
-            </>
-          )}
-        </group>
-      ))}
+      {zones.map((z) => {
+        const fpX = z.shape === "cylinder" && z.upright ? z.radius : z.hx
+        const fpZ = z.shape === "cylinder" && z.upright ? z.radius : z.hz
+        return (
+          <mesh key={z.id} position={[z.x, 0.02, z.z]} rotation={[-Math.PI / 2, 0, 0]}>
+            <planeGeometry args={[fpX * 2 + 0.5, fpZ * 2 + 0.5]} />
+            <meshBasicMaterial
+              map={texOf(zoneSilhouette(z))}
+              transparent
+              opacity={0.62}
+              depthWrite={false}
+              toneMapped={false}
+            />
+          </mesh>
+        )
+      })}
 
       {env.stackAll && (
         <group position={[0, 0.014, 0]} rotation={[-Math.PI / 2, 0, 0]}>
