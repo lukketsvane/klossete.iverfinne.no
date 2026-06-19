@@ -19,6 +19,7 @@ import { CameraRig } from "@/components/engine/CameraRig"
 import { PostFx } from "@/components/engine/PostFx"
 import { CRT_VERT, CRT_FRAG, PEEL_FRAG, MISS_FRAG, GRID_FRAG } from "@/components/rooms/shaders"
 import { getProgress, markSolved, setCurrent } from "@/lib/progression"
+import { setSound, setTiltPref } from "@/lib/settings"
 import {
   CAM_FOV,
   FLOOR,
@@ -4049,15 +4050,19 @@ function SceneContents({
 /* ------------------------------------------------------------------ */
 export default function WoodenBlocks({
   initialLevel,
+  initialMuted = false,
+  initialTilt = false,
   onExit,
 }: {
   initialLevel?: number
+  initialMuted?: boolean
+  initialTilt?: boolean
   onExit?: () => void
 } = {}) {
   const [measureMode, setMeasureMode] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [tiltOn, setTiltOn] = useState(false)
-  const [muted, setMutedState] = useState(false)
+  const [muted, setMutedState] = useState(initialMuted)
   const [envIndex, setEnvIndex] = useState(0)
   const env = ENVIRONMENTS[envIndex] ?? ENVIRONMENTS[0] // never crash on a stale/out-of-range index
   const resetRef = useRef<() => void>(() => {})
@@ -4242,11 +4247,18 @@ export default function WoodenBlocks({
     return () => window.removeEventListener("deviceorientation", onOrient)
   }, [onOrient])
 
+  const enableTilt = useCallback(() => {
+    window.addEventListener("deviceorientation", onOrient)
+    tiltRef.current.enabled = true
+    setTiltOn(true)
+  }, [onOrient])
+
   const toggleTilt = useCallback(async () => {
     if (tiltOn) {
       window.removeEventListener("deviceorientation", onOrient)
       tiltRef.current.enabled = false
       setTiltOn(false)
+      setTiltPref(false)
       return
     }
 
@@ -4261,10 +4273,18 @@ export default function WoodenBlocks({
       return
     }
 
-    window.addEventListener("deviceorientation", onOrient)
-    tiltRef.current.enabled = true
-    setTiltOn(true)
-  }, [tiltOn, onOrient])
+    enableTilt()
+    setTiltPref(true)
+  }, [tiltOn, onOrient, enableTilt])
+
+  // Honour the menu's saved preferences on entry: start muted/tilted if the
+  // player chose so on the title screen (tilt permission was already granted
+  // there, so we can attach the listener straight away).
+  useEffect(() => {
+    setMuted(initialMuted)
+    if (initialTilt) enableTilt()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <div
@@ -4340,6 +4360,7 @@ export default function WoodenBlocks({
             const next = !muted
             setMutedState(next)
             setMuted(next)
+            setSound(!next) // keep the menu's saved preference in sync
           }}
           className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full opacity-40 transition hover:opacity-90"
         >
