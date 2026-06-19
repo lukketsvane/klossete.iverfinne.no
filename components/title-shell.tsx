@@ -9,7 +9,7 @@ import { setMuted } from "@/lib/impact-sound"
 
 type Screen = "title" | "game"
 type Overlay = null | "levels" | "help"
-const GRID = 25 // 5 × 5 board (levels beyond the ones built read as "locked")
+const GRID = LEVELS.length // one cell per built level
 const SOLVED_COLORS = ["#2b56be", "#eb7f37", "#78b2d6", "#d14332"]
 
 export default function TitleShell() {
@@ -225,7 +225,7 @@ function LevelOverlay({
           </button>
         </div>
 
-        <div className="grid w-full grid-cols-5 gap-2.5">
+        <div className="grid max-h-[60vh] w-full grid-cols-5 gap-2.5 overflow-y-auto">
           {Array.from({ length: GRID }, (_, i) => {
             const level = LEVELS[i]
             const exists = i < LEVELS.length
