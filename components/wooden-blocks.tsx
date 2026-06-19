@@ -346,6 +346,7 @@ type EnvConfig = {
   // ---- tutorial stages: a clean room that teaches one skill at a time ----
   only?: string[] // restrict which blocks appear (the rest of the five stay hidden)
   hint?: string // a short on-screen Nynorsk instruction
+  pictogram?: string // a crayon gesture pictogram shown briefly when the level opens
   spawn?: Record<string, { pos: [number, number, number]; rot?: [number, number, number] }> // per-block start override
   place?: PlaceSpec[] // drag each listed block into its outlined target (with orientation rules)
   stackAll?: boolean // win by stacking blocks into one tower
@@ -523,6 +524,10 @@ const TUT_LOOK = {
   contact: { color: "#332b20", opacity: 0.42 },
   bloom: false,
 }
+// Crayon gesture pictograms shown briefly when a tutorial level opens.
+const PICTO_DRAG = "/pictograms/one-finger.png" // 1-finger drag to move
+const PICTO_ROTATE = "/pictograms/rotate-crayon.png" // 2-finger twist to yaw
+const PICTO_SWIPE = "/pictograms/swipe-vertical.png" // 2-finger swipe to flip a face
 const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
   {
     id: "t1-place",
@@ -530,6 +535,7 @@ const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
     ...TUT_LOOK,
     only: ["cube"],
     hint: "Dra klossen inn i ruta.",
+    pictogram: PICTO_DRAG,
     spawn: { cube: { pos: [0, 0.6, 2.4] } },
     place: [{ id: "cube", nx: 0, nz: -0.5 }],
   },
@@ -538,7 +544,8 @@ const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
     name: "Roter",
     ...TUT_LOOK,
     only: ["plank-long"],
-    hint: "Knip med to fingrar og roter planken så han passar i ruta.",
+    hint: "Roter med to fingrar så planken passar i ruta.",
+    pictogram: PICTO_ROTATE,
     spawn: { "plank-long": { pos: [0, 0.4, 2.4], rot: [0, Math.PI / 2, 0] } }, // long side across
     place: [{ id: "plank-long", nx: 0, nz: -0.4, align: "z" }], // must turn it upright on screen
   },
@@ -547,7 +554,8 @@ const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
     name: "Reis sylinderen",
     ...TUT_LOOK,
     only: ["cylinder"],
-    hint: "Knip og roter for å reise sylinderen på enden, så set han i ringen.",
+    hint: "Sveip med to fingrar for å reise sylinderen, så set han i ringen.",
+    pictogram: PICTO_SWIPE,
     spawn: { cylinder: { pos: [0, 0.55, 2.4], rot: [Math.PI / 2, 0, 0] } }, // lying on its side
     place: [{ id: "cylinder", nx: 0, nz: -0.4, upright: true }],
   },
@@ -556,6 +564,7 @@ const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
     name: "Alle fem",
     ...TUT_LOOK,
     hint: "Få alle fem klossane på rett plass.",
+    pictogram: PICTO_DRAG,
     place: [
       { id: "cube", nx: -0.5, nz: -0.55 },
       { id: "orange", nx: 0.5, nz: -0.55 },
@@ -569,6 +578,7 @@ const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
     name: "Stable",
     ...TUT_LOOK,
     hint: "Stable alle fem oppå kvarandre.",
+    pictogram: PICTO_DRAG,
     stackAll: true,
   },
 ]
@@ -583,18 +593,20 @@ const INTRO_REST: EnvConfig[] = [
     name: "Plasser to",
     ...TUT_LOOK,
     only: ["cube", "orange"],
+    pictogram: PICTO_DRAG,
     spawn: { cube: { pos: [-0.9, 0.6, 2.4] }, orange: { pos: [0.9, 0.45, 2.4] } },
     place: [
       { id: "cube", nx: -0.4, nz: -0.45 },
       { id: "orange", nx: 0.4, nz: -0.45 },
     ],
   },
-  { id: "t7-stack", name: "Stable", ...TUT_LOOK, stackAll: true },
+  { id: "t7-stack", name: "Stable", ...TUT_LOOK, pictogram: PICTO_DRAG, stackAll: true },
   {
     id: "t8-rotate2",
     name: "Roter to",
     ...TUT_LOOK,
     only: ["plank-long", "plank-short"],
+    pictogram: PICTO_ROTATE,
     spawn: {
       "plank-long": { pos: [-1.0, 0.4, 2.4], rot: [0, Math.PI / 2, 0] },
       "plank-short": { pos: [1.0, 0.4, 2.4], rot: [0, Math.PI / 2, 0] },
@@ -604,7 +616,7 @@ const INTRO_REST: EnvConfig[] = [
       { id: "plank-short", nx: 0.45, nz: -0.4, align: "z" },
     ],
   },
-  { id: "t9-stack", name: "Stable", ...TUT_LOOK, stackAll: true },
+  { id: "t9-stack", name: "Stable", ...TUT_LOOK, pictogram: PICTO_DRAG, stackAll: true },
 ]
 
 // 11–19: nine stacking levels (calm look, subtly different backdrops). Rather
@@ -3555,7 +3567,15 @@ function SceneContents({
   useEffect(() => {
     revealRef.current = false // reset the reveal when the environment changes
     solvedFired.current = false
-  }, [env.id])
+    // Drop any held block on a level change: the previous level's bodies are
+    // about to unmount, and a servo still holding one would call methods on a
+    // removed body and throw, freezing the whole scene. Releasing here means the
+    // next level always starts interactive. (Common path: you solve a level
+    // while still holding the piece, then it auto-advances under your finger.)
+    drag.current = null
+    twist.current = null
+    grabbingRef.current = false
+  }, [env.id, grabbingRef])
   // Watch the per-room win signal and fire onSolved exactly once when solved.
   useFrame(() => {
     const solved = revealRef.current
@@ -3709,6 +3729,12 @@ function SceneContents({
       const d = drag.current
       if (!d) return
       el.style.cursor = "grab"
+      if (!d.body.isValid()) {
+        drag.current = null
+        twist.current = null
+        grabbingRef.current = false
+        return
+      }
       // A quick tap (short hold, barely moved) should leave the block where it
       // is, not send it drifting – the carry ramp can impart a little stray
       // velocity that otherwise feels like losing control. Kill all motion in
@@ -3789,7 +3815,7 @@ function SceneContents({
         lastBuzz = now
         haptic(2 + squeeze * 10) // tighter pinch -> stronger buzz
       }
-      // twist -> free rotation (yaw; the cylinder tips about its side instead)
+      // twist -> free yaw (same for every block, the cylinder included)
       const tw = twist.current
       if (tw) tw.delta = -wrap(twoAngle(e) - tw.start)
 
@@ -3853,12 +3879,12 @@ function SceneContents({
   useEffect(() => {
     const el = gl.domElement
     const UP = new THREE.Vector3(0, 1, 0)
-    const SIDE = new THREE.Vector3(1, 0, 0)
     const rotateHeld = (angle: number) => {
       const d = drag.current
       if (!d) return
-      // the cylinder tips about a horizontal axis (to stand on its end); boxes yaw
-      const axis = d.block.shape === "cylinder" ? SIDE : UP
+      // every block yaws the same way; standing a piece on a different face is the
+      // two-finger swipe (a 90° flip), so the cylinder reads exactly like the rest
+      const axis = UP
       const r = d.body.rotation()
       const q = new THREE.Quaternion().setFromAxisAngle(axis, angle).multiply(new THREE.Quaternion(r.x, r.y, r.z, r.w))
       d.body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
@@ -3904,6 +3930,14 @@ function SceneContents({
   useFrame((_state, delta) => {
     const d = drag.current
     if (!d) return
+    // Belt-and-braces: if the held body was removed (a level swap mid-grab), drop
+    // it instead of calling into a dead body and throwing (which freezes the loop).
+    if (!d.body.isValid()) {
+      drag.current = null
+      twist.current = null
+      grabbingRef.current = false
+      return
+    }
     const dt = THREE.MathUtils.clamp(delta, 1 / 240, 1 / 30)
 
     const held = (performance.now() - d.grabTime) / 1000
@@ -3980,12 +4014,11 @@ function SceneContents({
     )
     if (twisting && tw) {
       // a second finger is twisting: ease the orientation toward the gesture
-      // target instead of snapping to it. A box yaws about world-Y; the cylinder
-      // is symmetric about its axis, so for it the same twist instead tips it
-      // about a horizontal axis — that's how you stand it up on its end. The
-      // 90° swipe-flips bake into tw.base, so they ride this same easing and
-      // turn over smoothly too.
-      const axis = d.block.shape === "cylinder" ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)
+      // target instead of snapping to it. Every block yaws about world-Y the same
+      // way (the cylinder included), so the control is identical across pieces;
+      // choosing which face to stand on is the two-finger swipe, whose 90° flips
+      // bake into tw.base and ride this same easing so they turn over smoothly.
+      const axis = new THREE.Vector3(0, 1, 0)
       const targetQ = new THREE.Quaternion().setFromAxisAngle(axis, tw.delta).multiply(tw.base)
       const cur = new THREE.Quaternion(r.x, r.y, r.z, r.w)
       // angle still to turn, and the most we may turn this frame (speed cap)
@@ -4193,22 +4226,26 @@ export default function WoodenBlocks({
   const [tiltOn, setTiltOn] = useState(false)
   const [muted, setMutedState] = useState(initialMuted)
   const [envIndex, setEnvIndex] = useState(0)
+  const [pictoShown, setPictoShown] = useState(true) // tutorial gesture hint, fades after a beat
   const env = ENVIRONMENTS[envIndex] ?? ENVIRONMENTS[0] // never crash on a stale/out-of-range index
   const resetRef = useRef<() => void>(() => {})
   // linear progression: remember the live level for stable callbacks + guard
   const currentRef = useRef(0)
   currentRef.current = envIndex
   const advancing = useRef(false)
+  const advanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // A level was solved (its secret found): record it, let the victory play, then
-  // advance to the next level and reset the pieces. Manual navigation still works
-  // for the rooms that don't yet have a key.
+  // ALWAYS advance to the next level and reset the pieces – including when this
+  // level (or later ones) were already cleared before, so finishing anything
+  // moves you forward. Manual navigation still works for any key-less rooms.
   const onSolved = useCallback(() => {
     if (advancing.current) return
     advancing.current = true
     const solvedId = ENVIRONMENTS[currentRef.current]?.id
     if (solvedId) markSolved(solvedId)
-    window.setTimeout(() => {
+    advanceTimer.current = setTimeout(() => {
+      advanceTimer.current = null
       const next = Math.min(currentRef.current + 1, ENVIRONMENTS.length - 1)
       setCurrent(Math.max(getProgress().current, next)) // never regress saved progress when replaying
       setEnvIndex(next)
@@ -4216,6 +4253,29 @@ export default function WoodenBlocks({
       advancing.current = false
     }, 2600)
   }, [])
+
+  // If the level changes by any other route (number keys, the level picker)
+  // while a win is still celebrating, cancel the pending auto-advance and clear
+  // the guard – so a manual jump is never overridden and the guard can't stick,
+  // keeping auto-progression reliable on the very next solve.
+  useEffect(() => {
+    return () => {
+      if (advanceTimer.current) {
+        clearTimeout(advanceTimer.current)
+        advanceTimer.current = null
+      }
+      advancing.current = false
+    }
+  }, [envIndex])
+
+  // Tutorial gesture pictogram: show it when a level with one opens, then fade it
+  // out after a few seconds so it guides without staying in the way.
+  useEffect(() => {
+    if (!env.pictogram) return
+    setPictoShown(true)
+    const t = setTimeout(() => setPictoShown(false), 4200)
+    return () => clearTimeout(t)
+  }, [envIndex, env.pictogram])
   const tiltRef = useRef<TiltState>({ enabled: false, beta: 0, gamma: 0, sx: 0, sz: 0 })
   const iconRef = useRef<HTMLSpanElement>(null)
   // true while a block is held – so a 2nd finger squeezes it instead of the
@@ -4443,6 +4503,18 @@ export default function WoodenBlocks({
         {/* shared realism post-processing (AO, bloom, vignette, ACES, SMAA) */}
         <PostFx envId={env.id} />
       </Canvas>
+
+      {/* tutorial gesture pictogram: a crayon hint near the top that fades out */}
+      {env.pictogram && (
+        <img
+          src={env.pictogram}
+          alt=""
+          aria-hidden
+          className={`pointer-events-none absolute left-1/2 top-[14%] w-24 -translate-x-1/2 select-none transition-opacity duration-1000 ease-out ${
+            pictoShown ? "opacity-70" : "opacity-0"
+          }`}
+        />
+      )}
 
       {/* UI – control cluster pinned to the top-left corner. Always faintly
           visible so it's never lost, brightening when the pointer comes near.

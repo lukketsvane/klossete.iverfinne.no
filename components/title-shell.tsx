@@ -323,8 +323,8 @@ function HelpOverlay({ onClose }: { onClose: () => void }) {
 
         <div className="flex flex-col gap-3 text-[15px] leading-snug text-[#473f33]">
           <ControlRow icon="/pictograms/one-finger.png" label="Dra med éin finger for å flytte klossen." />
-          <ControlRow icon="/pictograms/two-finger-swipe.png" label="Sveip med to fingrar for å snu klossen til neste side." />
-          <ControlRow icon="/pictograms/rotate.png" label="Roter med to fingrar for å vri klossen." />
+          <ControlRow icon="/pictograms/swipe-vertical.png" label="Sveip med to fingrar for å snu klossen til neste side." />
+          <ControlRow icon="/pictograms/rotate-crayon.png" label="Roter med to fingrar for å vri klossen." />
         </div>
 
         <div className="rounded-2xl bg-[#efe9dd] p-4 text-sm leading-snug text-[#6b6155]">
