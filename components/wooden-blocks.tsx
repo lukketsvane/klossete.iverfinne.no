@@ -395,8 +395,11 @@ type EnvConfig = {
 
 // A target outline a block must be dragged into. nx/nz are -1..1, scaled by the
 // tray; `upright` wants a cylinder stood on its end; `align` wants a plank's long
-// side pointing along that axis (so the player has to rotate it to fit).
-type PlaceSpec = { id: string; nx: number; nz: number; upright?: boolean; align?: "x" | "z" }
+// side pointing along that axis (so the player has to rotate it to fit). `tier`
+// stacks targets at the SAME spot: tier 0 sits on the floor, tier 1 must rest on
+// the tier-0 block, and so on — overlapping colour areas you can only satisfy by
+// stacking the pieces.
+type PlaceSpec = { id: string; nx: number; nz: number; upright?: boolean; align?: "x" | "z"; tier?: number }
 
 // An interior wall that splits the tray, with a single gap the player must steer a
 // block through to reach the far side. `axis` is the world axis the wall runs along
@@ -767,34 +770,38 @@ const MID_LEVELS: EnvConfig[] = [
       { id: "cylinder", nx: 0, nz: -0.25, upright: true },
     ],
   },
-  // 16 — a chevron / funnel pointing down the screen
+  // 16 — first stacking-by-overlap: the cube's area sits ON the orange's area, so
+  // the only way to fill both is to stack the cube on top of the orange.
   {
     id: "m-chevron",
-    name: "Vinkel",
+    name: "Oppå",
     ...TUT_LOOK,
     bg: "#c6c0b4",
+    hint: "Felta ligg oppå kvarandre – stable klossane.",
     place: [
-      { id: "plank-long", nx: -0.6, nz: -0.45, align: "z" },
-      { id: "plank-short", nx: 0.6, nz: -0.45, align: "z" },
-      { id: "cube", nx: -0.5, nz: 0.22 },
-      { id: "orange", nx: 0.5, nz: 0.22 },
-      { id: "cylinder", nx: 0, nz: 0.8, upright: true },
+      { id: "orange", nx: 0, nz: 0 },
+      { id: "cube", nx: 0, nz: 0, tier: 1 }, // stacked on the orange
+      { id: "plank-long", nx: -0.5, nz: -0.55, align: "z" },
+      { id: "plank-short", nx: 0.5, nz: -0.55, align: "z" },
+      { id: "cylinder", nx: 0, nz: 0.6, upright: true },
     ],
   },
   // 17 — change of pace: the full five-high tower
   { id: "m-stack5", name: "Stable 5", ...TUT_LOOK, bg: "#cebfac", stackAll: true, stackCount: 5 },
-  // 18 — a star: a centre point with the other four set around it
+  // 18 — double stack: two overlapping pairs (cube on orange, short plank on long
+  // plank) plus a free cylinder — two towers to build from overlapping areas.
   {
     id: "m-star",
-    name: "Stjerne",
+    name: "Dobbel",
     ...TUT_LOOK,
     bg: "#c1c5bd",
+    hint: "To felt-par ligg oppå kvarandre – bygg to stablar.",
     place: [
-      { id: "cylinder", nx: 0, nz: 0, upright: true },
-      { id: "cube", nx: -0.5, nz: -0.45 },
-      { id: "orange", nx: 0.5, nz: -0.45 },
-      { id: "plank-short", nx: -0.5, nz: 0.45, align: "z" },
-      { id: "plank-long", nx: 0.5, nz: 0.45, align: "z" },
+      { id: "orange", nx: -0.4, nz: -0.05 },
+      { id: "cube", nx: -0.4, nz: -0.05, tier: 1 },
+      { id: "plank-long", nx: 0.4, nz: -0.05, align: "z" },
+      { id: "plank-short", nx: 0.4, nz: -0.05, align: "z", tier: 1 },
+      { id: "cylinder", nx: 0, nz: 0.6, upright: true },
     ],
   },
   // 19 — the hardest: two offset walls make a sluice. Each piece has to zig-zag up
@@ -1341,9 +1348,10 @@ type Zone = {
 }
 /* ---- tutorial stages: place / rotate / stand / place-all / stack ---- */
 // A target outline (extends the sorting Zone with the orientation it wants).
-type PlaceZone = Zone & { upright: boolean; align?: "x" | "z" }
+type PlaceZone = Zone & { upright: boolean; align?: "x" | "z"; tier: number; expectedY: number }
 function placeZones(specs: PlaceSpec[], box: Box): PlaceZone[] {
-  return specs.flatMap((s) => {
+  // first pass: raw geometry per target
+  const raw = specs.flatMap((s) => {
     const b = BLOCKS.find((bb) => bb.id === s.id)
     if (!b) return []
     const isCyl = b.shape === "cylinder"
@@ -1367,24 +1375,39 @@ function placeZones(specs: PlaceSpec[], box: Box): PlaceZone[] {
       }
       restY = h[1]
     }
-    return [
-      {
-        id: s.id,
-        color: b.color,
-        shape: b.shape,
-        x: s.nx * box.bx,
-        z: s.nz * box.bz,
-        hx,
-        hz,
-        radius: isCyl ? b.radius : 0,
-        restY,
-        tolX: hx + 0.55,
-        tolZ: hz + 0.55,
-        upright: !!s.upright,
-        align: s.align,
-      } satisfies PlaceZone,
-    ]
+    return [{ s, b, isCyl, hx, hz, restY }]
   })
+  // group targets that share a spot so a tier-k target rests on the tiers below it.
+  // expectedY = (sum of full heights of the lower tiers at this spot) + own restY.
+  const spotKey = (s: PlaceSpec) => `${s.nx.toFixed(3)},${s.nz.toFixed(3)}`
+  const lowerHeight = new Map<string, number>() // running stack height per spot
+  // process tier-ascending so lower tiers contribute their height first
+  const order = raw.map((_, i) => i).sort((a, b) => (raw[a].s.tier ?? 0) - (raw[b].s.tier ?? 0))
+  const expected: number[] = new Array(raw.length)
+  for (const i of order) {
+    const { s, restY } = raw[i]
+    const key = spotKey(s)
+    const base = lowerHeight.get(key) ?? 0
+    expected[i] = base + restY
+    lowerHeight.set(key, base + restY * 2) // full block height = 2·restY
+  }
+  return raw.map((r, i) => ({
+    id: r.s.id,
+    color: r.b.color,
+    shape: r.b.shape,
+    x: r.s.nx * box.bx,
+    z: r.s.nz * box.bz,
+    hx: r.hx,
+    hz: r.hz,
+    radius: r.b.shape === "cylinder" ? r.b.radius : 0,
+    restY: r.restY,
+    tolX: r.hx + 0.55,
+    tolZ: r.hz + 0.55,
+    upright: !!r.s.upright,
+    align: r.s.align,
+    tier: r.s.tier ?? 0,
+    expectedY: expected[i],
+  }))
 }
 
 // Hand-drawn crayon footprints used to mark where each block goes (replacing the
@@ -1488,8 +1511,10 @@ function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
       {zones.map((z) => {
         const fpX = z.shape === "cylinder" && z.upright ? z.radius : z.hx
         const fpZ = z.shape === "cylinder" && z.upright ? z.radius : z.hz
+        // stacked targets share a spot: lift each higher tier a touch so the
+        // overlapping colour areas layer cleanly (and read as "stack here")
         return (
-          <mesh key={z.id} position={[z.x, 0.02, z.z]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+          <mesh key={z.id} position={[z.x, 0.02 + z.tier * 0.06, z.z]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
             <planeGeometry args={[fpX * 2 + 0.5, fpZ * 2 + 0.5]} />
             {/* the PNG is a flat white crayon shape: tint it to the block's single
                 colour and light it with a real (shadow-receiving) material, so the
@@ -1503,7 +1528,7 @@ function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
               roughness={0.95}
               metalness={0}
               polygonOffset
-              polygonOffsetFactor={-1}
+              polygonOffsetFactor={-1 - z.tier}
             />
           </mesh>
         )
@@ -1590,10 +1615,15 @@ function PlaceController({
         }
         const t = body.translation()
         const lv = body.linvel()
+        // height: a floor target (tier 0) just needs to be set down; a stacked
+        // target (tier > 0) must sit at its computed height ON the pieces below,
+        // in a tight band so you can't just hold it there in the air.
+        const heightOk =
+          z.tier === 0 ? t.y < z.expectedY + 0.55 : Math.abs(t.y - z.expectedY) < 0.55
         const placed =
           Math.abs(t.x - z.x) < z.tolX &&
           Math.abs(t.z - z.z) < z.tolZ &&
-          t.y < z.restY + 0.55 &&
+          heightOk &&
           Math.hypot(lv.x, lv.y, lv.z) < 0.85
         let orient = true
         const r = body.rotation()
