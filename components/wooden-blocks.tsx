@@ -39,6 +39,29 @@ const BODY_DYNAMIC = 0
 const BODY_KINEMATIC_POSITION = 2
 
 /* ------------------------------------------------------------------ */
+/*  Crash-proof render loop                                            */
+/* ------------------------------------------------------------------ */
+// Every per-frame loop in this file touches Rapier rigid bodies. During a level
+// swap the block set changes (some bodies unmount, others are re-typed/reset),
+// and for a frame or two a body can be mid-removal or mid-recreation. Calling a
+// method on such a body throws out of wasm ("recursive use … unsafe aliasing",
+// "borrowed", "null pointer passed to rust", …). An *uncaught* throw inside a
+// useFrame callback breaks R3F's animation loop for good — the canvas freezes on
+// the old frame and the next level never appears (the reported "blank screen /
+// doesn't load the next level"). useSafeFrame wraps every loop so a transient
+// physics error just skips that one frame; the very next frame runs clean.
+const rawUseFrame = useFrame
+function useSafeFrame(cb: (state: Parameters<Parameters<typeof useFrame>[0]>[0], delta: number) => void, priority?: number) {
+  rawUseFrame((state, delta) => {
+    try {
+      cb(state, delta)
+    } catch {
+      // a transient Rapier/level-swap error — drop this frame, keep the loop alive
+    }
+  }, priority as never)
+}
+
+/* ------------------------------------------------------------------ */
 /*  Shared device-tilt state (written by DOM listener, read in 3D)     */
 /* ------------------------------------------------------------------ */
 type TiltState = {
@@ -132,20 +155,24 @@ function BlockBody({
     other: { rigidBody?: RapierRigidBody }
   }) => {
     const a = payload.target.rigidBody
-    if (!a) return
-    const av = a.linvel()
-    let speed = Math.hypot(av.x, av.y, av.z)
-    const b = payload.other.rigidBody
-    if (b) {
-      const bv = b.linvel()
-      speed = Math.max(speed, Math.hypot(bv.x, bv.y, bv.z))
-    }
-    const strength = THREE.MathUtils.clamp((speed - 0.45) / 7, 0, 1)
-    if (strength > 0) {
-      if (knock) playImpact(block.id, strength) // wooden clack (silenced in the music env)
-      const t = a.translation()
-      onImpact(t.x, t.z, strength) // light up / play the tile it struck
-      impactHaptic(strength) // and let you feel the knock
+    if (!a || !a.isValid()) return
+    try {
+      const av = a.linvel()
+      let speed = Math.hypot(av.x, av.y, av.z)
+      const b = payload.other.rigidBody
+      if (b && b.isValid()) {
+        const bv = b.linvel()
+        speed = Math.max(speed, Math.hypot(bv.x, bv.y, bv.z))
+      }
+      const strength = THREE.MathUtils.clamp((speed - 0.45) / 7, 0, 1)
+      if (strength > 0) {
+        if (knock) playImpact(block.id, strength) // wooden clack (silenced in the music env)
+        const t = a.translation()
+        onImpact(t.x, t.z, strength) // light up / play the tile it struck
+        impactHaptic(strength) // and let you feel the knock
+      }
+    } catch {
+      // a collision reported on a body mid-swap — ignore
     }
   }
 
@@ -613,7 +640,18 @@ const INTRO_REST: EnvConfig[] = [
       { id: "orange", nx: 0.4, nz: -0.45 },
     ],
   },
-  { id: "t8-stack", name: "Stable", ...TUT_LOOK, stackAll: true },
+  // 8 – first little arrangement puzzle: three pieces into a row
+  {
+    id: "p-trio",
+    name: "Trio",
+    ...TUT_LOOK,
+    only: ["cube", "orange", "plank-short"],
+    place: [
+      { id: "cube", nx: -0.5, nz: 0 },
+      { id: "orange", nx: 0, nz: 0 },
+      { id: "plank-short", nx: 0.5, nz: 0, align: "z" },
+    ],
+  },
   {
     id: "t9-rotate2",
     name: "Roter to",
@@ -628,24 +666,118 @@ const INTRO_REST: EnvConfig[] = [
       { id: "plank-short", nx: 0.45, nz: -0.4, align: "z" },
     ],
   },
-  { id: "t10-stack", name: "Stable", ...TUT_LOOK, stackAll: true },
+  // 10 – stand the cylinder, flank it with two pieces
+  {
+    id: "p-reis",
+    name: "Reis",
+    ...TUT_LOOK,
+    only: ["cylinder", "cube", "orange"],
+    place: [
+      { id: "cylinder", nx: 0, nz: -0.45, upright: true },
+      { id: "cube", nx: -0.45, nz: 0.4 },
+      { id: "orange", nx: 0.45, nz: 0.4 },
+    ],
+  },
 ]
 
-// Eight stacking levels (calm look, subtly different backdrops). Rather than
-// identical "stack all five" rooms, the goal ramps: a short three-high tower to
-// start, growing to the full five, so the difficulty climbs instead of
-// repeating. The name shows the target height so it reads without extra text.
-// (Eight, not nine, so the space room lands exactly on level 25.)
-const STACK_BGS = ["#cdc6b8", "#c9bfb0", "#c4c8be", "#ccc3b3", "#c6c0b4", "#cebfac", "#c1c5bd", "#cac3b3"]
-const STACK_COUNTS = [3, 3, 4, 4, 5, 5, 5, 5]
-const STACK_LEVELS: EnvConfig[] = STACK_BGS.map((bg, i) => ({
-  id: `stack-${i}`,
-  name: `Stable ${STACK_COUNTS[i]}`,
-  ...TUT_LOOK,
-  bg,
-  stackAll: true,
-  stackCount: STACK_COUNTS[i],
-}))
+// 12–19: eight bespoke arrangement puzzles, each a hand-placed composition (like
+// level 5 "Alle fem") rather than the old repeated "stack them all" rooms. Each
+// has its own silhouette layout — a square, a cross, a staircase, a chevron, a
+// star, a tight mosaic — and the difficulty climbs: 4 pieces → 5, more pieces
+// asked to rotate (align) or stand (upright), tighter spacing toward the end. Two
+// stacking levels are kept as a change of pace between the placements. The calm
+// tutorial floor is reused with a subtly different backdrop per level so they read
+// as a series. (Eight levels, so the space room still lands on level 25.)
+const MID_LEVELS: EnvConfig[] = [
+  // 12 — a square: one piece pinned in each corner (two of them rotated upright)
+  {
+    id: "m-square",
+    name: "Firkant",
+    ...TUT_LOOK,
+    bg: "#cdc6b8",
+    only: ["cube", "orange", "plank-short", "plank-long"],
+    place: [
+      { id: "cube", nx: -0.5, nz: -0.5 },
+      { id: "orange", nx: 0.5, nz: -0.5 },
+      { id: "plank-short", nx: -0.5, nz: 0.5, align: "z" },
+      { id: "plank-long", nx: 0.5, nz: 0.5, align: "z" },
+    ],
+  },
+  // 13 — change of pace: build a four-high tower
+  { id: "m-stack4", name: "Stable 4", ...TUT_LOOK, bg: "#c9bfb0", stackAll: true, stackCount: 4 },
+  // 14 — a cross: the cylinder stands at the centre with an arm reaching each way
+  {
+    id: "m-cross",
+    name: "Kross",
+    ...TUT_LOOK,
+    bg: "#c4c8be",
+    place: [
+      { id: "cylinder", nx: 0, nz: 0, upright: true },
+      { id: "cube", nx: 0, nz: -0.55 },
+      { id: "orange", nx: 0, nz: 0.55 },
+      { id: "plank-short", nx: -0.5, nz: 0, align: "z" },
+      { id: "plank-long", nx: 0.5, nz: 0, align: "z" },
+    ],
+  },
+  // 15 — a staircase climbing across the diagonal
+  {
+    id: "m-stair",
+    name: "Trapp",
+    ...TUT_LOOK,
+    bg: "#ccc3b3",
+    only: ["cube", "orange", "plank-short", "cylinder"],
+    place: [
+      { id: "cube", nx: -0.55, nz: -0.5 },
+      { id: "orange", nx: -0.18, nz: -0.16 },
+      { id: "plank-short", nx: 0.2, nz: 0.18, align: "z" },
+      { id: "cylinder", nx: 0.55, nz: 0.52, upright: true },
+    ],
+  },
+  // 16 — a chevron / funnel pointing up the screen
+  {
+    id: "m-chevron",
+    name: "Vinkel",
+    ...TUT_LOOK,
+    bg: "#c6c0b4",
+    place: [
+      { id: "plank-long", nx: -0.55, nz: -0.32, align: "z" },
+      { id: "plank-short", nx: 0.55, nz: -0.32, align: "z" },
+      { id: "cube", nx: -0.28, nz: 0.18 },
+      { id: "orange", nx: 0.28, nz: 0.18 },
+      { id: "cylinder", nx: 0, nz: 0.55, upright: true },
+    ],
+  },
+  // 17 — change of pace: the full five-high tower
+  { id: "m-stack5", name: "Stable 5", ...TUT_LOOK, bg: "#cebfac", stackAll: true, stackCount: 5 },
+  // 18 — a star: a centre point with the other four set around it
+  {
+    id: "m-star",
+    name: "Stjerne",
+    ...TUT_LOOK,
+    bg: "#c1c5bd",
+    place: [
+      { id: "cylinder", nx: 0, nz: 0, upright: true },
+      { id: "cube", nx: -0.5, nz: -0.45 },
+      { id: "orange", nx: 0.5, nz: -0.45 },
+      { id: "plank-short", nx: -0.5, nz: 0.45, align: "z" },
+      { id: "plank-long", nx: 0.5, nz: 0.45, align: "z" },
+    ],
+  },
+  // 19 — the tightest one: a compact mosaic, every piece close to its neighbour
+  {
+    id: "m-mosaic",
+    name: "Mosaikk",
+    ...TUT_LOOK,
+    bg: "#cac3b3",
+    place: [
+      { id: "plank-long", nx: -0.3, nz: -0.55, align: "z" },
+      { id: "plank-short", nx: 0.3, nz: -0.55, align: "z" },
+      { id: "cube", nx: -0.45, nz: 0.4 },
+      { id: "cylinder", nx: 0, nz: 0.05, upright: true },
+      { id: "orange", nx: 0.45, nz: 0.4 },
+    ],
+  },
+]
 
 // 26–49: the piloting section. It cycles through ALL five blocks so each gets a
 // handful of stages (not just the cube): the cube tips through growing labyrinths,
@@ -716,7 +848,7 @@ const ENVIRONMENTS: EnvConfig[] = [
   ...TUTORIAL_ENVIRONMENTS, // 1–6  intro: move, rotate, lift, flip, place-all, stack
   ...INTRO_REST, // 7–10  more intro practice (same calm background)
   { ...base("video"), id: "video", name: "Film", plate: undefined, watchVideo: true }, // 11 watch to the end
-  ...STACK_LEVELS, // 12–19 stacking
+  ...MID_LEVELS, // 12–19 bespoke arrangement puzzles (with two stacks for variety)
   { ...base("glass"), id: "soundbox", look: "glass", name: "Lydboks", corners: undefined, reactive: true, notes: 12 }, // 20 play 12 notes
   base("gold"), // 21
   { ...base("peel"), reference: "/reference/build.jpg" }, // 22 — shows the build photo to memorise for level 50
@@ -808,7 +940,7 @@ function ImpactGlows({
   tile: number
 }) {
   const refs = useRef<(THREE.Mesh | null)[]>([])
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     const pool = poolRef.current
     for (let i = 0; i < GLOW_POOL; i++) {
       const m = refs.current[i]
@@ -874,7 +1006,7 @@ function TiltController({
   // which way is down from where gravity actually pulls when tilt is engaged.
   const down = useRef<{ x: number; y: number } | null>(null)
 
-  useFrame(() => {
+  useSafeFrame(() => {
     // zero-gravity environments (the magnet/totem room) float freely
     if (zeroG) {
       if (world) {
@@ -1253,7 +1385,7 @@ function PlaceController({
     revealRef.current = false
   }, [revealRef])
 
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     if (!revealRef.current) {
       let all = true
       for (const z of zones) {
@@ -1326,7 +1458,7 @@ function StackAllController({
   // more pieces than exist (which would make the level unwinnable).
   const need = Math.max(2, Math.min(count ?? BLOCKS.length, BLOCKS.length))
 
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     if (!revealRef.current) {
       const present = BLOCKS.map((b) => {
         const body = bodies.current[b.id]
@@ -1384,7 +1516,7 @@ function LiftController({
     revealRef.current = false
   }, [revealRef])
 
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     if (!revealRef.current) {
       const orange = bodies.current["orange"]
       const cube = bodies.current["cube"]
@@ -1435,7 +1567,7 @@ function BuildController({
     revealRef.current = false
   }, [revealRef])
 
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     if (!revealRef.current) {
       let ok = false
       const cyl = bodies.current["cylinder"]
@@ -1499,7 +1631,7 @@ function NoteCounter({
   const step = target > 1 ? span / (target - 1) : 0
   const z = -box.bz + 0.55
 
-  useFrame(() => {
+  useSafeFrame(() => {
     const remaining = Math.max(0, target - countRef.current)
     for (let i = 0; i < target; i++) {
       const want = i < remaining ? 1 : 0.12 // unplayed pips glow; played ones dim
@@ -1606,7 +1738,7 @@ function MagnetController({
     revealRef.current = false
   }, [revealRef])
 
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     const dragged = dragRef.current?.body ?? null
     let connectedCount = 0
 
@@ -2106,7 +2238,7 @@ function MazeController({
     }
   }, [])
 
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     const cube = bodies.current["cube"]
     if (!cube) return
     if (camY.current == null) {
@@ -2238,7 +2370,7 @@ function GatherController({
     revealRef.current = false
   }, [revealRef])
 
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     let inCount = 0
     let allReady = true
     for (const b of BLOCKS) {
@@ -2311,7 +2443,7 @@ function StackController({
     revealRef.current = false
   }, [revealRef])
 
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     const dragged = dragRef.current?.body ?? null
     let topY = 0
     let reached = false
@@ -2390,7 +2522,7 @@ function CornersController({
     revealRef.current = false
   }, [revealRef])
 
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     const filled = corners.map(([px, pz]) =>
       BLOCKS.some((b) => {
         const body = bodies.current[b.id]
@@ -2452,7 +2584,7 @@ function LineupController({
     revealRef.current = false
   }, [revealRef])
 
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     let onLine = 0
     let allReady = true
     for (const b of BLOCKS) {
@@ -2512,7 +2644,7 @@ function PlateController({
     revealRef.current = false
   }, [revealRef])
 
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     const on = BLOCKS.some((b) => {
       const body = bodies.current[b.id]
       if (!body) return false
@@ -2566,7 +2698,7 @@ function ApartController({
     revealRef.current = false
   }, [revealRef])
 
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     let outCount = 0
     let allOut = true
     for (const b of BLOCKS) {
@@ -2661,7 +2793,7 @@ function FiveRoom() {
   }, [texs])
   const mat = useRef<THREE.MeshStandardMaterial>(null)
   const cur = useRef(-1)
-  useFrame(() => {
+  useSafeFrame(() => {
     const i = ((fiveFloor.idx % texs.length) + texs.length) % texs.length
     if (mat.current && cur.current !== i) {
       cur.current = i
@@ -2817,7 +2949,7 @@ function FiveController({
     }
   }, [])
 
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     cool.current = Math.max(0, cool.current - dt)
     const idx = active.current
     fiveFloor.idx = Math.min(idx, FIVE_ORDER.length - 1) // each block gets its own mosaic floor
@@ -3156,7 +3288,7 @@ function SoloController({
     }
   }, [])
 
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     const body = bodies.current[blockId]
     if (!body) return
     if (camY.current == null) {
@@ -3365,7 +3497,7 @@ function VideoRoom({ env, box, visibleWalls, muted, revealRef }: RoomProps) {
       }),
     [],
   )
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     crt.uniforms.time.value += dt
     if (tex) crt.uniforms.map.value = tex
   })
@@ -3795,7 +3927,7 @@ function SceneContents({
     grabbingRef.current = false
   }, [env.id, grabbingRef])
   // Watch the per-room win signal and fire onSolved exactly once when solved.
-  useFrame(() => {
+  useSafeFrame(() => {
     const solved = revealRef.current
     if (solved && !solvedFired.current) {
       solvedFired.current = true
@@ -3860,17 +3992,21 @@ function SceneContents({
     registerReset(() => {
       BLOCKS.forEach((b) => {
         const body = bodies.current[b.id]
-        if (!body) return
-        const sp = env.spawn?.[b.id]
-        const pos = sp?.pos ?? b.pos
-        const rot = sp?.rot ?? b.rot
-        body.setBodyType(BODY_DYNAMIC, true)
-        body.setTranslation({ x: pos[0], y: pos[1], z: pos[2] }, true)
-        const e = new THREE.Euler(...(rot ?? [0, 0, 0]))
-        const q = new THREE.Quaternion().setFromEuler(e)
-        body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
-        body.setLinvel({ x: 0, y: 0, z: 0 }, true)
-        body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+        if (!body || !body.isValid()) return
+        try {
+          const sp = env.spawn?.[b.id]
+          const pos = sp?.pos ?? b.pos
+          const rot = sp?.rot ?? b.rot
+          body.setBodyType(BODY_DYNAMIC, true)
+          body.setTranslation({ x: pos[0], y: pos[1], z: pos[2] }, true)
+          const e = new THREE.Euler(...(rot ?? [0, 0, 0]))
+          const q = new THREE.Quaternion().setFromEuler(e)
+          body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
+          body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+          body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+        } catch {
+          // body mid-swap (just unmounted/remounting) — skip; it spawns at rest anyway
+        }
       })
     })
   }, [registerReset, env])
@@ -4197,7 +4333,7 @@ function SceneContents({
   }, [gl])
 
   /* ---- light rig: blend the shift-drag base position with the tilt offset ---- */
-  useFrame(() => {
+  useSafeFrame(() => {
     const t = tiltRef.current
     const ox = (t.enabled ? t.sx : 0) * 7
     const oz = (t.enabled ? t.sz : 0) * 7
@@ -4211,7 +4347,7 @@ function SceneContents({
   })
 
   /* ---- held-block spring: hang & swing the grabbed piece from the cursor ---- */
-  useFrame((_state, delta) => {
+  useSafeFrame((_state, delta) => {
     if (walk.current) return // a swipe-walk owns the body this frame
     const d = drag.current
     if (!d) return
@@ -4315,7 +4451,7 @@ function SceneContents({
   })
 
   /* ---- swipe-walk: animate the one-step 90° tip, then hand back to physics ---- */
-  useFrame((_s, dt) => {
+  useSafeFrame((_s, dt) => {
     const W = walk.current
     if (!W) return
     if (!W.body.isValid()) {
@@ -4362,12 +4498,12 @@ function SceneContents({
   // Belt-and-braces guarantee on top of the solid walls and drag clamp: if a
   // body is ever found outside the tray (a freak tunnel, a stale resize), pull
   // it back inside and kill its velocity instead of letting it vanish offscreen.
-  useFrame(() => {
+  useSafeFrame(() => {
     if (env.maze || env.five || env.solo) return // these own their (kinematic) blocks
     const { bx, bz } = boxRef.current
     for (const b of BLOCKS) {
       const body = bodies.current[b.id]
-      if (!body) continue
+      if (!body || !body.isValid()) continue
       if (drag.current?.body === body) continue
       const t = body.translation()
       const escaped =
@@ -4599,10 +4735,23 @@ export default function WoodenBlocks({
       const next = Math.min(currentRef.current + 1, ENVIRONMENTS.length - 1)
       setCurrent(Math.max(getProgress().current, next)) // never regress saved progress when replaying
       setEnvIndex(next)
-      resetRef.current()
+      // NB: the pieces are reset by the [envIndex] effect below, AFTER React has
+      // committed the new level. Resetting here (synchronously, before the swap)
+      // would call into the outgoing level's bodies just as they're unmounting –
+      // a classic source of the freed/borrowed Rapier crash that blanked the next
+      // level. Deferring it lets the new bodies mount, then positions them at the
+      // *new* level's spawn instead of the old one's.
       advancing.current = false
     }, 2600)
   }, [])
+
+  // Reset the pieces whenever the level changes (auto-advance, number keys, the
+  // picker) – after the commit, so resetRef points at the incoming level and its
+  // blocks are mounted. Newly-spawned blocks already sit at their start pose; this
+  // re-homes any block that carried over from the previous level.
+  useEffect(() => {
+    resetRef.current()
+  }, [envIndex])
 
   // If the level changes by any other route (number keys, the level picker)
   // while a win is still celebrating, cancel the pending auto-advance and clear
