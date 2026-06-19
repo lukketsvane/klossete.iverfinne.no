@@ -831,34 +831,15 @@ const MID_LEVELS: EnvConfig[] = [
 // walls-with-gaps and checkpoints as the rounds climb. (The cylinder's rolling
 // "grand prix" is a separate minigame, not part of this journey.) 50 closes the
 // game by assembling the totem figure.
-const MAZE_LOOK = {
-  look: "maze" as EnvKind,
-  bg: "#05070d",
-  keyColor: "#cfe0ff",
-  keyIntensity: 1.4,
-  contact: { color: "#000000", opacity: 0 },
-  bloom: true,
-}
-const SOLO_LOOK = {
-  bg: "#0c0b0a",
-  keyColor: "#fff1dc",
-  keyIntensity: 1.8,
-  contact: { color: "#000000", opacity: 0.4 },
-  bloom: true,
-}
+// The whole piloting section shares the calm, LIGHT tutorial look (same lighting +
+// backdrop as the early levels) – no dark rooms.
+const MAZE_LOOK = { look: "maze" as EnvKind, ...TUT_LOOK }
+const SOLO_LOOK = { ...TUT_LOOK }
 // one block per slot, cycled, so the section is spread evenly across the four
 // piloted pieces (the cylinder's rolling "grand prix" is a separate minigame and
 // is no longer part of the main journey).
 const WALK_CYCLE = ["cube", "orange", "plank-long", "plank-short"]
 const SOLO_MOSAIC: Record<string, number> = { orange: 3, "plank-long": 1, "plank-short": 2 }
-// distinct backdrops so the piloting stages read as a varied series, not one room
-const SOLO_THEMES = [
-  { bg: "#0c0b0a", keyColor: "#fff1dc" }, // warm
-  { bg: "#0a0c11", keyColor: "#cfe0ff" }, // cool blue
-  { bg: "#110a0d", keyColor: "#ffd2e2" }, // rose
-  { bg: "#0a110d", keyColor: "#c9ffd9" }, // mint
-  { bg: "#110f08", keyColor: "#ffe6a8" }, // amber
-]
 const PILOT_NAMES: Record<string, string> = { orange: "Slaben", "plank-long": "Langferd", "plank-short": "Vippen" }
 // small deterministic PRNG so the obstacle layouts are stable across renders
 function mulberry(seed: number) {
@@ -916,15 +897,12 @@ function pilotVia(bound: number, round: number, seed: number, walls: [number, nu
 const CUBEWALK_LEVELS: EnvConfig[] = Array.from({ length: 24 }, (_, i) => {
   const block = WALK_CYCLE[i % WALK_CYCLE.length]
   const round = Math.floor(i / WALK_CYCLE.length) // 0..5 – difficulty climbs each lap
-  const theme = SOLO_THEMES[i % SOLO_THEMES.length]
   if (block === "cube") {
     const rooms = Math.min(8, 4 + round) // labyrinths grow lap by lap (phone-readable cap)
     return {
       id: `cw-maze-${i}`,
       name: `Labyrint ${round + 1}`,
       ...MAZE_LOOK,
-      bg: theme.bg,
-      keyColor: theme.keyColor,
       maze: true,
       mazeRooms: rooms,
       mazeSeed: 0x9e37 + i * 2654435761,
@@ -941,8 +919,6 @@ const CUBEWALK_LEVELS: EnvConfig[] = Array.from({ length: 24 }, (_, i) => {
     id: `cw-solo-${i}`,
     name: `${PILOT_NAMES[block]} ${round + 1}`,
     ...SOLO_LOOK,
-    bg: theme.bg,
-    keyColor: theme.keyColor,
     solo: block,
     mosaic: SOLO_MOSAIC[block],
     soloStart: [-(bnd - 1), bnd - 1] as [number, number],
@@ -2284,7 +2260,8 @@ function MazeRoom({ env }: RoomProps) {
     const cells: [number, number][] = []
     for (let y = 0; y < maze.H; y++) for (let x = 0; x < maze.W; x++) if (maze.wall[y][x]) cells.push([x, y])
     const geo = new THREE.BoxGeometry(MAZE_CELL, MAZE_CELL, MAZE_CELL)
-    const mat = new THREE.MeshStandardMaterial({ color: "#27345c", roughness: 0.78, metalness: 0.06 })
+    // warm wood walls that still read clearly against the light floor (no dark room)
+    const mat = new THREE.MeshStandardMaterial({ color: "#8f7f63", roughness: 0.9, metalness: 0 })
     const mesh = new THREE.InstancedMesh(geo, mat, cells.length)
     mesh.castShadow = false
     mesh.receiveShadow = false
@@ -2307,12 +2284,12 @@ function MazeRoom({ env }: RoomProps) {
   )
   return (
     <>
-      <ambientLight intensity={0.4} color="#22304c" />
-      <pointLight position={[0, 14, 0]} intensity={26} distance={70} decay={2} color="#bcd0ff" />
-      {/* a large dark floor under the whole maze */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
+      <ambientLight intensity={0.5} color="#fff3e3" />
+      <pointLight position={[0, 16, 0]} intensity={28} distance={90} decay={2} color="#fff0d8" />
+      {/* a large light floor under the whole maze – same calm look as the early levels */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
         <planeGeometry args={[maze.W * MAZE_CELL + 6, maze.H * MAZE_CELL + 6]} />
-        <meshStandardMaterial color="#0b1020" roughness={0.96} metalness={0} />
+        <meshStandardMaterial color="#c7c0b1" roughness={0.95} metalness={0} />
       </mesh>
       <primitive object={wallMesh} />
       {/* the exit: a crayon cube footprint + a tall beacon you can steer toward */}
@@ -2373,7 +2350,6 @@ function MazeController({
   const origCamY = useRef(0) // the rig's height, restored when we leave
   const flash = useRef<THREE.PointLight>(null)
   const flashT = useRef(0)
-  const glow = useRef<THREE.PointLight>(null) // a soft light riding the player
   const landT = useRef(0) // brief brighten as it lands
   const stepCool = useRef(0) // brief beat between rolls so it's an unhurried walk
 
@@ -2511,7 +2487,6 @@ function MazeController({
     // the position we command the cube to this frame – the camera follows THIS
     // (not the interpolated physics read) so it never jitters away from the cube
     let camFx = 0
-    let camFy = MAZE_CELL / 2
     let camFz = 0
 
     if (tip.current) {
@@ -2522,7 +2497,6 @@ function MazeController({
       const q = new THREE.Quaternion().setFromAxisAngle(T.axis, theta)
       const c = T.pivot.clone().add(T.startCenter.clone().sub(T.pivot).applyQuaternion(q))
       camFx = c.x
-      camFy = c.y
       camFz = c.z
       const rot = q.clone().multiply(T.startQ)
       cube.setNextKinematicTranslation({ x: c.x, y: c.y, z: c.z })
@@ -2556,10 +2530,6 @@ function MazeController({
     camera.lookAt(camFx, 0, camFz)
 
     landT.current = Math.max(0, landT.current - dt * 2.4)
-    if (glow.current) {
-      glow.current.position.set(camFx, camFy + 0.6, camFz)
-      glow.current.intensity = 7 + landT.current * 20
-    }
     flashT.current = Math.max(0, flashT.current - dt * 0.6)
     if (flash.current) {
       const [gx, gz] = mazeWorld(maze, maze.goal[0], maze.goal[1])
@@ -2571,7 +2541,6 @@ function MazeController({
   return (
     <>
       <pointLight ref={flash} distance={60} decay={2} color="#7cf6c8" intensity={0} />
-      <pointLight ref={glow} distance={6} decay={2} color="#dcebff" intensity={7} />
     </>
   )
 }
@@ -3369,11 +3338,12 @@ function SoloRoom({ env }: RoomProps) {
   const goalTex = sils[SILHOUETTES.indexOf(soloSilhouette(env.solo ?? ""))]
   return (
     <>
-      <ambientLight intensity={0.42} color="#fff1df" />
-      <pointLight position={[0, 11, 2]} intensity={18} distance={55} decay={2} color="#fff0d8" />
+      <ambientLight intensity={0.5} color="#fff3e3" />
+      <pointLight position={[0, 11, 2]} intensity={16} distance={60} decay={2} color="#fff0d8" />
+      {/* light tray floor, same calm look as the early levels (no dark room) */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
         <planeGeometry args={[90, 90]} />
-        <meshStandardMaterial color="#241f18" roughness={0.96} metalness={0} />
+        <meshStandardMaterial color="#c7c0b1" roughness={0.95} metalness={0} />
       </mesh>
       {/* the exit: a crayon footprint of the block, so you see the shape to land */}
       <mesh position={[gx, 0.02, gz]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
@@ -3436,7 +3406,6 @@ function SoloController({
   const origCamY = useRef(0)
   const flash = useRef<THREE.PointLight>(null)
   const flashT = useRef(0)
-  const glow = useRef<THREE.PointLight>(null)
   const landT = useRef(0)
   const CARRY = 0.55
   // each cell is one footprint-length along that axis, so a flip lands the block
@@ -3547,7 +3516,6 @@ function SoloController({
     // THIS (not the interpolated physics read) so the character never drifts /
     // jitters relative to the camera
     let fx = 0
-    let fy = CARRY
     let fz = 0
 
     if (hop.current) {
@@ -3557,7 +3525,6 @@ function SoloController({
       const p = H.from.clone().lerp(H.to, k)
       p.y = CARRY + Math.sin(Math.PI * k) * H.lift
       fx = p.x
-      fy = p.y
       fz = p.z
       const q = H.fromQ.clone().slerp(H.toQ, k)
       body.setNextKinematicTranslation({ x: p.x, y: p.y, z: p.z })
@@ -3623,10 +3590,6 @@ function SoloController({
     camera.lookAt(fx, 0, fz)
 
     landT.current = Math.max(0, landT.current - dt * 2.4)
-    if (glow.current) {
-      glow.current.position.set(fx, fy + 0.7, fz)
-      glow.current.intensity = 6 + landT.current * 16
-    }
     flashT.current = Math.max(0, flashT.current - dt * 0.6)
     if (flash.current) {
       flash.current.position.set(goal[0] * stepX, 2, goal[1] * stepZ)
@@ -3641,7 +3604,6 @@ function SoloController({
 
   return (
     <>
-      <pointLight ref={glow} distance={7} decay={2} color="#fff1dc" intensity={6} />
       <pointLight ref={flash} distance={40} decay={2} color="#7cf6c8" intensity={0} />
       {/* obstacle pillars: the cells the piece cannot enter, so you route around them */}
       {walls.map(([cx, cy], i) => (
