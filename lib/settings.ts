@@ -6,10 +6,11 @@ const STORAGE_KEY = "klossete:settings:v1"
 
 export type Settings = {
   sound: boolean // wooden-clack + win sounds on?
+  music: boolean // background OST on?
   tilt: boolean // use the device accelerometer (tilt) to drive gravity?
 }
 
-const DEFAULTS: Settings = { sound: true, tilt: false }
+const DEFAULTS: Settings = { sound: true, music: true, tilt: false }
 
 function load(): Settings {
   if (typeof window === "undefined") return { ...DEFAULTS }
@@ -19,6 +20,7 @@ function load(): Settings {
       const s = JSON.parse(raw) as Partial<Settings>
       return {
         sound: typeof s.sound === "boolean" ? s.sound : DEFAULTS.sound,
+        music: typeof s.music === "boolean" ? s.music : DEFAULTS.music,
         tilt: typeof s.tilt === "boolean" ? s.tilt : DEFAULTS.tilt,
       }
     }
@@ -43,6 +45,10 @@ export function getSettings(): Settings {
 
 export function setSound(on: boolean) {
   save({ ...load(), sound: on })
+}
+
+export function setMusic(on: boolean) {
+  save({ ...load(), music: on })
 }
 
 export function setTiltPref(on: boolean) {
