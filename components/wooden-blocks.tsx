@@ -4664,7 +4664,8 @@ export default function WoodenBlocks({
   }, [initialLevel])
 
   // Environment navigation: number keys 1-9 jump straight to an environment
-  // (desktop); a two-finger tap-and-hold cycles to the next one (touch).
+  // (desktop only – the two-finger tap-and-hold "skip to next level" gesture has
+  // been removed so it can't fire by accident).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key >= "1" && e.key <= "9") {
@@ -4672,45 +4673,8 @@ export default function WoodenBlocks({
         if (idx < ENVIRONMENTS.length) setEnvIndex(idx)
       }
     }
-    let holdTimer: ReturnType<typeof setTimeout> | null = null
-    let start: { x: number; y: number } | null = null
-    const clearHold = () => {
-      if (holdTimer) clearTimeout(holdTimer)
-      holdTimer = null
-    }
-    const onTouchStart = (e: TouchEvent) => {
-      // two fingers with NO block held = cycle environment; if a block is held a
-      // 2nd finger is a squeeze (handled in SceneContents), so don't cycle.
-      if (e.touches.length === 2 && !grabbingRef.current) {
-        start = { x: e.touches[0].clientX, y: e.touches[0].clientY }
-        clearHold()
-        holdTimer = setTimeout(() => setEnvIndex((i) => (i + 1) % ENVIRONMENTS.length), 450)
-      } else {
-        clearHold()
-      }
-    }
-    const onTouchMove = (e: TouchEvent) => {
-      if (!holdTimer || e.touches.length < 2 || !start) {
-        clearHold()
-        return
-      }
-      const moved = Math.hypot(e.touches[0].clientX - start.x, e.touches[0].clientY - start.y)
-      if (moved > 24) clearHold() // it's a pinch/drag, not a hold
-    }
-    const onTouchEnd = () => clearHold()
     window.addEventListener("keydown", onKey)
-    window.addEventListener("touchstart", onTouchStart, { passive: true })
-    window.addEventListener("touchmove", onTouchMove, { passive: true })
-    window.addEventListener("touchend", onTouchEnd)
-    window.addEventListener("touchcancel", onTouchEnd)
-    return () => {
-      window.removeEventListener("keydown", onKey)
-      window.removeEventListener("touchstart", onTouchStart)
-      window.removeEventListener("touchmove", onTouchMove)
-      window.removeEventListener("touchend", onTouchEnd)
-      window.removeEventListener("touchcancel", onTouchEnd)
-      clearHold()
-    }
+    return () => window.removeEventListener("keydown", onKey)
   }, [])
 
   // While tilt is on, lean the phone icon the same way gravity is pulling on
