@@ -45,9 +45,9 @@ export type Track = {
 
 const SEG = 3.4 // spacing between centreline samples
 const COUNT = 300 // ~1000 units of road
-const HALF_W = 3.5 // road half-width
-const CURB_W = 1.0 // raised lip width either side
-const CURB_H = 0.85 // lip height (keeps the can on the road)
+const HALF_W = 4.0 // road half-width
+const CURB_W = 0.8 // raised lip width either side
+const CURB_H = 1.7 // lip height — a real wall that bounces the can back on
 
 // Road + curb cross-section, as (across, height) pairs. The two middle points
 // are the flat road; the outer two are the curb crests.
@@ -87,7 +87,7 @@ export function buildTrack(seed = 7): Track {
     // Downhill grade — always present (so the can rolls from the line) and
     // breathing between shallow and steeper pitches further along. Kept lively
     // so gravity carries the can at a real clip, as in the reference.
-    const grade = 0.12 + 0.06 * (0.5 + 0.5 * Math.sin(s * 0.03 + 2.0)) * outro
+    const grade = 0.1 + 0.05 * (0.5 + 0.5 * Math.sin(s * 0.03 + 2.0)) * outro
 
     // Bank into the curve so fast turns feel planted.
     const bankTarget = THREE.MathUtils.clamp(-curv * 3.2, -0.28, 0.28)

@@ -18,8 +18,10 @@ const CAN_GLB = "/block_red_cylinder.glb"
 const CAN_GLB_R = 0.675 // the block's native cylinder radius before scaling
 const CAN_R = 0.72 // rolling radius we want on the track (physics + roll)
 const CAN_SCALE = CAN_R / CAN_GLB_R
-const MAX_SPEED = 24
-const STEER = 26 // lateral acceleration from a full left/right input
+const MAX_SPEED = 20
+const STEER = 17 // lateral acceleration from a full left/right input
+const CAM_BACK = 7.5 // how far behind the can the camera sits
+const CAM_UP = 2.8 // how far above
 
 type Phase = "ready" | "run" | "paused" | "finish"
 
@@ -284,17 +286,15 @@ function Scene({
     time: 0,
     roll: 0, // accumulated barrel-roll angle
     forward: track.startDir.clone(),
-    camPos: new THREE.Vector3(), // smoothed camera position
     camLook: new THREE.Vector3(), // smoothed camera aim point
     finished: false,
   }).current
 
-  // Seed the camera (and its smoothing targets) behind the start line.
+  // Seed the camera behind the start line and its aim down the course.
   useEffect(() => {
     const f = track.startDir
-    sim.camPos.copy(track.start).addScaledVector(f, -7.5).add(new THREE.Vector3(0, 3.4, 0))
-    sim.camLook.copy(track.start).addScaledVector(f, 6)
-    camera.position.copy(sim.camPos)
+    sim.camLook.copy(track.start).addScaledVector(f, 5)
+    camera.position.copy(track.start).addScaledVector(f, -CAM_BACK).add(new THREE.Vector3(0, CAM_UP, 0))
     camera.lookAt(sim.camLook)
   }, [camera, track, sim])
 
@@ -310,7 +310,7 @@ function Scene({
   }, [track, sim])
 
   useFrame((state, dtRaw) => {
-    const dt = Math.min(dtRaw, 1 / 30)
+    const dt = Math.min(dtRaw, 1 / 30) // clamped for stable physics impulses
     const rb = body.current
     if (!rb) return
     const running = phaseRef.current === "run"
@@ -351,7 +351,7 @@ function Scene({
       const imp = right.multiplyScalar(steer * STEER * dt)
       // A forward nudge keeps momentum through flat patches and overcomes the
       // rolling friction that would otherwise stall a gentle downhill.
-      imp.addScaledVector(fwd, 10 * dt)
+      imp.addScaledVector(fwd, 7 * dt)
       rb.applyImpulse({ x: imp.x, y: 0, z: imp.z }, true)
 
       // Speed clamp so the can never tunnels or runs away downhill.
@@ -389,19 +389,16 @@ function Scene({
       canRef.current.quaternion.copy(qSpin.multiply(qAlign))
     }
 
-    // --- Chase camera: a smoothed rig that sits a fixed distance behind and
-    // above the can and aims at the road a few samples ahead, so the view dips
-    // with the descent and the can stays planted in frame. Independent position
-    // and aim smoothing (frame-rate independent) keep it steady over bumps
-    // without feeling laggy in the turns.
-    const aheadSm = track.samples[Math.min(best + 6, track.samples.length - 1)]
-    const camGoal = pos.clone().addScaledVector(fwd, -7.5).add(new THREE.Vector3(0, 3.4, 0))
-    const lookGoal = aheadSm.p.clone().addScaledVector(fwd, 1.5).add(new THREE.Vector3(0, 0.6, 0))
-    const posK = 1 - Math.pow(0.0006, dt)
-    const lookK = 1 - Math.pow(0.0009, dt)
-    sim.camPos.lerp(camGoal, posK)
-    sim.camLook.lerp(lookGoal, lookK)
-    camera.position.copy(sim.camPos)
+    // --- Chase camera. The rig is pinned a fixed distance directly behind and
+    // above the can, so the can is ALWAYS centred in frame with zero follow lag
+    // (the heading `fwd` is already smoothed, which is what keeps the turns from
+    // feeling jerky). Only the aim point is eased — and with REAL elapsed time,
+    // not the clamped physics step, so it stays tight at any frame rate.
+    camera.position.copy(pos).addScaledVector(fwd, -CAM_BACK).add(new THREE.Vector3(0, CAM_UP, 0))
+    // aim ahead of and below the can so the descending road fills the lower
+    // frame while the can sits centred.
+    const lookGoal = pos.clone().addScaledVector(fwd, 4).add(new THREE.Vector3(0, -1.0, 0))
+    sim.camLook.lerp(lookGoal, 1 - Math.pow(0.0001, dtRaw))
     camera.lookAt(sim.camLook)
 
     // --- Sun follows the can so its shadow is always crisp underneath.
