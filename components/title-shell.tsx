@@ -267,10 +267,16 @@ function HelpOverlay({ onClose }: { onClose: () => void }) {
 
         <div className="flex flex-col gap-2.5 text-[15px] leading-snug text-[#473f33]">
           <p>
+            <span className="font-semibold">Tap og hald:</span> hald på klossen for å løfte han.
+          </p>
+          <p>
             <span className="font-semibold">Dra:</span> flytt klossane med fingeren.
           </p>
           <p>
-            <span className="font-semibold">Vipp:</span> vipp telefonen — tyngdekrafta dreg klossane.
+            <span className="font-semibold">Pinch:</span> knip med to fingrar for presisjon når du roterer klossen.
+          </p>
+          <p>
+            <span className="font-semibold">Vipp:</span> vipp telefonen, så dreg tyngdekrafta klossane.
           </p>
           <p>Få klossane på plass, så løyser nivået seg.</p>
         </div>
@@ -278,14 +284,6 @@ function HelpOverlay({ onClose }: { onClose: () => void }) {
         <div className="rounded-2xl bg-[#efe9dd] p-4 text-sm leading-snug text-[#6b6155]">
           Spelet er berre laga for mobil. Skru på rørslesensor for best oppleving, og legg klossete til på heimskjermen.
         </div>
-
-        <button
-          type="button"
-          onClick={onClose}
-          className="font-klossete mt-1 self-center rounded-2xl bg-[#2b56be] px-8 py-2.5 text-lg text-[#f6f2ea] transition active:scale-95 hover:brightness-105"
-        >
-          lukk
-        </button>
       </div>
     </div>
   )
