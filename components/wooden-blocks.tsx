@@ -1171,6 +1171,23 @@ function zoneSilhouette(z: PlaceZone): string {
   return "/silhouettes/cube.png"
 }
 
+// The crayon footprint of a piloted block as it rests in a cube-walk stage (the
+// solo reset stands it at identity: planks lie long-axis-forward, cylinder upright)
+function soloSilhouette(blockId: string): string {
+  switch (blockId) {
+    case "orange":
+      return "/silhouettes/orange.png"
+    case "plank-long":
+      return "/silhouettes/plank-long-tall.png"
+    case "plank-short":
+      return "/silhouettes/plank-short-tall.png"
+    case "cylinder":
+      return "/silhouettes/cylinder-circle.png"
+    default:
+      return "/silhouettes/cube.png"
+  }
+}
+
 // Calm, plain floor with a hand-drawn crayon footprint marking each target (and
 // a stack pad for the stacking stage). No photo tiles, so the lesson stays the focus.
 function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
@@ -2324,6 +2341,12 @@ function MazeController({
       }
     }
 
+    // the position we command the cube to this frame – the camera follows THIS
+    // (not the interpolated physics read) so it never jitters away from the cube
+    let camFx = 0
+    let camFy = MAZE_CELL / 2
+    let camFz = 0
+
     if (tip.current) {
       const T = tip.current
       T.t = Math.min(T.dur, T.t + dt)
@@ -2331,6 +2354,9 @@ function MazeController({
       const theta = (Math.PI / 2) * (k * k * (3 - 2 * k)) // ease off the edge, settle flat
       const q = new THREE.Quaternion().setFromAxisAngle(T.axis, theta)
       const c = T.pivot.clone().add(T.startCenter.clone().sub(T.pivot).applyQuaternion(q))
+      camFx = c.x
+      camFy = c.y
+      camFz = c.z
       const rot = q.clone().multiply(T.startQ)
       cube.setNextKinematicTranslation({ x: c.x, y: c.y, z: c.z })
       cube.setNextKinematicRotation({ x: rot.x, y: rot.y, z: rot.z, w: rot.w })
@@ -2352,20 +2378,19 @@ function MazeController({
     } else {
       // idle: pin the cube to its cell so nothing (e.g. a reset) drifts it
       const [wx, wz] = mazeWorld(cell.current[0], cell.current[1])
+      camFx = wx
+      camFz = wz
       cube.setNextKinematicTranslation({ x: wx, y: MAZE_CELL / 2, z: wz })
       cube.setNextKinematicRotation({ x: 0, y: 0, z: 0, w: 1 })
     }
 
-    // follow the lone player cube, kept centred with a touch of smoothing
-    const t = cube.translation()
-    camera.position.x += (t.x - camera.position.x) * 0.4
-    camera.position.z += (t.z - camera.position.z) * 0.4
-    camera.position.y = cy
-    camera.lookAt(camera.position.x, 0, camera.position.z)
+    // hard-follow the commanded position so the cube stays pinned in the centre
+    camera.position.set(camFx, cy, camFz)
+    camera.lookAt(camFx, 0, camFz)
 
     landT.current = Math.max(0, landT.current - dt * 2.4)
     if (glow.current) {
-      glow.current.position.set(t.x, t.y + 0.6, t.z)
+      glow.current.position.set(camFx, camFy + 0.6, camFz)
       glow.current.intensity = 7 + landT.current * 20
     }
     flashT.current = Math.max(0, flashT.current - dt * 0.6)
@@ -3162,6 +3187,19 @@ function SoloRoom({ env }: RoomProps) {
   const [sx, sz] = soloStep(env.solo ?? "")
   const goal = env.soloGoal ?? SOLO_GOAL
   const [gx, gz] = [goal[0] * sx, goal[1] * sz]
+  const block = BLOCKS.find((b) => b.id === env.solo)
+  const fpX = block ? (block.shape === "cylinder" ? block.radius * 2 : block.half[0] * 2) : 1
+  const fpZ = block ? (block.shape === "cylinder" ? block.radius * 2 : block.half[2] * 2) : 1
+  const sils = useTexture(SILHOUETTES)
+  useMemo(() => {
+    sils.forEach((t) => {
+      t.colorSpace = THREE.SRGBColorSpace
+      t.generateMipmaps = false
+      t.minFilter = THREE.LinearFilter
+      t.needsUpdate = true
+    })
+  }, [sils])
+  const goalTex = sils[SILHOUETTES.indexOf(soloSilhouette(env.solo ?? ""))]
   return (
     <>
       <ambientLight intensity={0.42} color="#fff1df" />
@@ -3170,10 +3208,19 @@ function SoloRoom({ env }: RoomProps) {
         <planeGeometry args={[90, 90]} />
         <meshStandardMaterial color="#241f18" roughness={0.96} metalness={0} />
       </mesh>
-      {/* the exit */}
-      <mesh position={[gx, 0.03, gz]} rotation={[-Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[0.34, 0.5, 32]} />
-        <meshBasicMaterial color="#7cf6c8" toneMapped={false} transparent opacity={0.95} side={THREE.DoubleSide} />
+      {/* the exit: a crayon footprint of the block, so you see the shape to land */}
+      <mesh position={[gx, 0.02, gz]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <planeGeometry args={[fpX + 0.5, fpZ + 0.5]} />
+        <meshStandardMaterial
+          map={goalTex}
+          color={block?.color ?? "#7cf6c8"}
+          transparent
+          alphaTest={0.7}
+          roughness={0.95}
+          metalness={0}
+          polygonOffset
+          polygonOffsetFactor={-1}
+        />
       </mesh>
       <pointLight position={[gx, 1.4, gz]} intensity={9} distance={7} decay={2} color="#7cf6c8" />
     </>
@@ -3318,12 +3365,22 @@ function SoloController({
 
     const atGoal = () => cell.current[0] === goal[0] && cell.current[1] === goal[1]
 
+    // the exact position we command the block to this frame – the camera follows
+    // THIS (not the interpolated physics read) so the character never drifts /
+    // jitters relative to the camera
+    let fx = 0
+    let fy = CARRY
+    let fz = 0
+
     if (hop.current) {
       const H = hop.current
       H.t = Math.min(H.dur, H.t + dt)
       const k = H.t / H.dur
       const p = H.from.clone().lerp(H.to, k)
       p.y = CARRY + Math.sin(Math.PI * k) * H.lift
+      fx = p.x
+      fy = p.y
+      fz = p.z
       const q = H.fromQ.clone().slerp(H.toQ, k)
       body.setNextKinematicTranslation({ x: p.x, y: p.y, z: p.z })
       body.setNextKinematicRotation({ x: q.x, y: q.y, z: q.z, w: q.w })
@@ -3340,6 +3397,8 @@ function SoloController({
       }
     } else {
       const [gx, gy] = cell.current
+      fx = gx * stepX
+      fz = gy * stepZ
       body.setNextKinematicTranslation({ x: gx * stepX, y: CARRY, z: gy * stepZ })
       body.setNextKinematicRotation({ x: baseQ.current.x, y: baseQ.current.y, z: baseQ.current.z, w: baseQ.current.w })
       if (heldDir.current && cool.current === 0 && !revealRef.current) {
@@ -3373,15 +3432,14 @@ function SoloController({
       }
     }
 
-    const t = body.translation()
-    camera.position.x += (t.x - camera.position.x) * 0.18
-    camera.position.z += (t.z - camera.position.z) * 0.18
-    camera.position.y = cy
-    camera.lookAt(camera.position.x, 0, camera.position.z)
+    // hard-follow the commanded position so the piloted block stays pinned in
+    // the centre of the screen (no trailing, no jitter)
+    camera.position.set(fx, cy, fz)
+    camera.lookAt(fx, 0, fz)
 
     landT.current = Math.max(0, landT.current - dt * 2.4)
     if (glow.current) {
-      glow.current.position.set(t.x, t.y + 0.7, t.z)
+      glow.current.position.set(fx, fy + 0.7, fz)
       glow.current.intensity = 6 + landT.current * 16
     }
     flashT.current = Math.max(0, flashT.current - dt * 0.6)
@@ -4185,11 +4243,17 @@ function SceneContents({
     let startDist = 0
     let squeeze = 0
     let lastBuzz = 0
+    let tipC = { x: 0, y: 0 } // centroid baseline for the swipe-to-flip gesture
+    const TIP_THRESH = 46 // px the two fingers must glide before flipping a face
     const span = (e: TouchEvent) =>
       Math.hypot(
         e.touches[0].clientX - e.touches[1].clientX,
         e.touches[0].clientY - e.touches[1].clientY,
       )
+    const mid = (e: TouchEvent) => ({
+      x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+      y: (e.touches[0].clientY + e.touches[1].clientY) / 2,
+    })
     // angle of the line between the two fingers (screen space)
     const twoAngle = (e: TouchEvent) =>
       Math.atan2(e.touches[1].clientY - e.touches[0].clientY, e.touches[1].clientX - e.touches[0].clientX)
@@ -4198,21 +4262,43 @@ function SceneContents({
       if (e.touches.length === 2 && drag.current) {
         startDist = span(e)
         squeeze = 0
+        tipC = mid(e)
         const r = drag.current.body.rotation()
         twist.current = { base: new THREE.Quaternion(r.x, r.y, r.z, r.w), start: twoAngle(e), delta: 0, active: true }
       }
     }
     const onMove = (e: TouchEvent) => {
       if (e.touches.length !== 2 || !drag.current || startDist <= 0) return
-      squeeze = THREE.MathUtils.clamp((startDist - span(e)) / (startDist * 0.55), 0, 1)
+      const dist = span(e)
+      squeeze = THREE.MathUtils.clamp((startDist - dist) / (startDist * 0.55), 0, 1)
       const now = performance.now()
       if (squeeze > 0.05 && now - lastBuzz > 65) {
         lastBuzz = now
         haptic(2 + squeeze * 10) // tighter pinch -> stronger buzz
       }
-      // twist -> free yaw (no magnetic snapping; just follow the fingers)
+      // twist -> free rotation (yaw; the cylinder tips about its side instead)
       const tw = twist.current
       if (tw) tw.delta = -wrap(twoAngle(e) - tw.start)
+
+      // two-finger swipe (both fingers glide together, distance steady) flips the
+      // held block 90° to the next of its six faces – up/down/left/right
+      const c = mid(e)
+      const mx = c.x - tipC.x
+      const my = c.y - tipC.y
+      const steady = Math.abs(dist - startDist) < startDist * 0.25 // not a pinch
+      if (tw && steady && Math.hypot(mx, my) > TIP_THRESH) {
+        const horizontal = Math.abs(mx) > Math.abs(my)
+        // camera looks straight down: world X = screen-right, world Z = screen-down
+        const axis = horizontal ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0)
+        const sign = horizontal ? (mx > 0 ? 1 : -1) : my > 0 ? 1 : -1
+        const step = new THREE.Quaternion().setFromAxisAngle(axis, (sign * Math.PI) / 2)
+        tw.base = step.multiply(tw.base) // bake the tip into the carried orientation
+        tw.start = twoAngle(e) // re-baseline the twist so it stays continuous
+        tw.delta = 0
+        tipC = c
+        startDist = dist
+        haptic(10)
+      }
     }
     const onEnd = (e: TouchEvent) => {
       if (startDist <= 0) return
