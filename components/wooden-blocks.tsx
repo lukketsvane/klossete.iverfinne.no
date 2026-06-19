@@ -13,7 +13,7 @@ import {
 } from "@react-three/rapier"
 import * as THREE from "three"
 import { LayoutGrid, Smartphone, Volume2, VolumeX } from "lucide-react"
-import { audioReady, playBeep, playImpact, playTone, primeBlocks, setMuted, unlockAudio } from "@/lib/impact-sound"
+import { audioReady, playImpact, playTone, primeBlocks, setMuted, unlockAudio } from "@/lib/impact-sound"
 import { BLOCKS, MESH_FIT, blockBaseFreq, blockRadius, type Block } from "@/lib/blocks"
 import { CameraRig } from "@/components/engine/CameraRig"
 import { PostFx } from "@/components/engine/PostFx"
@@ -64,13 +64,9 @@ function useBox(): Box {
 function BlockMesh({
   block,
   onPointerDown,
-  flat = false,
-  revealRef,
 }: {
   block: Block
   onPointerDown: (e: any) => void
-  flat?: boolean // projection room: render colourless until solved
-  revealRef?: React.MutableRefObject<boolean>
 }) {
   const gltf = useGLTF(block.mesh.url)
   const model = useMemo(() => {
@@ -83,35 +79,6 @@ function BlockMesh({
     })
     return clone
   }, [gltf.scene])
-
-  // Original materials + a flat dark "colourless" stand-in for the projection room.
-  const originals = useMemo(() => {
-    const map = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>()
-    model.traverse((o) => {
-      const m = o as THREE.Mesh
-      if (m.isMesh) map.set(m, m.material)
-    })
-    return map
-  }, [model])
-  // fully invisible (but still grabbable) stand-in for the projection room
-  const flatMat = useMemo(
-    () => new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
-    [],
-  )
-  const state = useRef<"flat" | "real" | null>(null)
-  useFrame(() => {
-    const want = flat && !revealRef?.current ? "flat" : "real"
-    if (want === state.current) return
-    state.current = want
-    const real = want === "real"
-    model.traverse((o) => {
-      const m = o as THREE.Mesh
-      if (!m.isMesh) return
-      m.material = real ? originals.get(m) ?? m.material : flatMat
-      m.castShadow = real // invisible pieces must not cast ghost shadows
-      m.receiveShadow = real
-    })
-  })
 
   return (
     <group onPointerDown={onPointerDown} scale={MESH_FIT}>
@@ -130,9 +97,6 @@ function BlockBody({
   onGrab,
   onImpact,
   knock,
-  showAfterimage,
-  flat,
-  revealRef,
   measureMode,
   selected,
   onSelect,
@@ -143,9 +107,6 @@ function BlockBody({
   onGrab: (body: RapierRigidBody, point: THREE.Vector3, block: Block) => void
   onImpact: (x: number, z: number, strength: number) => void
   knock: boolean // play the wooden clack? (off in the music-tile env)
-  showAfterimage: boolean
-  flat?: boolean // projection room: colourless until solved
-  revealRef?: React.MutableRefObject<boolean>
   measureMode: boolean
   selected: boolean
   onSelect: (id: string) => void
@@ -213,16 +174,14 @@ function BlockBody({
       {block.shape === "box" ? (
         <>
           <CuboidCollider args={block.half} />
-          <BlockMesh block={block} onPointerDown={handlePointerDown} flat={flat} revealRef={revealRef} />
+          <BlockMesh block={block} onPointerDown={handlePointerDown} />
         </>
       ) : (
         <>
           <CylinderCollider args={[block.halfHeight, block.radius]} />
-          <BlockMesh block={block} onPointerDown={handlePointerDown} flat={flat} revealRef={revealRef} />
+          <BlockMesh block={block} onPointerDown={handlePointerDown} />
         </>
       )}
-
-      {showAfterimage && <Afterimage block={block} />}
     </RigidBody>
   )
 }
@@ -361,9 +320,6 @@ type EnvKind =
   | "video"
   | "peel"
   | "texturemiss"
-  | "fourthside"
-  | "klossete"
-  | "projection"
   | "magnet"
   | "maze"
 type EnvConfig = {
@@ -376,10 +332,6 @@ type EnvConfig = {
   contact: { color: string; opacity: number } // grounding contact shadow
   bloom: boolean
   reactive?: boolean // tiles flash with light where a block hits (brightness ~ force)
-  fourthSide?: boolean // wraps each block in glowing wireframe "4D" shells
-  puzzle?: boolean // sort each block onto its zone -> they blink "KLOSSETE" in Morse
-  projection?: boolean // shapes are flat/colourless until their floor projections
-  // are arranged onto the target outline – then the 3D forms appear in colour
   magnet?: boolean // zero-g: pieces gently magnet-snap (each to one partner) into a totem
   maze?: boolean // a single block "flip-flop" tips through a camera-following maze to an exit
   gather?: boolean // bring every block onto the glowing pad to solve
@@ -482,37 +434,6 @@ const BASE_ENVIRONMENTS: EnvConfig[] = [
     contact: { color: "#000000", opacity: 0.4 },
     bloom: true,
     corners: true, // key: rest a block in each lit corner
-  },
-  {
-    id: "fourthside",
-    name: "The Fourth Side",
-    bg: "#03050a",
-    keyColor: "#cfe6ff",
-    keyIntensity: 1.4,
-    contact: { color: "#0b2f3a", opacity: 0.55 }, // cold, sharp 2D projection on the floor
-    bloom: true, // makes the wireframe shells glow like TRON
-    fourthSide: true,
-    lineup: true, // key: line the blocks along the centre line
-  },
-  {
-    id: "klossete",
-    name: "klossete",
-    bg: "#0e0f13",
-    keyColor: "#ffffff",
-    keyIntensity: 1.6,
-    contact: { color: "#000000", opacity: 0.4 },
-    bloom: true, // the win flash blooms like real lightbulbs
-    puzzle: true,
-  },
-  {
-    id: "projection",
-    name: "Projection",
-    bg: "#0a0b0e",
-    keyColor: "#ffffff",
-    keyIntensity: 1.2,
-    contact: { color: "#000000", opacity: 0.0 }, // the only "shadow" is the colour projection
-    bloom: true, // the reveal flash blooms
-    projection: true,
   },
   {
     id: "magnet",
@@ -1005,6 +926,13 @@ const GRAB_RATE = 9 // grab-point error -> desired carry velocity (1/s)
 const GRAB_RESPONSE = 0.35 // how fast the velocity eases to target each frame (no snap)
 const MAX_DRAG_SPEED = 7 // carry speed cap – responsive but steady
 const GRAB_ANG_DAMP = 0.78 // per-frame angular damping while held -> kills wobble/shake
+// Twisting a held block: ease its orientation toward the gesture target instead
+// of snapping. TWIST_EASE is the smoothing fraction per frame; TWIST_MAX_RATE
+// caps the angular speed so a fast finger flick can't whip it around – the turn
+// stays smooth and bounded, never an instant unlimited-force snap.
+const TWIST_EASE = 0.2
+const TWIST_MAX_RATE = 2.6 // rad/s (~150°/s)
+const TWIST_LIFT_MARGIN = 1.0 // extra clearance under the block while it spins
 const LIGHT_RADIUS = 14 // how far the key light orbits when you shift+right-drag it
 
 /* ------------------------------------------------------------------ */
@@ -1034,28 +962,7 @@ function tileFreq(x: number, z: number) {
   return 261.63 * Math.pow(2, semis / 12) // relative to C4
 }
 
-/* ---- Morse: blink "KLOSSETE" on the winning blocks ---- */
-const MORSE: Record<string, string> = { K: "-.-", L: ".-..", O: "---", S: "...", E: ".", T: "-" }
-type Pulse = { on: boolean; units: number }
-function morsePulses(text: string): Pulse[] {
-  const out: Pulse[] = []
-  const letters = text.toUpperCase().split("")
-  letters.forEach((ch, li) => {
-    const code = MORSE[ch]
-    if (!code) return
-    code.split("").forEach((sym, si) => {
-      out.push({ on: true, units: sym === "-" ? 3 : 1 })
-      if (si < code.length - 1) out.push({ on: false, units: 1 }) // intra-letter gap
-    })
-    out.push({ on: false, units: li < letters.length - 1 ? 3 : 7 }) // letter / word gap
-  })
-  return out
-}
-const KLOSSE_PULSES = morsePulses("KLOSSETE")
-const KLOSSE_TOTAL = KLOSSE_PULSES.reduce((s, p) => s + p.units, 0)
-const MORSE_UNIT = 0.16 // seconds per Morse unit
-
-/* ---- klossete sorting puzzle: a home zone per block ---- */
+/* ---- a target home zone for a block (extended by the tutorial PlaceZone) ---- */
 type Zone = {
   id: string
   color: string
@@ -1069,39 +976,6 @@ type Zone = {
   tolX: number
   tolZ: number
 }
-function puzzleZones(box: Box): Zone[] {
-  const layout: { id: string; nx: number; nz: number }[] = [
-    { id: "cube", nx: -0.5, nz: -0.55 },
-    { id: "orange", nx: 0.5, nz: -0.55 },
-    { id: "plank-long", nx: 0, nz: 0 },
-    { id: "plank-short", nx: -0.5, nz: 0.6 },
-    { id: "cylinder", nx: 0.5, nz: 0.6 },
-  ]
-  return layout.flatMap((L) => {
-    const b = BLOCKS.find((bb) => bb.id === L.id)
-    if (!b) return []
-    const isCyl = b.shape === "cylinder"
-    const hx = isCyl ? b.radius : b.half[0]
-    const hz = isCyl ? b.radius : b.half[2]
-    const restY = isCyl ? b.halfHeight : b.half[1]
-    return [
-      {
-        id: L.id,
-        color: b.color,
-        shape: b.shape,
-        x: L.nx * box.bx,
-        z: L.nz * box.bz,
-        hx,
-        hz,
-        radius: isCyl ? b.radius : 0,
-        restY,
-        tolX: hx + 0.7,
-        tolZ: hz + 0.7,
-      } satisfies Zone,
-    ]
-  })
-}
-
 /* ---- tutorial stages: place / rotate / stand / place-all / stack ---- */
 // A target outline (extends the sorting Zone with the orientation it wants).
 type PlaceZone = Zone & { upright: boolean; align?: "x" | "z" }
@@ -1453,372 +1327,10 @@ function Room(props: RoomProps) {
   if (look === "video") return <VideoRoom {...props} />
   if (look === "peel") return <PeelRoom {...props} />
   if (look === "texturemiss") return <TextureMissRoom {...props} />
-  if (look === "fourthside") return <FourthRoom {...props} />
-  if (look === "klossete") return <KlosseRoom {...props} />
-  if (look === "projection") return <ProjectionRoom {...props} />
   if (look === "magnet") return <MagnetRoom />
   if (look === "maze") return <MazeRoom {...props} />
   if (look === "five") return <FiveRoom />
   return <ConcreteRoom {...props} />
-}
-
-// 9 — klossete sorting puzzle: dark mat with a coloured home zone per block.
-function KlosseRoom({ box, visibleWalls }: RoomProps) {
-  const zones = useMemo(() => puzzleZones(box), [box.bx, box.bz])
-  return (
-    <>
-      <ambientLight intensity={0.5} color="#eef1f7" />
-      <directionalLight position={[4, 10, -4]} intensity={0.5} color="#ffffff" />
-      <pointLight position={[0, 9, 4]} intensity={14} distance={30} decay={2} color="#cfe0ff" />
-
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
-        <planeGeometry args={[box.bx * 2, box.bz * 2]} />
-        <meshStandardMaterial color="#15171d" roughness={0.92} metalness={0} />
-      </mesh>
-
-      {zones.map((z) => (
-        <group key={z.id} position={[z.x, 0.012, z.z]} rotation={[-Math.PI / 2, 0, 0]}>
-          {z.shape === "cylinder" ? (
-            <>
-              <mesh>
-                <circleGeometry args={[z.radius + 0.28, 40]} />
-                <meshBasicMaterial color={z.color} transparent opacity={0.38} />
-              </mesh>
-              <lineSegments>
-                <edgesGeometry args={[new THREE.CircleGeometry(z.radius + 0.28, 40)]} />
-                <lineBasicMaterial color={z.color} transparent opacity={0.9} toneMapped={false} />
-              </lineSegments>
-            </>
-          ) : (
-            <>
-              <mesh>
-                <planeGeometry args={[(z.hx + 0.28) * 2, (z.hz + 0.28) * 2]} />
-                <meshBasicMaterial color={z.color} transparent opacity={0.38} />
-              </mesh>
-              <lineSegments>
-                <edgesGeometry args={[new THREE.PlaneGeometry((z.hx + 0.28) * 2, (z.hz + 0.28) * 2)]} />
-                <lineBasicMaterial color={z.color} transparent opacity={0.9} toneMapped={false} />
-              </lineSegments>
-            </>
-          )}
-        </group>
-      ))}
-
-      {visibleWalls.map((w, i) => (
-        <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
-          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
-          <meshStandardMaterial color="#1b1e25" roughness={0.9} metalness={0} />
-        </mesh>
-      ))}
-    </>
-  )
-}
-
-// Win detection + the Morse "lightbulb" celebration. Lives where it can see the
-// rigid bodies; renders a flashing light + halo per block.
-function PuzzleController({
-  bodies,
-  box,
-  lockRef,
-}: {
-  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
-  box: Box
-  lockRef: React.MutableRefObject<boolean>
-}) {
-  const zones = useMemo(() => puzzleZones(box), [box.bx, box.bz])
-  const win = useRef({ won: false, t: 0, brightness: 0 })
-  const dwell = useRef(0)
-  const prevOn = useRef(false)
-  const groups = useRef<(THREE.Group | null)[]>([])
-
-  useEffect(() => {
-    // leaving the puzzle: unlock + hand the blocks back to physics
-    return () => {
-      lockRef.current = false
-      for (const z of zones) bodies.current[z.id]?.setBodyType(BODY_DYNAMIC, true)
-    }
-  }, [zones, bodies, lockRef])
-
-  useFrame((_s, dt) => {
-    const W = win.current
-
-    if (!W.won) {
-      let all = true
-      for (const z of zones) {
-        const body = bodies.current[z.id]
-        if (!body) {
-          all = false
-          break
-        }
-        const t = body.translation()
-        const lv = body.linvel()
-        const onZone =
-          Math.abs(t.x - z.x) < z.tolX &&
-          Math.abs(t.z - z.z) < z.tolZ &&
-          t.y < z.restY + 0.6 // resting, not lifted
-        const settled = Math.hypot(lv.x, lv.y, lv.z) < 0.7
-        // the cylinder only counts if it's standing TALL on its circle
-        let upright = true
-        if (z.shape === "cylinder") {
-          const r = body.rotation()
-          const up = new THREE.Vector3(0, 1, 0).applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w))
-          upright = up.y > 0.82
-        }
-        if (!(onZone && settled && upright)) {
-          all = false
-          break
-        }
-      }
-      if (all) {
-        dwell.current += dt
-        if (dwell.current > 0.45) {
-          W.won = true
-          W.t = 0
-          lockRef.current = true
-          for (const z of zones) bodies.current[z.id]?.setBodyType(BODY_KINEMATIC_POSITION, true)
-        }
-      } else {
-        dwell.current = 0
-      }
-    } else {
-      // Morse blink
-      W.t += dt
-      const tu = (W.t / MORSE_UNIT) % KLOSSE_TOTAL
-      let acc = 0
-      let on = false
-      for (const p of KLOSSE_PULSES) {
-        if (tu >= acc && tu < acc + p.units) {
-          on = p.on
-          break
-        }
-        acc += p.units
-      }
-      if (on && !prevOn.current) playBeep() // telegraph beep on each Morse pulse
-      prevOn.current = on
-      W.brightness += ((on ? 1 : 0) - W.brightness) * 0.55
-      // shake the blocks while lit, hold them on their zones
-      zones.forEach((z) => {
-        const body = bodies.current[z.id]
-        if (!body) return
-        const sh = W.brightness * 0.05
-        body.setNextKinematicTranslation({
-          x: z.x + (Math.random() - 0.5) * sh,
-          y: z.restY + 0.02 + Math.abs(Math.random()) * sh * 0.5,
-          z: z.z + (Math.random() - 0.5) * sh,
-        })
-      })
-    }
-
-    // drive the lightbulbs
-    groups.current.forEach((g) => {
-      if (!g) return
-      const light = g.children[0] as THREE.PointLight
-      const halo = g.children[1] as THREE.Mesh
-      if (light) light.intensity = W.brightness * 95
-      if (halo) (halo.material as THREE.MeshBasicMaterial).opacity = W.brightness * 0.5
-    })
-  })
-
-  return (
-    <>
-      {zones.map((z, i) => (
-        <group
-          key={z.id}
-          position={[z.x, z.restY, z.z]}
-          ref={(el) => {
-            groups.current[i] = el
-          }}
-        >
-          <pointLight intensity={0} distance={14} decay={2} color="#fffbe8" />
-          <mesh scale={Math.max(z.hx, z.hz, z.radius) * 2.4}>
-            <sphereGeometry args={[1, 16, 16]} />
-            <meshBasicMaterial color="#fffdf2" transparent opacity={0} blending={THREE.AdditiveBlending} depthWrite={false} toneMapped={false} />
-          </mesh>
-        </group>
-      ))}
-    </>
-  )
-}
-
-/* ---- projection puzzle: flat colour projections + a target shape ---- */
-function projectionTargets(box: Box): Zone[] {
-  // A balanced, symmetric emblem: the big square sits in the centre, the small
-  // square above and the circle below, with the two planks as side bars. Fixed
-  // world spacing (scaled down only if the tray is small) so it always reads as
-  // a deliberate composition rather than stretching with the aspect ratio.
-  const layout: { id: string; x: number; z: number }[] = [
-    { id: "orange", x: 0, z: 0 }, // central square
-    { id: "cube", x: 0, z: -2.05 }, // small square above
-    { id: "cylinder", x: 0, z: 2.05 }, // circle below
-    { id: "plank-long", x: -2.0, z: 0 }, // left bar
-    { id: "plank-short", x: 2.0, z: 0 }, // right bar
-  ]
-  const fit = Math.min(1, (box.bx - 0.5) / 2.6, (box.bz - 0.5) / 2.7)
-  return layout.flatMap((L) => {
-    const b = BLOCKS.find((bb) => bb.id === L.id)
-    if (!b) return []
-    const isCyl = b.shape === "cylinder"
-    const hx = isCyl ? b.radius : b.half[0]
-    const hz = isCyl ? b.radius : b.half[2]
-    const restY = isCyl ? b.halfHeight : b.half[1]
-    return [
-      {
-        id: L.id,
-        color: b.color,
-        shape: b.shape,
-        x: L.x * fit,
-        z: L.z * fit,
-        hx,
-        hz,
-        radius: isCyl ? b.radius : 0,
-        restY,
-        tolX: hx + 0.6,
-        tolZ: hz + 0.6,
-      } satisfies Zone,
-    ]
-  })
-}
-
-// 10 — Projection room: the 3D shapes are flat and colourless; you only see
-// their colour as a flat projection on the dark floor. Slide the projections
-// onto the target outline (a symmetric emblem) and the 3D forms appear.
-function ProjectionRoom({ box, visibleWalls }: RoomProps) {
-  const targets = useMemo(() => projectionTargets(box), [box.bx, box.bz])
-  return (
-    <>
-      <ambientLight intensity={0.34} color="#aab2c4" />
-      <directionalLight position={[-6, 18, -5]} intensity={0.7} color="#ffffff" />
-
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
-        <planeGeometry args={[box.bx * 2, box.bz * 2]} />
-        <meshStandardMaterial color="#101218" roughness={0.96} metalness={0} />
-      </mesh>
-
-      {/* the target slots the projections must be arranged onto: a faint filled
-          recess + a crisp outline so each reads as a place to drop a piece */}
-      {targets.map((z) => (
-        <group key={z.id} position={[z.x, 0.014, z.z]} rotation={[-Math.PI / 2, 0, 0]}>
-          <mesh>
-            {z.shape === "cylinder" ? (
-              <circleGeometry args={[z.radius + 0.1, 44]} />
-            ) : (
-              <planeGeometry args={[(z.hx + 0.1) * 2, (z.hz + 0.1) * 2]} />
-            )}
-            <meshBasicMaterial color="#8294b4" transparent opacity={0.08} toneMapped={false} />
-          </mesh>
-          <lineSegments>
-            <edgesGeometry
-              args={[
-                z.shape === "cylinder"
-                  ? new THREE.CircleGeometry(z.radius + 0.1, 44)
-                  : new THREE.PlaneGeometry((z.hx + 0.1) * 2, (z.hz + 0.1) * 2),
-              ]}
-            />
-            <lineBasicMaterial color="#9fb0cf" transparent opacity={0.9} toneMapped={false} />
-          </lineSegments>
-        </group>
-      ))}
-
-      {visibleWalls.map((w, i) => (
-        <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
-          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
-          <meshStandardMaterial color="#15171d" roughness={0.92} metalness={0} />
-        </mesh>
-      ))}
-    </>
-  )
-}
-
-// Live colour projections under each block + solve detection + the reveal flash.
-function ProjectionController({
-  bodies,
-  box,
-  revealRef,
-}: {
-  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
-  box: Box
-  revealRef: React.MutableRefObject<boolean>
-}) {
-  const targets = useMemo(() => projectionTargets(box), [box.bx, box.bz])
-  const groups = useRef<(THREE.Group | null)[]>([])
-  const dwell = useRef(0)
-  const flash = useRef<THREE.PointLight>(null)
-  const flashT = useRef(0)
-
-  useEffect(() => () => {
-    revealRef.current = false
-  }, [revealRef])
-
-  useFrame((_s, dt) => {
-    // slide each colour projection to sit directly under its (colourless) block
-    targets.forEach((z, i) => {
-      const g = groups.current[i]
-      const body = bodies.current[z.id]
-      if (!g || !body) return
-      const t = body.translation()
-      const r = body.rotation()
-      const yaw = Math.atan2(2 * (r.w * r.y + r.x * r.z), 1 - 2 * (r.y * r.y + r.z * r.z))
-      g.position.set(t.x, 0.02, t.z)
-      g.rotation.set(-Math.PI / 2, 0, -yaw)
-    })
-
-    if (!revealRef.current) {
-      let all = true
-      for (const z of targets) {
-        const body = bodies.current[z.id]
-        if (!body) {
-          all = false
-          break
-        }
-        const t = body.translation()
-        const lv = body.linvel()
-        const placed =
-          Math.abs(t.x - z.x) < z.tolX &&
-          Math.abs(t.z - z.z) < z.tolZ &&
-          Math.hypot(lv.x, lv.y, lv.z) < 1.3
-        if (!placed) {
-          all = false
-          break
-        }
-      }
-      if (all) {
-        dwell.current += dt
-        if (dwell.current > 0.5) {
-          revealRef.current = true
-          flashT.current = 1
-        }
-      } else {
-        dwell.current = 0
-      }
-    }
-
-    flashT.current = Math.max(0, flashT.current - dt * 0.8)
-    if (flash.current) flash.current.intensity = flashT.current * 70
-  })
-
-  return (
-    <>
-      <pointLight ref={flash} position={[0, 6, 0]} distance={44} decay={2} color="#ffffff" intensity={0} />
-      {targets.map((z, i) => (
-        <group
-          key={z.id}
-          ref={(el) => {
-            groups.current[i] = el
-          }}
-          rotation={[-Math.PI / 2, 0, 0]}
-        >
-          <mesh>
-            {z.shape === "cylinder" ? (
-              <circleGeometry args={[z.radius, 40]} />
-            ) : (
-              <planeGeometry args={[z.hx * 2, z.hz * 2]} />
-            )}
-            <meshBasicMaterial color={z.color} transparent opacity={0.92} toneMapped={false} />
-          </mesh>
-        </group>
-      ))}
-    </>
-  )
 }
 
 /* ---- magnet totem: each piece snaps to ONE partner, building a figure ---- */
@@ -3540,85 +3052,6 @@ function SoloController({
   )
 }
 
-// 8 — The Fourth Side room: cold TRON grid floor + walls.
-function FourthRoom({ box, visibleWalls }: RoomProps) {
-  const mat = useMemo(
-    () =>
-      new THREE.ShaderMaterial({
-        uniforms: { scale: { value: 9 } },
-        vertexShader: CRT_VERT,
-        fragmentShader: GRID_FRAG,
-      }),
-    [],
-  )
-  useEffect(() => () => mat.dispose(), [mat])
-  const fw = box.bx * 2
-  const fd = box.bz * 2
-  return (
-    <>
-      <ambientLight intensity={0.22} color="#9fc4ff" />
-      <directionalLight position={[4, 10, -6]} intensity={0.45} color="#cfe0ff" />
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} material={mat}>
-        <planeGeometry args={[fw, fd]} />
-      </mesh>
-      {visibleWalls.map((w, i) => (
-        <mesh key={`wall-${i}`} position={w.pos} material={mat}>
-          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
-        </mesh>
-      ))}
-    </>
-  )
-}
-
-// A precise tesseract (hypercube) projection around a box of half-extents h:
-// the inner cube hugs the real shape, an outer cube is the "fourth side", and
-// every corner is joined to its counterpart – the classic cube-within-a-cube.
-function makeTesseract(hx: number, hy: number, hz: number, s0: number, s1: number) {
-  const corner = (i: number): [number, number, number] => [i & 1 ? 1 : -1, i & 2 ? 1 : -1, i & 4 ? 1 : -1]
-  const inner: [number, number, number][] = []
-  const outer: [number, number, number][] = []
-  for (let i = 0; i < 8; i++) {
-    const c = corner(i)
-    inner.push([c[0] * hx * s0, c[1] * hy * s0, c[2] * hz * s0])
-    outer.push([c[0] * hx * s1, c[1] * hy * s1, c[2] * hz * s1])
-  }
-  const seg: number[] = []
-  for (let i = 0; i < 8; i++) {
-    for (let j = i + 1; j < 8; j++) {
-      const d = i ^ j
-      if (d === 1 || d === 2 || d === 4) {
-        seg.push(...inner[i], ...inner[j], ...outer[i], ...outer[j]) // matching edges of both cubes
-      }
-    }
-    seg.push(...inner[i], ...outer[i]) // join the cube to its fourth-side shell
-  }
-  const g = new THREE.BufferGeometry()
-  g.setAttribute("position", new THREE.Float32BufferAttribute(seg, 3))
-  return g
-}
-
-// The "fourth side": one precise hyper-object per shape, slowly rotating as a
-// rigid whole. Rendered as a child of the block's rigid body, so it tracks the
-// shape exactly. Cold cyan; bloom makes the edges glow.
-function Afterimage({ block }: { block: Block }) {
-  const ref = useRef<THREE.Group>(null)
-  useFrame((_s, dt) => {
-    if (!ref.current) return
-    ref.current.rotation.y += dt * 0.18
-    ref.current.rotation.z += dt * 0.07
-  })
-  const half: [number, number, number] =
-    block.shape === "cylinder" ? [block.radius, block.halfHeight, block.radius] : block.half
-  const geom = useMemo(() => makeTesseract(half[0], half[1], half[2], 1.06, 1.7), [half[0], half[1], half[2]])
-  return (
-    <group ref={ref}>
-      <lineSegments geometry={geom}>
-        <lineBasicMaterial color="#46dcff" transparent opacity={0.6} toneMapped={false} />
-      </lineSegments>
-    </group>
-  )
-}
-
 // 6 — Reality peel room (shader on floor + walls).
 function PeelRoom({ box, visibleWalls }: RoomProps) {
   const mat = useMemo(
@@ -4117,17 +3550,15 @@ function SceneContents({
   // to right angles so it's easy to line up. `base` is the orientation when the
   // second finger landed; `delta` is the live yaw the servo applies on top.
   const twist = useRef<{ base: THREE.Quaternion; start: number; delta: number; active: boolean } | null>(null)
-  const puzzleLock = useRef(false) // blocks become impervious during the win celebration
-  const revealRef = useRef(false) // projection room: solved -> 3D forms appear in colour
+  const revealRef = useRef(false) // solved -> the room plays its reveal / win flash
   const solvedFired = useRef(false) // edge-detect the solve so onSolved fires once
   useEffect(() => {
     revealRef.current = false // reset the reveal when the environment changes
     solvedFired.current = false
   }, [env.id])
-  // Watch the per-room win signals (klossete lock / projection+magnet reveal);
-  // fire onSolved exactly once when a level is solved.
+  // Watch the per-room win signal and fire onSolved exactly once when solved.
   useFrame(() => {
-    const solved = revealRef.current || puzzleLock.current
+    const solved = revealRef.current
     if (solved && !solvedFired.current) {
       solvedFired.current = true
       onSolved?.()
@@ -4199,7 +3630,6 @@ function SceneContents({
   // hangs and swings from the cursor under gravity instead of teleporting.
   const onGrab = useCallback(
     (body: RapierRigidBody, point: THREE.Vector3, block: Block) => {
-      if (puzzleLock.current) return // impervious while the blocks celebrate
       gl.domElement.style.cursor = "grabbing"
       const t = body.translation()
       const r = body.rotation()
@@ -4485,8 +3915,21 @@ function SceneContents({
     // 2) keep holding without letting go and it floats all the way up close,
     //    like lifting a chess piece off the board to inspect it
     const rise = THREE.MathUtils.smoothstep(held, 1.3, 4.0)
-    const targetLift = THREE.MathUtils.lerp(carryLift, closeMax, rise)
-    d.liftY += (targetLift - d.liftY) * 0.12
+    let targetLift = THREE.MathUtils.lerp(carryLift, closeMax, rise)
+    // While twisting, hold the block high enough that it can spin in clear air:
+    // its rotation sweeps a sphere of `reach` about the centre, so lift the
+    // centre to at least that reach (plus a margin) above the floor. Rise to it
+    // quickly so a turn started right after grabbing doesn't clip the floor or a
+    // layer below.
+    const tw = twist.current
+    const twisting = !!(tw && tw.active)
+    const reach =
+      d.block.shape === "cylinder"
+        ? Math.hypot(d.block.radius, d.block.halfHeight)
+        : Math.hypot(d.block.half[0], d.block.half[1], d.block.half[2])
+    if (twisting) targetLift = Math.max(targetLift, reach + TWIST_LIFT_MARGIN)
+    targetLift = Math.min(targetLift, MAX_LIFT)
+    d.liftY += (targetLift - d.liftY) * (twisting ? 0.3 : 0.12)
     d.plane.constant = -d.liftY
 
     // where the cursor wants the grab point to be (a point on the lift plane,
@@ -4535,16 +3978,22 @@ function SceneContents({
       },
       true,
     )
-    const tw = twist.current
-    if (tw && tw.active) {
-      // a second finger is twisting: drive the rotation directly (predictable,
-      // snappy) on top of the orientation captured when it landed. A box yaws
-      // about world-Y; the cylinder is symmetric about its axis, so for it the
-      // same twist instead tips it about a horizontal axis — that's how you
-      // stand it up on its end.
+    if (twisting && tw) {
+      // a second finger is twisting: ease the orientation toward the gesture
+      // target instead of snapping to it. A box yaws about world-Y; the cylinder
+      // is symmetric about its axis, so for it the same twist instead tips it
+      // about a horizontal axis — that's how you stand it up on its end. The
+      // 90° swipe-flips bake into tw.base, so they ride this same easing and
+      // turn over smoothly too.
       const axis = d.block.shape === "cylinder" ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)
       const targetQ = new THREE.Quaternion().setFromAxisAngle(axis, tw.delta).multiply(tw.base)
-      d.body.setRotation({ x: targetQ.x, y: targetQ.y, z: targetQ.z, w: targetQ.w }, true)
+      const cur = new THREE.Quaternion(r.x, r.y, r.z, r.w)
+      // angle still to turn, and the most we may turn this frame (speed cap)
+      const ang = 2 * Math.acos(THREE.MathUtils.clamp(Math.abs(cur.dot(targetQ)), 0, 1))
+      const maxStep = TWIST_MAX_RATE * dt
+      const f = ang > 1e-4 ? Math.min(TWIST_EASE, maxStep / ang) : 1
+      cur.slerp(targetQ, f)
+      d.body.setRotation({ x: cur.x, y: cur.y, z: cur.z, w: cur.w }, true)
       d.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
     } else {
       const av = d.body.angvel()
@@ -4640,12 +4089,6 @@ function SceneContents({
       {/* reactive floor: tiles flash where blocks strike, brightness ~ force */}
       <ImpactGlows poolRef={glowPool} active={!!env.reactive} tile={GLASS_TILE} />
 
-      {/* klossete sorting puzzle: win detection + Morse lightbulb celebration */}
-      {env.puzzle && <PuzzleController bodies={bodies} box={box} lockRef={puzzleLock} />}
-
-      {/* projection puzzle: colour projections under the colourless blocks */}
-      {env.projection && <ProjectionController bodies={bodies} box={box} revealRef={revealRef} />}
-
       {/* magnet/totem puzzle: gentle pairwise snaps assemble a figure */}
       {env.magnet && <MagnetController bodies={bodies} box={box} dragRef={drag} revealRef={revealRef} />}
 
@@ -4713,9 +4156,6 @@ function SceneContents({
           onGrab={onGrab}
           onImpact={onBlockImpact}
           knock={!reactive}
-          showAfterimage={env.fourthSide === true}
-          flat={env.projection === true}
-          revealRef={revealRef}
           measureMode={measureMode}
           selected={selectedId === b.id}
           onSelect={(id) => setSelectedId(id)}
