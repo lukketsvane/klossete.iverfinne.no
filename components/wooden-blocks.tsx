@@ -647,10 +647,11 @@ const STACK_LEVELS: EnvConfig[] = STACK_BGS.map((bg, i) => ({
   stackCount: STACK_COUNTS[i],
 }))
 
-// 26–49: the "cube-walk" section – mostly real labyrinths that grow level by
-// level (tip the cube to the exit), with a piloted solo block stage every few
-// levels for variety. 50 closes the game by assembling the totem figure.
-const SOLO_BLOCKS = ["plank-long", "plank-short", "orange", "cylinder"]
+// 26–49: the piloting section. It cycles through ALL five blocks so each gets a
+// handful of stages (not just the cube): the cube tips through growing labyrinths,
+// each plank/slab is piloted across open ground with its own tumble, and the red
+// cylinder rolls — so its stages play like a little driving game. 50 closes the
+// game by assembling the totem figure.
 const MAZE_LOOK = {
   look: "maze" as EnvKind,
   bg: "#05070d",
@@ -666,29 +667,47 @@ const SOLO_LOOK = {
   contact: { color: "#000000", opacity: 0.4 },
   bloom: true,
 }
+// one block per slot, cycled, so the section is spread evenly across all five
+const WALK_CYCLE = ["cube", "orange", "plank-long", "plank-short", "cylinder"]
+const SOLO_MOSAIC: Record<string, number> = { orange: 3, "plank-long": 1, "plank-short": 2, cylinder: 4 }
 const CUBEWALK_LEVELS: EnvConfig[] = Array.from({ length: 24 }, (_, i) => {
-  // every 4th stage pilots a non-cube block on open ground; the rest are mazes
-  if (i % 4 === 3) {
-    const b = SOLO_BLOCKS[Math.floor(i / 4) % SOLO_BLOCKS.length]
-    const bnd = 4 + (Math.floor(i / 4) % 4) // roam radius 4..7
+  const block = WALK_CYCLE[i % WALK_CYCLE.length]
+  const round = Math.floor(i / WALK_CYCLE.length) // 0..4 – difficulty climbs each lap
+  if (block === "cube") {
+    const rooms = Math.min(8, 4 + round) // labyrinths grow lap by lap (phone-readable cap)
     return {
-      id: `cw-solo-${i}`,
-      name: `Pilot ${i + 1}`,
+      id: `cw-maze-${i}`,
+      name: `Labyrint ${i + 1}`,
+      ...MAZE_LOOK,
+      maze: true,
+      mazeRooms: rooms,
+      mazeSeed: 0x9e37 + i * 2654435761,
+    }
+  }
+  if (block === "cylinder") {
+    // the cylinder rolls – give it a long, open "drive" that grows each lap
+    const bnd = 7 + round // 7..11
+    return {
+      id: `cw-drive-${i}`,
+      name: `Køyr ${i + 1}`,
       ...SOLO_LOOK,
-      solo: b,
+      solo: "cylinder",
+      mosaic: SOLO_MOSAIC.cylinder,
       soloStart: [-(bnd - 1), bnd - 1] as [number, number],
       soloGoal: [bnd - 1, -(bnd - 1)] as [number, number],
       soloBound: bnd,
     }
   }
-  const rooms = Math.min(8, 4 + Math.floor(i / 2)) // labyrinths grow with depth (capped so late mazes stay readable on a phone)
+  const bnd = 4 + round // roam radius 4..8
   return {
-    id: `cw-maze-${i}`,
-    name: `Labyrint ${i + 1}`,
-    ...MAZE_LOOK,
-    maze: true,
-    mazeRooms: rooms,
-    mazeSeed: 0x9e37 + i * 2654435761,
+    id: `cw-solo-${i}`,
+    name: `Pilot ${i + 1}`,
+    ...SOLO_LOOK,
+    solo: block,
+    mosaic: SOLO_MOSAIC[block],
+    soloStart: [-(bnd - 1), bnd - 1] as [number, number],
+    soloGoal: [bnd - 1, -(bnd - 1)] as [number, number],
+    soloBound: bnd,
   }
 })
 
@@ -4327,7 +4346,13 @@ function SceneContents({
         d.baseLift = t.y
         d.grabTime = performance.now()
       }
-      playImpact(W.id, 0.4) // a wooden knock as it lands
+      // landing "impact": kinematic tips don't fire the physics collision, so
+      // ring it here ourselves – a wooden knock on normal floors, and on the
+      // reactive music floor this lights + sounds the tile (and counts the note),
+      // so walking a block over the soundbox makes music like a real strike does.
+      const lt = W.body.translation()
+      if (!reactive) playImpact(W.id, 0.45)
+      onBlockImpact(lt.x, lt.z, 0.45)
       haptic(8)
       walk.current = null
     }
@@ -4515,6 +4540,19 @@ function SceneContents({
 /* ------------------------------------------------------------------ */
 /*  Public component                                                   */
 /* ------------------------------------------------------------------ */
+// Pick a pure black/white UI tint from a background hex by perceived luminance,
+// so the control icons read on both the pale tutorial floors and the near-black
+// space/maze rooms (translucent via the cluster's opacity – never a flat grey).
+function uiTint(bg: string): string {
+  const h = bg.replace("#", "")
+  if (h.length < 6) return "#000000"
+  const r = parseInt(h.slice(0, 2), 16)
+  const g = parseInt(h.slice(2, 4), 16)
+  const b = parseInt(h.slice(4, 6), 16)
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+  return lum < 0.5 ? "#ffffff" : "#000000"
+}
+
 export default function WoodenBlocks({
   initialLevel,
   initialMuted = false,
@@ -4832,13 +4870,15 @@ export default function WoodenBlocks({
         onPointerEnter={(e) => e.pointerType === "mouse" && revealUI()}
         onPointerLeave={(e) => e.pointerType === "mouse" && scheduleHide()}
         style={{
-          color: env.id === "gold" ? "#efe1c2" : "#262626",
+          // pure black/white by background lightness (translucent via opacity below,
+          // so it's never a flat grey)
+          color: uiTint(env.bg),
           // sit clear of the status bar / notch now that we draw edge-to-edge
           top: "calc(env(safe-area-inset-top, 0px) + 0.5rem)",
           left: "calc(env(safe-area-inset-left, 0px) + 0.5rem)",
         }}
         className={`pointer-events-auto absolute z-10 flex flex-col gap-2 p-1 transition-opacity duration-700 ease-out ${
-          uiShown ? "opacity-90" : "opacity-30"
+          uiShown ? "opacity-55" : "opacity-20"
         }`}
       >
         {onExit && (
