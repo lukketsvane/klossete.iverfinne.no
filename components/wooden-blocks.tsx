@@ -395,8 +395,11 @@ type EnvConfig = {
 
 // A target outline a block must be dragged into. nx/nz are -1..1, scaled by the
 // tray; `upright` wants a cylinder stood on its end; `align` wants a plank's long
-// side pointing along that axis (so the player has to rotate it to fit).
-type PlaceSpec = { id: string; nx: number; nz: number; upright?: boolean; align?: "x" | "z" }
+// side pointing along that axis (so the player has to rotate it to fit). `tier`
+// stacks targets at the SAME spot: tier 0 sits on the floor, tier 1 must rest on
+// the tier-0 block, and so on — overlapping colour areas you can only satisfy by
+// stacking the pieces.
+type PlaceSpec = { id: string; nx: number; nz: number; upright?: boolean; align?: "x" | "z"; tier?: number }
 
 // An interior wall that splits the tray, with a single gap the player must steer a
 // block through to reach the far side. `axis` is the world axis the wall runs along
@@ -767,34 +770,38 @@ const MID_LEVELS: EnvConfig[] = [
       { id: "cylinder", nx: 0, nz: -0.25, upright: true },
     ],
   },
-  // 16 — a chevron / funnel pointing down the screen
+  // 16 — first stacking-by-overlap: the cube's area sits ON the orange's area, so
+  // the only way to fill both is to stack the cube on top of the orange.
   {
     id: "m-chevron",
-    name: "Vinkel",
+    name: "Oppå",
     ...TUT_LOOK,
     bg: "#c6c0b4",
+    hint: "Felta ligg oppå kvarandre – stable klossane.",
     place: [
-      { id: "plank-long", nx: -0.6, nz: -0.45, align: "z" },
-      { id: "plank-short", nx: 0.6, nz: -0.45, align: "z" },
-      { id: "cube", nx: -0.5, nz: 0.22 },
-      { id: "orange", nx: 0.5, nz: 0.22 },
-      { id: "cylinder", nx: 0, nz: 0.8, upright: true },
+      { id: "orange", nx: 0, nz: 0 },
+      { id: "cube", nx: 0, nz: 0, tier: 1 }, // stacked on the orange
+      { id: "plank-long", nx: -0.5, nz: -0.55, align: "z" },
+      { id: "plank-short", nx: 0.5, nz: -0.55, align: "z" },
+      { id: "cylinder", nx: 0, nz: 0.6, upright: true },
     ],
   },
   // 17 — change of pace: the full five-high tower
   { id: "m-stack5", name: "Stable 5", ...TUT_LOOK, bg: "#cebfac", stackAll: true, stackCount: 5 },
-  // 18 — a star: a centre point with the other four set around it
+  // 18 — double stack: two overlapping pairs (cube on orange, short plank on long
+  // plank) plus a free cylinder — two towers to build from overlapping areas.
   {
     id: "m-star",
-    name: "Stjerne",
+    name: "Dobbel",
     ...TUT_LOOK,
     bg: "#c1c5bd",
+    hint: "To felt-par ligg oppå kvarandre – bygg to stablar.",
     place: [
-      { id: "cylinder", nx: 0, nz: 0, upright: true },
-      { id: "cube", nx: -0.5, nz: -0.45 },
-      { id: "orange", nx: 0.5, nz: -0.45 },
-      { id: "plank-short", nx: -0.5, nz: 0.45, align: "z" },
-      { id: "plank-long", nx: 0.5, nz: 0.45, align: "z" },
+      { id: "orange", nx: -0.4, nz: -0.05 },
+      { id: "cube", nx: -0.4, nz: -0.05, tier: 1 },
+      { id: "plank-long", nx: 0.4, nz: -0.05, align: "z" },
+      { id: "plank-short", nx: 0.4, nz: -0.05, align: "z", tier: 1 },
+      { id: "cylinder", nx: 0, nz: 0.6, upright: true },
     ],
   },
   // 19 — the hardest: two offset walls make a sluice. Each piece has to zig-zag up
@@ -824,34 +831,15 @@ const MID_LEVELS: EnvConfig[] = [
 // walls-with-gaps and checkpoints as the rounds climb. (The cylinder's rolling
 // "grand prix" is a separate minigame, not part of this journey.) 50 closes the
 // game by assembling the totem figure.
-const MAZE_LOOK = {
-  look: "maze" as EnvKind,
-  bg: "#05070d",
-  keyColor: "#cfe0ff",
-  keyIntensity: 1.4,
-  contact: { color: "#000000", opacity: 0 },
-  bloom: true,
-}
-const SOLO_LOOK = {
-  bg: "#0c0b0a",
-  keyColor: "#fff1dc",
-  keyIntensity: 1.8,
-  contact: { color: "#000000", opacity: 0.4 },
-  bloom: true,
-}
+// The whole piloting section shares the calm, LIGHT tutorial look (same lighting +
+// backdrop as the early levels) – no dark rooms.
+const MAZE_LOOK = { look: "maze" as EnvKind, ...TUT_LOOK }
+const SOLO_LOOK = { ...TUT_LOOK }
 // one block per slot, cycled, so the section is spread evenly across the four
 // piloted pieces (the cylinder's rolling "grand prix" is a separate minigame and
 // is no longer part of the main journey).
 const WALK_CYCLE = ["cube", "orange", "plank-long", "plank-short"]
 const SOLO_MOSAIC: Record<string, number> = { orange: 3, "plank-long": 1, "plank-short": 2 }
-// distinct backdrops so the piloting stages read as a varied series, not one room
-const SOLO_THEMES = [
-  { bg: "#0c0b0a", keyColor: "#fff1dc" }, // warm
-  { bg: "#0a0c11", keyColor: "#cfe0ff" }, // cool blue
-  { bg: "#110a0d", keyColor: "#ffd2e2" }, // rose
-  { bg: "#0a110d", keyColor: "#c9ffd9" }, // mint
-  { bg: "#110f08", keyColor: "#ffe6a8" }, // amber
-]
 const PILOT_NAMES: Record<string, string> = { orange: "Slaben", "plank-long": "Langferd", "plank-short": "Vippen" }
 // small deterministic PRNG so the obstacle layouts are stable across renders
 function mulberry(seed: number) {
@@ -909,15 +897,12 @@ function pilotVia(bound: number, round: number, seed: number, walls: [number, nu
 const CUBEWALK_LEVELS: EnvConfig[] = Array.from({ length: 24 }, (_, i) => {
   const block = WALK_CYCLE[i % WALK_CYCLE.length]
   const round = Math.floor(i / WALK_CYCLE.length) // 0..5 – difficulty climbs each lap
-  const theme = SOLO_THEMES[i % SOLO_THEMES.length]
   if (block === "cube") {
     const rooms = Math.min(8, 4 + round) // labyrinths grow lap by lap (phone-readable cap)
     return {
       id: `cw-maze-${i}`,
       name: `Labyrint ${round + 1}`,
       ...MAZE_LOOK,
-      bg: theme.bg,
-      keyColor: theme.keyColor,
       maze: true,
       mazeRooms: rooms,
       mazeSeed: 0x9e37 + i * 2654435761,
@@ -934,8 +919,6 @@ const CUBEWALK_LEVELS: EnvConfig[] = Array.from({ length: 24 }, (_, i) => {
     id: `cw-solo-${i}`,
     name: `${PILOT_NAMES[block]} ${round + 1}`,
     ...SOLO_LOOK,
-    bg: theme.bg,
-    keyColor: theme.keyColor,
     solo: block,
     mosaic: SOLO_MOSAIC[block],
     soloStart: [-(bnd - 1), bnd - 1] as [number, number],
@@ -1341,9 +1324,10 @@ type Zone = {
 }
 /* ---- tutorial stages: place / rotate / stand / place-all / stack ---- */
 // A target outline (extends the sorting Zone with the orientation it wants).
-type PlaceZone = Zone & { upright: boolean; align?: "x" | "z" }
+type PlaceZone = Zone & { upright: boolean; align?: "x" | "z"; tier: number; expectedY: number }
 function placeZones(specs: PlaceSpec[], box: Box): PlaceZone[] {
-  return specs.flatMap((s) => {
+  // first pass: raw geometry per target
+  const raw = specs.flatMap((s) => {
     const b = BLOCKS.find((bb) => bb.id === s.id)
     if (!b) return []
     const isCyl = b.shape === "cylinder"
@@ -1367,24 +1351,39 @@ function placeZones(specs: PlaceSpec[], box: Box): PlaceZone[] {
       }
       restY = h[1]
     }
-    return [
-      {
-        id: s.id,
-        color: b.color,
-        shape: b.shape,
-        x: s.nx * box.bx,
-        z: s.nz * box.bz,
-        hx,
-        hz,
-        radius: isCyl ? b.radius : 0,
-        restY,
-        tolX: hx + 0.55,
-        tolZ: hz + 0.55,
-        upright: !!s.upright,
-        align: s.align,
-      } satisfies PlaceZone,
-    ]
+    return [{ s, b, isCyl, hx, hz, restY }]
   })
+  // group targets that share a spot so a tier-k target rests on the tiers below it.
+  // expectedY = (sum of full heights of the lower tiers at this spot) + own restY.
+  const spotKey = (s: PlaceSpec) => `${s.nx.toFixed(3)},${s.nz.toFixed(3)}`
+  const lowerHeight = new Map<string, number>() // running stack height per spot
+  // process tier-ascending so lower tiers contribute their height first
+  const order = raw.map((_, i) => i).sort((a, b) => (raw[a].s.tier ?? 0) - (raw[b].s.tier ?? 0))
+  const expected: number[] = new Array(raw.length)
+  for (const i of order) {
+    const { s, restY } = raw[i]
+    const key = spotKey(s)
+    const base = lowerHeight.get(key) ?? 0
+    expected[i] = base + restY
+    lowerHeight.set(key, base + restY * 2) // full block height = 2·restY
+  }
+  return raw.map((r, i) => ({
+    id: r.s.id,
+    color: r.b.color,
+    shape: r.b.shape,
+    x: r.s.nx * box.bx,
+    z: r.s.nz * box.bz,
+    hx: r.hx,
+    hz: r.hz,
+    radius: r.b.shape === "cylinder" ? r.b.radius : 0,
+    restY: r.restY,
+    tolX: r.hx + 0.55,
+    tolZ: r.hz + 0.55,
+    upright: !!r.s.upright,
+    align: r.s.align,
+    tier: r.s.tier ?? 0,
+    expectedY: expected[i],
+  }))
 }
 
 // Hand-drawn crayon footprints used to mark where each block goes (replacing the
@@ -1488,8 +1487,10 @@ function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
       {zones.map((z) => {
         const fpX = z.shape === "cylinder" && z.upright ? z.radius : z.hx
         const fpZ = z.shape === "cylinder" && z.upright ? z.radius : z.hz
+        // stacked targets share a spot: lift each higher tier a touch so the
+        // overlapping colour areas layer cleanly (and read as "stack here")
         return (
-          <mesh key={z.id} position={[z.x, 0.02, z.z]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+          <mesh key={z.id} position={[z.x, 0.02 + z.tier * 0.06, z.z]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
             <planeGeometry args={[fpX * 2 + 0.5, fpZ * 2 + 0.5]} />
             {/* the PNG is a flat white crayon shape: tint it to the block's single
                 colour and light it with a real (shadow-receiving) material, so the
@@ -1503,7 +1504,7 @@ function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
               roughness={0.95}
               metalness={0}
               polygonOffset
-              polygonOffsetFactor={-1}
+              polygonOffsetFactor={-1 - z.tier}
             />
           </mesh>
         )
@@ -1590,10 +1591,15 @@ function PlaceController({
         }
         const t = body.translation()
         const lv = body.linvel()
+        // height: a floor target (tier 0) just needs to be set down; a stacked
+        // target (tier > 0) must sit at its computed height ON the pieces below,
+        // in a tight band so you can't just hold it there in the air.
+        const heightOk =
+          z.tier === 0 ? t.y < z.expectedY + 0.55 : Math.abs(t.y - z.expectedY) < 0.55
         const placed =
           Math.abs(t.x - z.x) < z.tolX &&
           Math.abs(t.z - z.z) < z.tolZ &&
-          t.y < z.restY + 0.55 &&
+          heightOk &&
           Math.hypot(lv.x, lv.y, lv.z) < 0.85
         let orient = true
         const r = body.rotation()
@@ -2254,7 +2260,8 @@ function MazeRoom({ env }: RoomProps) {
     const cells: [number, number][] = []
     for (let y = 0; y < maze.H; y++) for (let x = 0; x < maze.W; x++) if (maze.wall[y][x]) cells.push([x, y])
     const geo = new THREE.BoxGeometry(MAZE_CELL, MAZE_CELL, MAZE_CELL)
-    const mat = new THREE.MeshStandardMaterial({ color: "#27345c", roughness: 0.78, metalness: 0.06 })
+    // warm wood walls that still read clearly against the light floor (no dark room)
+    const mat = new THREE.MeshStandardMaterial({ color: "#8f7f63", roughness: 0.9, metalness: 0 })
     const mesh = new THREE.InstancedMesh(geo, mat, cells.length)
     mesh.castShadow = false
     mesh.receiveShadow = false
@@ -2277,12 +2284,12 @@ function MazeRoom({ env }: RoomProps) {
   )
   return (
     <>
-      <ambientLight intensity={0.4} color="#22304c" />
-      <pointLight position={[0, 14, 0]} intensity={26} distance={70} decay={2} color="#bcd0ff" />
-      {/* a large dark floor under the whole maze */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
+      <ambientLight intensity={0.5} color="#fff3e3" />
+      <pointLight position={[0, 16, 0]} intensity={28} distance={90} decay={2} color="#fff0d8" />
+      {/* a large light floor under the whole maze – same calm look as the early levels */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
         <planeGeometry args={[maze.W * MAZE_CELL + 6, maze.H * MAZE_CELL + 6]} />
-        <meshStandardMaterial color="#0b1020" roughness={0.96} metalness={0} />
+        <meshStandardMaterial color="#c7c0b1" roughness={0.95} metalness={0} />
       </mesh>
       <primitive object={wallMesh} />
       {/* the exit: a crayon cube footprint + a tall beacon you can steer toward */}
@@ -2343,7 +2350,6 @@ function MazeController({
   const origCamY = useRef(0) // the rig's height, restored when we leave
   const flash = useRef<THREE.PointLight>(null)
   const flashT = useRef(0)
-  const glow = useRef<THREE.PointLight>(null) // a soft light riding the player
   const landT = useRef(0) // brief brighten as it lands
   const stepCool = useRef(0) // brief beat between rolls so it's an unhurried walk
 
@@ -2481,7 +2487,6 @@ function MazeController({
     // the position we command the cube to this frame – the camera follows THIS
     // (not the interpolated physics read) so it never jitters away from the cube
     let camFx = 0
-    let camFy = MAZE_CELL / 2
     let camFz = 0
 
     if (tip.current) {
@@ -2492,7 +2497,6 @@ function MazeController({
       const q = new THREE.Quaternion().setFromAxisAngle(T.axis, theta)
       const c = T.pivot.clone().add(T.startCenter.clone().sub(T.pivot).applyQuaternion(q))
       camFx = c.x
-      camFy = c.y
       camFz = c.z
       const rot = q.clone().multiply(T.startQ)
       cube.setNextKinematicTranslation({ x: c.x, y: c.y, z: c.z })
@@ -2526,10 +2530,6 @@ function MazeController({
     camera.lookAt(camFx, 0, camFz)
 
     landT.current = Math.max(0, landT.current - dt * 2.4)
-    if (glow.current) {
-      glow.current.position.set(camFx, camFy + 0.6, camFz)
-      glow.current.intensity = 7 + landT.current * 20
-    }
     flashT.current = Math.max(0, flashT.current - dt * 0.6)
     if (flash.current) {
       const [gx, gz] = mazeWorld(maze, maze.goal[0], maze.goal[1])
@@ -2541,7 +2541,6 @@ function MazeController({
   return (
     <>
       <pointLight ref={flash} distance={60} decay={2} color="#7cf6c8" intensity={0} />
-      <pointLight ref={glow} distance={6} decay={2} color="#dcebff" intensity={7} />
     </>
   )
 }
@@ -3339,11 +3338,12 @@ function SoloRoom({ env }: RoomProps) {
   const goalTex = sils[SILHOUETTES.indexOf(soloSilhouette(env.solo ?? ""))]
   return (
     <>
-      <ambientLight intensity={0.42} color="#fff1df" />
-      <pointLight position={[0, 11, 2]} intensity={18} distance={55} decay={2} color="#fff0d8" />
+      <ambientLight intensity={0.5} color="#fff3e3" />
+      <pointLight position={[0, 11, 2]} intensity={16} distance={60} decay={2} color="#fff0d8" />
+      {/* light tray floor, same calm look as the early levels (no dark room) */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
         <planeGeometry args={[90, 90]} />
-        <meshStandardMaterial color="#241f18" roughness={0.96} metalness={0} />
+        <meshStandardMaterial color="#c7c0b1" roughness={0.95} metalness={0} />
       </mesh>
       {/* the exit: a crayon footprint of the block, so you see the shape to land */}
       <mesh position={[gx, 0.02, gz]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
@@ -3406,7 +3406,6 @@ function SoloController({
   const origCamY = useRef(0)
   const flash = useRef<THREE.PointLight>(null)
   const flashT = useRef(0)
-  const glow = useRef<THREE.PointLight>(null)
   const landT = useRef(0)
   const CARRY = 0.55
   // each cell is one footprint-length along that axis, so a flip lands the block
@@ -3517,7 +3516,6 @@ function SoloController({
     // THIS (not the interpolated physics read) so the character never drifts /
     // jitters relative to the camera
     let fx = 0
-    let fy = CARRY
     let fz = 0
 
     if (hop.current) {
@@ -3527,7 +3525,6 @@ function SoloController({
       const p = H.from.clone().lerp(H.to, k)
       p.y = CARRY + Math.sin(Math.PI * k) * H.lift
       fx = p.x
-      fy = p.y
       fz = p.z
       const q = H.fromQ.clone().slerp(H.toQ, k)
       body.setNextKinematicTranslation({ x: p.x, y: p.y, z: p.z })
@@ -3593,10 +3590,6 @@ function SoloController({
     camera.lookAt(fx, 0, fz)
 
     landT.current = Math.max(0, landT.current - dt * 2.4)
-    if (glow.current) {
-      glow.current.position.set(fx, fy + 0.7, fz)
-      glow.current.intensity = 6 + landT.current * 16
-    }
     flashT.current = Math.max(0, flashT.current - dt * 0.6)
     if (flash.current) {
       flash.current.position.set(goal[0] * stepX, 2, goal[1] * stepZ)
@@ -3611,7 +3604,6 @@ function SoloController({
 
   return (
     <>
-      <pointLight ref={glow} distance={7} decay={2} color="#fff1dc" intensity={6} />
       <pointLight ref={flash} distance={40} decay={2} color="#7cf6c8" intensity={0} />
       {/* obstacle pillars: the cells the piece cannot enter, so you route around them */}
       {walls.map(([cx, cy], i) => (
