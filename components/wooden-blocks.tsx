@@ -350,6 +350,8 @@ type EnvConfig = {
   spawn?: Record<string, { pos: [number, number, number]; rot?: [number, number, number] }> // per-block start override
   place?: PlaceSpec[] // drag each listed block into its outlined target (with orientation rules)
   lift?: boolean // win by lifting the single block up into the air (teaches press-and-hold)
+  build?: boolean // finale: freely rebuild the figure from the reference photo (no hints)
+  reference?: string // a photo shown in this level (the build to memorise for the finale)
   stackAll?: boolean // win by stacking blocks into one tower
   stackCount?: number // how many blocks the tower needs (defaults to all five)
   watchVideo?: boolean // the video room as a "just watch it to the end" level
@@ -629,12 +631,13 @@ const INTRO_REST: EnvConfig[] = [
   { id: "t10-stack", name: "Stable", ...TUT_LOOK, stackAll: true },
 ]
 
-// 11–19: nine stacking levels (calm look, subtly different backdrops). Rather
-// than nine identical "stack all five" rooms, the goal ramps: a short three-high
-// tower to start, growing to the full five, so the difficulty climbs instead of
+// Eight stacking levels (calm look, subtly different backdrops). Rather than
+// identical "stack all five" rooms, the goal ramps: a short three-high tower to
+// start, growing to the full five, so the difficulty climbs instead of
 // repeating. The name shows the target height so it reads without extra text.
-const STACK_BGS = ["#cdc6b8", "#c9bfb0", "#c4c8be", "#ccc3b3", "#c6c0b4", "#cebfac", "#c1c5bd", "#cac3b3", "#c5bdb0"]
-const STACK_COUNTS = [3, 3, 4, 4, 4, 5, 5, 5, 5]
+// (Eight, not nine, so the space room lands exactly on level 25.)
+const STACK_BGS = ["#cdc6b8", "#c9bfb0", "#c4c8be", "#ccc3b3", "#c6c0b4", "#cebfac", "#c1c5bd", "#cac3b3"]
+const STACK_COUNTS = [3, 3, 4, 4, 5, 5, 5, 5]
 const STACK_LEVELS: EnvConfig[] = STACK_BGS.map((bg, i) => ({
   id: `stack-${i}`,
   name: `Stable ${STACK_COUNTS[i]}`,
@@ -689,20 +692,21 @@ const CUBEWALK_LEVELS: EnvConfig[] = Array.from({ length: 24 }, (_, i) => {
   }
 })
 
-// The curated journey, in two sections.
+// The curated 50-level journey, in two sections.
 const ENVIRONMENTS: EnvConfig[] = [
   ...TUTORIAL_ENVIRONMENTS, // 1–6  intro: move, rotate, lift, flip, place-all, stack
   ...INTRO_REST, // 7–10  more intro practice (same calm background)
   { ...base("video"), id: "video", name: "Film", plate: undefined, watchVideo: true }, // 11 watch to the end
-  ...STACK_LEVELS, // 12–20 stacking
-  { ...base("glass"), id: "soundbox", look: "glass", name: "Lydboks", corners: undefined, reactive: true, notes: 12 }, // 21 play 12 notes
-  base("gold"), // 22
-  base("peel"), // 23
-  base("playmat"), // 24
-  base("texturemiss"), // 25
-  { ...base("magnet"), id: "magnet", name: "Rommet" }, // 26 the space room closes section one
-  ...CUBEWALK_LEVELS, // 27–50 cube-walk
-  { ...base("five"), id: "five", name: "Totem" }, // 51 assemble the figure
+  ...STACK_LEVELS, // 12–19 stacking
+  { ...base("glass"), id: "soundbox", look: "glass", name: "Lydboks", corners: undefined, reactive: true, notes: 12 }, // 20 play 12 notes
+  base("gold"), // 21
+  { ...base("peel"), reference: "/reference/build.jpg" }, // 22 — shows the build photo to memorise for level 50
+  base("playmat"), // 23
+  base("texturemiss"), // 24
+  { ...base("magnet"), id: "magnet", name: "Rommet" }, // 25 the space room closes section one
+  ...CUBEWALK_LEVELS, // 26–49 cube-walk
+  // 50 — the finale: rebuild the figure from the photo seen earlier, no hints
+  { id: "build", name: "Bygg", ...TUT_LOOK, build: true },
 ]
 
 // Public level list (id + name, in play order) for the title/level-select UI.
@@ -1395,6 +1399,67 @@ function LiftController({
   return <pointLight ref={flash} position={[0, 6, 0]} distance={44} decay={2} color="#fff6e6" intensity={0} />
 }
 
+// Finale: rebuild the figure from the photo seen earlier – no outlines, no hints.
+// The figure's signature is the red cylinder standing upright with the orange
+// block resting on top of it (the rest form the base). Win when that totem is
+// assembled and the whole build has come to rest.
+function BuildController({
+  bodies,
+  revealRef,
+}: {
+  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  revealRef: React.MutableRefObject<boolean>
+}) {
+  const dwell = useRef(0)
+  const flash = useRef<THREE.PointLight>(null)
+  const flashT = useRef(0)
+  useEffect(() => () => {
+    revealRef.current = false
+  }, [revealRef])
+
+  useFrame((_s, dt) => {
+    if (!revealRef.current) {
+      let ok = false
+      const cyl = bodies.current["cylinder"]
+      const orange = bodies.current["orange"]
+      if (cyl && orange) {
+        const cr = cyl.rotation()
+        const up = new THREE.Vector3(0, 1, 0).applyQuaternion(new THREE.Quaternion(cr.x, cr.y, cr.z, cr.w))
+        const cylUpright = up.y > 0.9 // standing on its end
+        const c = cyl.translation()
+        const o = orange.translation()
+        const orangeOnTop = o.y - c.y > 0.5 && Math.hypot(o.x - c.x, o.z - c.z) < 0.8
+        // everything settled (no piece still being placed/sliding)
+        let settled = true
+        for (const b of BLOCKS) {
+          const body = bodies.current[b.id]
+          if (!body) {
+            settled = false
+            break
+          }
+          const lv = body.linvel()
+          if (Math.hypot(lv.x, lv.y, lv.z) > 0.6) settled = false
+        }
+        ok = cylUpright && orangeOnTop && settled
+      }
+      if (ok) {
+        dwell.current += dt
+        if (dwell.current > 0.6) {
+          revealRef.current = true
+          flashT.current = 1
+          haptic(26)
+        }
+      } else {
+        dwell.current = 0
+      }
+    }
+    flashT.current = Math.max(0, flashT.current - dt * 0.8)
+    if (flash.current) flash.current.intensity = flashT.current * 60
+  })
+
+  return <pointLight ref={flash} position={[0, 6, 0]} distance={44} decay={2} color="#fff6e6" intensity={0} />
+}
+
 // Soundbox: a wordless row of pips along the far edge that count the tones still
 // to play. Each tone struck extinguishes one pip; when the last goes dark the
 // room is solved. Driven from the live note ref in useFrame (no React state, so
@@ -1446,7 +1511,7 @@ function NoteCounter({
 
 function Room(props: RoomProps) {
   if (props.env.solo) return <SoloRoom {...props} />
-  if (props.env.place || props.env.stackAll || props.env.lift) return <TutorialRoom {...props} />
+  if (props.env.place || props.env.stackAll || props.env.lift || props.env.build) return <TutorialRoom {...props} />
   const look = props.env.look ?? props.env.id // extra levels reuse a base look
   if (look === "gold") return <GoldRoom {...props} />
   if (look === "glass") return <GlassRoom {...props} />
@@ -4368,6 +4433,9 @@ function SceneContents({
       {/* lift tutorial: raise the single block up into the air to solve */}
       {env.lift && <LiftController bodies={bodies} revealRef={revealRef} />}
 
+      {/* finale: rebuild the totem from memory (cylinder upright, orange on top) */}
+      {env.build && <BuildController bodies={bodies} revealRef={revealRef} />}
+
       {/* soundbox: a wordless pip row counting down the tones left to play */}
       {noteTarget > 0 && <NoteCounter target={noteTarget} countRef={noteCount} box={box} />}
 
@@ -4416,11 +4484,13 @@ export default function WoodenBlocks({
   initialMuted = false,
   initialTilt = false,
   onExit,
+  onLevel,
 }: {
   initialLevel?: number
   initialMuted?: boolean
   initialTilt?: boolean
   onExit?: () => void
+  onLevel?: (i: number) => void // report the live level up to the shell (picker page + highlight)
 } = {}) {
   const [measureMode, setMeasureMode] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -4467,6 +4537,12 @@ export default function WoodenBlocks({
       advancing.current = false
     }
   }, [envIndex])
+
+  // report the live level up so the shell's picker opens on the right page and
+  // highlights where you actually are
+  useEffect(() => {
+    onLevel?.(envIndex)
+  }, [envIndex, onLevel])
   const tiltRef = useRef<TiltState>({ enabled: false, beta: 0, gamma: 0, sx: 0, sz: 0 })
   const iconRef = useRef<HTMLSpanElement>(null)
   // true while a block is held – so a 2nd finger squeezes it instead of the
@@ -4695,6 +4771,16 @@ export default function WoodenBlocks({
         <PostFx envId={env.id} />
       </Canvas>
 
+      {/* reference photo: a framed picture of the build to memorise for the
+          finale, shown on the level that carries env.reference */}
+      {env.reference && (
+        <img
+          src={env.reference}
+          alt=""
+          aria-hidden
+          className="pointer-events-none absolute left-1/2 top-[6%] w-[36%] max-w-[200px] -translate-x-1/2 select-none rounded-lg border-4 border-[#f6f2ea] shadow-lg"
+        />
+      )}
 
       {/* UI – control cluster pinned to the top-left corner. Always faintly
           visible so it's never lost, brightening when the pointer comes near.
