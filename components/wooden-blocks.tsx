@@ -1180,6 +1180,11 @@ function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
     sils.forEach((t) => {
       t.colorSpace = THREE.SRGBColorSpace
       t.anisotropy = 4
+      // no mipmaps: keep the cut-out edge crisp instead of letting minification
+      // bleed a soft semi-transparent halo around the crayon shape
+      t.generateMipmaps = false
+      t.minFilter = THREE.LinearFilter
+      t.needsUpdate = true
     })
   }, [sils])
   const texOf = (url: string) => sils[SILHOUETTES.indexOf(url)]
@@ -1196,14 +1201,21 @@ function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
         const fpX = z.shape === "cylinder" && z.upright ? z.radius : z.hx
         const fpZ = z.shape === "cylinder" && z.upright ? z.radius : z.hz
         return (
-          <mesh key={z.id} position={[z.x, 0.02, z.z]} rotation={[-Math.PI / 2, 0, 0]}>
+          <mesh key={z.id} position={[z.x, 0.02, z.z]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
             <planeGeometry args={[fpX * 2 + 0.5, fpZ * 2 + 0.5]} />
-            <meshBasicMaterial
+            {/* the PNG is a flat white crayon shape: tint it to the block's single
+                colour and light it with a real (shadow-receiving) material, so the
+                marker takes the blocks' shadows and shows no speckle of its own */}
+            <meshStandardMaterial
               map={texOf(zoneSilhouette(z))}
+              color={z.color}
               transparent
-              opacity={0.62}
-              depthWrite={false}
-              toneMapped={false}
+              // only the fully-opaque core shows; any feathered edge erodes inward
+              alphaTest={0.7}
+              roughness={0.95}
+              metalness={0}
+              polygonOffset
+              polygonOffsetFactor={-1}
             />
           </mesh>
         )
