@@ -386,14 +386,26 @@ type EnvConfig = {
   soloStart?: [number, number] // cube-walk start cell (overrides the default)
   soloGoal?: [number, number] // cube-walk exit cell (overrides the default)
   soloBound?: number // cube-walk roam radius in cells (overrides the default)
+  soloWalls?: [number, number][] // blocked grid cells in a pilot stage (obstacles to route around)
+  soloVia?: [number, number][] // checkpoint cells that must all be visited before the exit counts
   mazeRooms?: number // maze level size (grid is 2·rooms+1)
   mazeSeed?: number // maze level layout seed
+  holes?: WallHole[] // interior barrier walls with a gap you must thread a block through
 }
 
 // A target outline a block must be dragged into. nx/nz are -1..1, scaled by the
 // tray; `upright` wants a cylinder stood on its end; `align` wants a plank's long
 // side pointing along that axis (so the player has to rotate it to fit).
 type PlaceSpec = { id: string; nx: number; nz: number; upright?: boolean; align?: "x" | "z" }
+
+// An interior wall that splits the tray, with a single gap the player must steer a
+// block through to reach the far side. `axis` is the world axis the wall runs along
+// ("x" = a wall stretching left↔right, blocking up↔down travel); `at` is its
+// position on the perpendicular axis (-1..1, scaled by the tray); `gapCenter` is
+// where the opening sits along the wall (-1..1); `gapWidth` is the opening width in
+// world units (size it to the block — a 30 mm cube is ~1.08 wide, so a ~1.7 gap
+// gives a snug-but-fair pass). Remember the block scale when picking widths.
+type WallHole = { axis: "x" | "z"; at: number; gapCenter: number; gapWidth: number }
 const BASE_ENVIRONMENTS: EnvConfig[] = [
   {
     id: "concrete",
@@ -558,7 +570,6 @@ const TUT_LOOK = {
 // block's colour). Shown briefly when a tutorial level opens, then fade out.
 const CARD_MOVE = "/tutorials/01_move.png" // 1-finger drag the cube
 const CARD_ROTATE = "/tutorials/02_rotate.png" // 2-finger twist the plank
-const CARD_LIFT = "/tutorials/03_lift.png" // press & hold to lift the orange block
 const CARD_FLIP = "/tutorials/04_flip.png" // 2-finger swipe to flip the cylinder upright
 const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
   {
@@ -583,13 +594,13 @@ const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
   },
   {
     id: "t3-lift",
-    name: "Løft",
+    name: "Saman",
     ...TUT_LOOK,
     only: ["cube", "orange"],
-    hint: "Løft den oransje klossen og set han oppå den blå.",
-    pictogram: CARD_LIFT,
-    // the blue cube sits high up as a base; lift the orange up from below onto it
-    spawn: { cube: { pos: [0, 0.6, -1.3] }, orange: { pos: [0, 0.45, 2.2] } },
+    hint: "Dra begge klossane inn i det oransje feltet.",
+    pictogram: CARD_MOVE,
+    // both pieces start down-screen, outside the field; drag them up into it
+    spawn: { cube: { pos: [-1.0, 0.6, 2.7] }, orange: { pos: [1.0, 0.45, 3.1] } },
     lift: true,
   },
   {
@@ -627,85 +638,100 @@ const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
 // pull a base room config by id so the curated order can reuse its look + keys
 const base = (id: string): EnvConfig => BASE_ENVIRONMENTS.find((e) => e.id === id) ?? BASE_ENVIRONMENTS[0]
 
-// 7–10: more intro practice, still on the calm first-level background
+// 7–10: more intro practice on the calm first-level background. Each now arranges
+// ALL FIVE pieces (not a subset) into its own hand-placed composition, so the
+// whole set is in play from here on. Layouts are spaced so no two crayon
+// silhouettes overlap on either a narrow phone or a wide desktop frame.
 const INTRO_REST: EnvConfig[] = [
+  // 7 – a plus: cylinder upright in the middle, an arm reaching each way
   {
     id: "t7-two",
-    name: "Plasser to",
+    name: "Pluss",
     ...TUT_LOOK,
-    only: ["cube", "orange"],
-    spawn: { cube: { pos: [-0.9, 0.6, 2.4] }, orange: { pos: [0.9, 0.45, 2.4] } },
     place: [
-      { id: "cube", nx: -0.4, nz: -0.45 },
-      { id: "orange", nx: 0.4, nz: -0.45 },
+      { id: "cylinder", nx: 0, nz: 0, upright: true },
+      { id: "cube", nx: 0, nz: -0.6 },
+      { id: "orange", nx: 0, nz: 0.6 },
+      { id: "plank-short", nx: -0.66, nz: 0, align: "z" },
+      { id: "plank-long", nx: 0.66, nz: 0, align: "z" },
     ],
   },
-  // 8 – first little arrangement puzzle: three pieces into a row
+  // 8 – corners + a centre piece
   {
     id: "p-trio",
-    name: "Trio",
+    name: "Samling",
     ...TUT_LOOK,
-    only: ["cube", "orange", "plank-short"],
     place: [
-      { id: "cube", nx: -0.5, nz: 0 },
+      { id: "plank-long", nx: -0.5, nz: -0.55, align: "z" },
+      { id: "plank-short", nx: 0.5, nz: -0.55, align: "z" },
       { id: "orange", nx: 0, nz: 0 },
-      { id: "plank-short", nx: 0.5, nz: 0, align: "z" },
+      { id: "cube", nx: -0.5, nz: 0.55 },
+      { id: "cylinder", nx: 0.5, nz: 0.55, upright: true },
     ],
   },
+  // 9 – the two planks turned upright, set among the others
   {
     id: "t9-rotate2",
-    name: "Roter to",
+    name: "Vri",
     ...TUT_LOOK,
-    only: ["plank-long", "plank-short"],
-    spawn: {
-      "plank-long": { pos: [-1.0, 0.4, 2.4], rot: [0, Math.PI / 2, 0] },
-      "plank-short": { pos: [1.0, 0.4, 2.4], rot: [0, Math.PI / 2, 0] },
-    },
     place: [
-      { id: "plank-long", nx: -0.45, nz: -0.4, align: "z" },
-      { id: "plank-short", nx: 0.45, nz: -0.4, align: "z" },
+      { id: "cylinder", nx: -0.5, nz: -0.55, upright: true },
+      { id: "cube", nx: 0.5, nz: -0.55 },
+      { id: "plank-long", nx: 0, nz: 0, align: "z" },
+      { id: "orange", nx: -0.5, nz: 0.55 },
+      { id: "plank-short", nx: 0.5, nz: 0.55, align: "z" },
     ],
   },
-  // 10 – stand the cylinder, flank it with two pieces
+  // 10 – stand the cylinder, build the rest around it
   {
     id: "p-reis",
     name: "Reis",
     ...TUT_LOOK,
-    only: ["cylinder", "cube", "orange"],
     place: [
-      { id: "cylinder", nx: 0, nz: -0.45, upright: true },
-      { id: "cube", nx: -0.45, nz: 0.4 },
-      { id: "orange", nx: 0.45, nz: 0.4 },
+      { id: "orange", nx: -0.5, nz: -0.55 },
+      { id: "cylinder", nx: 0.5, nz: -0.55, upright: true },
+      { id: "plank-short", nx: 0, nz: 0, align: "z" },
+      { id: "plank-long", nx: -0.5, nz: 0.55, align: "z" },
+      { id: "cube", nx: 0.5, nz: 0.55 },
     ],
   },
 ]
 
 // 12–19: eight bespoke arrangement puzzles, each a hand-placed composition (like
-// level 5 "Alle fem") rather than the old repeated "stack them all" rooms. Each
-// has its own silhouette layout — a square, a cross, a staircase, a chevron, a
-// star, a tight mosaic — and the difficulty climbs: 4 pieces → 5, more pieces
-// asked to rotate (align) or stand (upright), tighter spacing toward the end. Two
-// stacking levels are kept as a change of pace between the placements. The calm
-// tutorial floor is reused with a subtly different backdrop per level so they read
-// as a series. (Eight levels, so the space room still lands on level 25.)
+// level 5 "Alle fem") rather than the old repeated "stack them all" rooms. Every
+// placement uses ALL FIVE pieces, each with its own silhouette layout — a square,
+// a cross, a staircase, a chevron, a star, a tight mosaic — and the difficulty
+// climbs: more pieces asked to rotate (align) or stand (upright), tighter spacing
+// toward the end. Two stacking levels are kept as a change of pace between the
+// placements. Layouts are spaced so no two crayon silhouettes overlap on either a
+// narrow phone or a wide desktop frame. The calm tutorial floor is reused with a
+// subtly different backdrop per level so they read as a series. (Eight levels, so
+// the space room still lands on level 25.)
 const MID_LEVELS: EnvConfig[] = [
-  // 12 — a square: one piece pinned in each corner (two of them rotated upright)
+  // 12 — first wall level: a barrier splits the tray, the pieces start below it
+  // and must be threaded up through the single central opening to their outlines.
   {
     id: "m-square",
-    name: "Firkant",
+    name: "Gjennom",
     ...TUT_LOOK,
     bg: "#cdc6b8",
-    only: ["cube", "orange", "plank-short", "plank-long"],
+    only: ["cube", "orange", "cylinder"],
+    hint: "Før klossane gjennom opninga i veggen.",
+    holes: [{ axis: "x", at: 0.12, gapCenter: 0, gapWidth: 1.9 }],
+    spawn: {
+      cube: { pos: [-1.4, 0.6, 2.0] },
+      orange: { pos: [1.4, 0.45, 2.0] },
+      cylinder: { pos: [0, 0.6, 3.3] },
+    },
     place: [
-      { id: "cube", nx: -0.5, nz: -0.5 },
-      { id: "orange", nx: 0.5, nz: -0.5 },
-      { id: "plank-short", nx: -0.5, nz: 0.5, align: "z" },
-      { id: "plank-long", nx: 0.5, nz: 0.5, align: "z" },
+      { id: "cube", nx: -0.5, nz: -0.6 },
+      { id: "orange", nx: 0.5, nz: -0.6 },
+      { id: "cylinder", nx: 0, nz: -0.15, upright: true },
     ],
   },
   // 13 — change of pace: build a four-high tower
   { id: "m-stack4", name: "Stable 4", ...TUT_LOOK, bg: "#c9bfb0", stackAll: true, stackCount: 4 },
-  // 14 — a cross: the cylinder stands at the centre with an arm reaching each way
+  // 14 — a cross/plus: the cylinder stands at the centre with an arm reaching each way
   {
     id: "m-cross",
     name: "Kross",
@@ -713,38 +739,46 @@ const MID_LEVELS: EnvConfig[] = [
     bg: "#c4c8be",
     place: [
       { id: "cylinder", nx: 0, nz: 0, upright: true },
-      { id: "cube", nx: 0, nz: -0.55 },
-      { id: "orange", nx: 0, nz: 0.55 },
-      { id: "plank-short", nx: -0.5, nz: 0, align: "z" },
-      { id: "plank-long", nx: 0.5, nz: 0, align: "z" },
+      { id: "cube", nx: 0, nz: -0.6 },
+      { id: "orange", nx: 0, nz: 0.6 },
+      { id: "plank-short", nx: -0.66, nz: 0, align: "z" },
+      { id: "plank-long", nx: 0.66, nz: 0, align: "z" },
     ],
   },
-  // 15 — a staircase climbing across the diagonal
+  // 15 — middle wall level: the opening is OFF to one side, so a piece has to be
+  // threaded through the offset gap and then routed across to its outline (harder
+  // than the centred gap on 12, gentler than the sluice on 19).
   {
     id: "m-stair",
-    name: "Trapp",
+    name: "Smug",
     ...TUT_LOOK,
     bg: "#ccc3b3",
-    only: ["cube", "orange", "plank-short", "cylinder"],
+    only: ["cube", "orange", "cylinder"],
+    hint: "Opninga er på sida – før klossane gjennom og bort til felta.",
+    holes: [{ axis: "x", at: 0.12, gapCenter: -0.45, gapWidth: 1.9 }],
+    spawn: {
+      cube: { pos: [-1.4, 0.6, 2.0] },
+      orange: { pos: [1.4, 0.45, 2.0] },
+      cylinder: { pos: [0, 0.6, 3.3] },
+    },
     place: [
-      { id: "cube", nx: -0.55, nz: -0.5 },
-      { id: "orange", nx: -0.18, nz: -0.16 },
-      { id: "plank-short", nx: 0.2, nz: 0.18, align: "z" },
-      { id: "cylinder", nx: 0.55, nz: 0.52, upright: true },
+      { id: "cube", nx: -0.4, nz: -0.6 },
+      { id: "orange", nx: 0.4, nz: -0.6 },
+      { id: "cylinder", nx: 0, nz: -0.25, upright: true },
     ],
   },
-  // 16 — a chevron / funnel pointing up the screen
+  // 16 — a chevron / funnel pointing down the screen
   {
     id: "m-chevron",
     name: "Vinkel",
     ...TUT_LOOK,
     bg: "#c6c0b4",
     place: [
-      { id: "plank-long", nx: -0.55, nz: -0.32, align: "z" },
-      { id: "plank-short", nx: 0.55, nz: -0.32, align: "z" },
-      { id: "cube", nx: -0.28, nz: 0.18 },
-      { id: "orange", nx: 0.28, nz: 0.18 },
-      { id: "cylinder", nx: 0, nz: 0.55, upright: true },
+      { id: "plank-long", nx: -0.6, nz: -0.45, align: "z" },
+      { id: "plank-short", nx: 0.6, nz: -0.45, align: "z" },
+      { id: "cube", nx: -0.5, nz: 0.22 },
+      { id: "orange", nx: 0.5, nz: 0.22 },
+      { id: "cylinder", nx: 0, nz: 0.8, upright: true },
     ],
   },
   // 17 — change of pace: the full five-high tower
@@ -763,26 +797,32 @@ const MID_LEVELS: EnvConfig[] = [
       { id: "plank-long", nx: 0.5, nz: 0.45, align: "z" },
     ],
   },
-  // 19 — the tightest one: a compact mosaic, every piece close to its neighbour
+  // 19 — the hardest: two offset walls make a sluice. Each piece has to zig-zag up
+  // through the lower gap, across, then the upper gap to reach its outline on top.
   {
     id: "m-mosaic",
-    name: "Mosaikk",
+    name: "Sluse",
     ...TUT_LOOK,
     bg: "#cac3b3",
+    only: ["cube", "orange"],
+    hint: "Sikksakk klossane gjennom begge opningane.",
+    holes: [
+      { axis: "x", at: 0.26, gapCenter: 0.5, gapWidth: 1.7 },
+      { axis: "x", at: -0.26, gapCenter: -0.5, gapWidth: 1.7 },
+    ],
+    spawn: { cube: { pos: [-0.8, 0.6, 2.7] }, orange: { pos: [0.8, 0.45, 2.7] } },
     place: [
-      { id: "plank-long", nx: -0.3, nz: -0.55, align: "z" },
-      { id: "plank-short", nx: 0.3, nz: -0.55, align: "z" },
-      { id: "cube", nx: -0.45, nz: 0.4 },
-      { id: "cylinder", nx: 0, nz: 0.05, upright: true },
-      { id: "orange", nx: 0.45, nz: 0.4 },
+      { id: "cube", nx: -0.45, nz: -0.6 },
+      { id: "orange", nx: 0.45, nz: -0.6 },
     ],
   },
 ]
 
-// 26–49: the piloting section. It cycles through ALL five blocks so each gets a
-// handful of stages (not just the cube): the cube tips through growing labyrinths,
-// each plank/slab is piloted across open ground with its own tumble, and the red
-// cylinder rolls — so its stages play like a little driving game. 50 closes the
+// 26–49: the piloting section. It cycles the four piloted pieces (cube + the
+// three planks/slab) so each gets a handful of stages: the cube tips through
+// growing labyrinths, and each plank/slab is piloted across ground that gains
+// walls-with-gaps and checkpoints as the rounds climb. (The cylinder's rolling
+// "grand prix" is a separate minigame, not part of this journey.) 50 closes the
 // game by assembling the totem figure.
 const MAZE_LOOK = {
   look: "maze" as EnvKind,
@@ -799,47 +839,110 @@ const SOLO_LOOK = {
   contact: { color: "#000000", opacity: 0.4 },
   bloom: true,
 }
-// one block per slot, cycled, so the section is spread evenly across all five
-const WALK_CYCLE = ["cube", "orange", "plank-long", "plank-short", "cylinder"]
-const SOLO_MOSAIC: Record<string, number> = { orange: 3, "plank-long": 1, "plank-short": 2, cylinder: 4 }
+// one block per slot, cycled, so the section is spread evenly across the four
+// piloted pieces (the cylinder's rolling "grand prix" is a separate minigame and
+// is no longer part of the main journey).
+const WALK_CYCLE = ["cube", "orange", "plank-long", "plank-short"]
+const SOLO_MOSAIC: Record<string, number> = { orange: 3, "plank-long": 1, "plank-short": 2 }
+// distinct backdrops so the piloting stages read as a varied series, not one room
+const SOLO_THEMES = [
+  { bg: "#0c0b0a", keyColor: "#fff1dc" }, // warm
+  { bg: "#0a0c11", keyColor: "#cfe0ff" }, // cool blue
+  { bg: "#110a0d", keyColor: "#ffd2e2" }, // rose
+  { bg: "#0a110d", keyColor: "#c9ffd9" }, // mint
+  { bg: "#110f08", keyColor: "#ffe6a8" }, // amber
+]
+const PILOT_NAMES: Record<string, string> = { orange: "Slaben", "plank-long": "Langferd", "plank-short": "Vippen" }
+// small deterministic PRNG so the obstacle layouts are stable across renders
+function mulberry(seed: number) {
+  let s = seed >>> 0
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0
+    let t = s
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+// Obstacle layout for a pilot stage: up to two horizontal barriers, each with one
+// gap, that the piece must route to and cross — like the wall-hole levels, but in
+// the piloting grid. The gaps narrow and a second barrier appears as the round
+// climbs, so the back half of the journey gets noticeably harder.
+function pilotWalls(bound: number, round: number, seed: number): [number, number][] {
+  if (round < 1) return []
+  const rnd = mulberry(seed)
+  const lo = -(bound - 1)
+  const hi = bound - 1
+  const nBar = Math.min(round, 2)
+  const gapW = round >= 3 ? 0 : 1 // 3-cell gap early, 1-cell gap from round 3 on
+  const walls: [number, number][] = []
+  for (let b = 0; b < nBar; b++) {
+    const row = Math.round(lo + ((b + 1) * (hi - lo)) / (nBar + 1))
+    const gap = Math.round(lo + 1 + rnd() * (hi - lo - 2)) // keep the gap off the edges
+    for (let x = -bound; x <= bound; x++) {
+      if (Math.abs(x - gap) <= gapW) continue
+      walls.push([x, row])
+    }
+  }
+  return walls
+}
+// Checkpoints (must all be visited before the exit opens) for the hardest rounds.
+function pilotVia(bound: number, round: number, seed: number, walls: [number, number][]): [number, number][] {
+  if (round < 3) return []
+  const rnd = mulberry(seed ^ 0x55aa)
+  const blocked = new Set(walls.map(([x, y]) => `${x},${y}`))
+  const lo = -(bound - 1)
+  const hi = bound - 1
+  const start = `${lo},${hi}`
+  const goal = `${hi},${lo}`
+  const want = round >= 4 ? 2 : 1
+  const out: [number, number][] = []
+  for (let t = 0; out.length < want && t < 80; t++) {
+    const x = Math.round(lo + rnd() * (hi - lo))
+    const y = Math.round(lo + rnd() * (hi - lo))
+    const k = `${x},${y}`
+    if (blocked.has(k) || k === start || k === goal || out.some(([a, b]) => a === x && b === y)) continue
+    out.push([x, y])
+  }
+  return out
+}
 const CUBEWALK_LEVELS: EnvConfig[] = Array.from({ length: 24 }, (_, i) => {
   const block = WALK_CYCLE[i % WALK_CYCLE.length]
-  const round = Math.floor(i / WALK_CYCLE.length) // 0..4 – difficulty climbs each lap
+  const round = Math.floor(i / WALK_CYCLE.length) // 0..5 – difficulty climbs each lap
+  const theme = SOLO_THEMES[i % SOLO_THEMES.length]
   if (block === "cube") {
     const rooms = Math.min(8, 4 + round) // labyrinths grow lap by lap (phone-readable cap)
     return {
       id: `cw-maze-${i}`,
-      name: `Labyrint ${i + 1}`,
+      name: `Labyrint ${round + 1}`,
       ...MAZE_LOOK,
+      bg: theme.bg,
+      keyColor: theme.keyColor,
       maze: true,
       mazeRooms: rooms,
       mazeSeed: 0x9e37 + i * 2654435761,
     }
   }
-  if (block === "cylinder") {
-    // the cylinder rolls – give it a long, open "drive" that grows each lap
-    const bnd = 7 + round // 7..11
-    return {
-      id: `cw-drive-${i}`,
-      name: `Køyr ${i + 1}`,
-      ...SOLO_LOOK,
-      solo: "cylinder",
-      mosaic: SOLO_MOSAIC.cylinder,
-      soloStart: [-(bnd - 1), bnd - 1] as [number, number],
-      soloGoal: [bnd - 1, -(bnd - 1)] as [number, number],
-      soloBound: bnd,
-    }
-  }
-  const bnd = 4 + round // roam radius 4..8
+  // piloting a plank/slab: roam radius grows, and from round 1 the open ground
+  // gains barriers with gaps (and later checkpoints) to route through – the
+  // walls-and-holes ramp that builds toward the finale.
+  const bnd = 5 + round // roam radius 5..10
+  const seed = (0x1234 + i * 2654435761) >>> 0
+  const walls = pilotWalls(bnd, round, seed)
+  const via = pilotVia(bnd, round, seed, walls)
   return {
     id: `cw-solo-${i}`,
-    name: `Pilot ${i + 1}`,
+    name: `${PILOT_NAMES[block]} ${round + 1}`,
     ...SOLO_LOOK,
+    bg: theme.bg,
+    keyColor: theme.keyColor,
     solo: block,
     mosaic: SOLO_MOSAIC[block],
     soloStart: [-(bnd - 1), bnd - 1] as [number, number],
     soloGoal: [bnd - 1, -(bnd - 1)] as [number, number],
     soloBound: bnd,
+    soloWalls: walls.length ? walls : undefined,
+    soloVia: via.length ? via : undefined,
   }
 })
 
@@ -1092,6 +1195,90 @@ const MAX_LIFT = WALL_VIS_HEIGHT - 0.3 // initial grab height clamp (eases up fr
 const THROW_MAX = 5.0 // clamp on release speed – allows a light toss, not a hurl
 const ESCAPE_MARGIN = 0.4 // how far past a wall a body must be before we rescue it
 
+// Interior barrier walls: build the solid segments either side of the gap. The
+// wall runs the full width of the tray on its axis, leaving one opening the
+// player must steer a block through. Used for both the visible mesh and the
+// physics collider (just at different heights).
+const GATE_THICK = 0.35 // half-thickness of an interior wall
+function holeSegments(h: WallHole, box: Box, height: number): Wall[] {
+  const segs: Wall[] = []
+  const half = height / 2
+  const g = h.gapWidth / 2
+  if (h.axis === "x") {
+    const z = h.at * box.bz
+    const gc = h.gapCenter * box.bx
+    const gL = gc - g
+    const gR = gc + g
+    if (gL > -box.bx + 0.02) segs.push({ half: [(gL + box.bx) / 2, half, GATE_THICK], pos: [(-box.bx + gL) / 2, half, z] })
+    if (gR < box.bx - 0.02) segs.push({ half: [(box.bx - gR) / 2, half, GATE_THICK], pos: [(gR + box.bx) / 2, half, z] })
+  } else {
+    const x = h.at * box.bx
+    const gc = h.gapCenter * box.bz
+    const gL = gc - g
+    const gR = gc + g
+    if (gL > -box.bz + 0.02) segs.push({ half: [GATE_THICK, half, (gL + box.bz) / 2], pos: [x, half, (-box.bz + gL) / 2] })
+    if (gR < box.bz - 0.02) segs.push({ half: [GATE_THICK, half, (box.bz - gR) / 2], pos: [x, half, (gR + box.bz) / 2] })
+  }
+  return segs
+}
+
+// The visible interior barrier walls (tinted a touch darker than the room walls so
+// the opening reads clearly). Each opening is framed by two glowing posts plus a
+// soft light, so the gap reads as "go here" instead of a dead end. Colliders are
+// added separately to the static body.
+function GateWalls({ holes, box }: { holes: WallHole[]; box: Box }) {
+  const segs = useMemo(() => holes.flatMap((h) => holeSegments(h, box, WALL_VIS_HEIGHT)), [holes, box.bx, box.bz])
+  const openings = useMemo(
+    () =>
+      holes.map((h) => {
+        const g = h.gapWidth / 2
+        const y = WALL_VIS_HEIGHT / 2
+        if (h.axis === "x") {
+          const z = h.at * box.bz
+          const gc = h.gapCenter * box.bx
+          return {
+            posts: [
+              [gc - g, y, z],
+              [gc + g, y, z],
+            ] as [number, number, number][],
+            light: [gc, 1.3, z] as [number, number, number],
+          }
+        }
+        const x = h.at * box.bx
+        const gc = h.gapCenter * box.bz
+        return {
+          posts: [
+            [x, y, gc - g],
+            [x, y, gc + g],
+          ] as [number, number, number][],
+          light: [x, 1.3, gc] as [number, number, number],
+        }
+      }),
+    [holes, box.bx, box.bz],
+  )
+  return (
+    <>
+      {segs.map((w, i) => (
+        <mesh key={`gate-${i}`} position={w.pos} castShadow receiveShadow>
+          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
+          <meshStandardMaterial color="#a89f8d" roughness={0.9} metalness={0} />
+        </mesh>
+      ))}
+      {openings.map((o, i) => (
+        <group key={`open-${i}`}>
+          {o.posts.map((p, j) => (
+            <mesh key={j} position={p}>
+              <boxGeometry args={[0.09, WALL_VIS_HEIGHT, 0.09]} />
+              <meshStandardMaterial color="#ffe6a8" emissive="#ffc24a" emissiveIntensity={1.8} toneMapped={false} />
+            </mesh>
+          ))}
+          <pointLight position={o.light} intensity={4} distance={4.5} decay={2} color="#ffd27a" />
+        </group>
+      ))}
+    </>
+  )
+}
+
 /* Soft "grab spring": the block is held by the exact point you grabbed, via a
    damped spring (PD controller) applied at that point. Because the pull acts at
    the grab point toward the cursor with a FIRST-ORDER velocity servo (it sets
@@ -1331,28 +1518,35 @@ function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
         </group>
       )}
 
-      {/* lift tutorial: a crayon target where the orange goes – on top of the
-          blue cube (high up) – tinted to the orange's colour, like the place
-          levels' outlines */}
+      {/* "Saman" field: a ground-level orange zone you drag BOTH pieces into –
+          a soft tinted area on the floor with a crayon-bright border, sitting
+          flat on the ground (not floating) like the other floor markers */}
       {env.lift && (
-        <mesh position={[0, 1.18, -1.3]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-          <planeGeometry args={[2.0, 2.0]} />
-          <meshStandardMaterial
-            map={texOf("/silhouettes/orange.png")}
-            color="#e07b22"
-            transparent
-            alphaTest={0.6}
-            roughness={0.95}
-            metalness={0}
-            polygonOffset
-            polygonOffsetFactor={-1}
-          />
-        </mesh>
+        <group>
+          <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+            <planeGeometry args={[FIELD_HX * 2, FIELD_HZ * 2]} />
+            <meshStandardMaterial
+              color="#e07b22"
+              transparent
+              opacity={0.26}
+              roughness={0.95}
+              metalness={0}
+              polygonOffset
+              polygonOffsetFactor={-1}
+            />
+          </mesh>
+          <group position={[0, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+            <lineSegments>
+              <edgesGeometry args={[new THREE.PlaneGeometry(FIELD_HX * 2, FIELD_HZ * 2)]} />
+              <lineBasicMaterial color="#e07b22" transparent opacity={0.9} toneMapped={false} />
+            </lineSegments>
+          </group>
+        </group>
       )}
 
-      {/* gesture hint as a floor decal, moved up toward the cube/target on the
-          Lift level so it sits between the orange (below) and the base (above) */}
-      {env.pictogram && <GestureDecal url={env.pictogram} z={env.lift ? 0.5 : 0.4} />}
+      {/* gesture hint as a floor decal, down-screen between the field and where
+          the pieces start, so it never covers either */}
+      {env.pictogram && <GestureDecal url={env.pictogram} z={env.lift ? 2.0 : 0.4} />}
 
       {visibleWalls.map((w, i) => (
         <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
@@ -1502,6 +1696,10 @@ function StackAllController({
 
 // Lift tutorial: win once the orange block has been lifted up and rested on top
 // of the blue cube – teaching the press-and-hold-to-lift verb with a clear goal.
+// The "Saman" field: a ground-level zone both the cube and the orange must be
+// dragged into. Half-extents sized to hold the two pieces side by side.
+const FIELD_HX = 1.7
+const FIELD_HZ = 1.15
 function LiftController({
   bodies,
   revealRef,
@@ -1526,10 +1724,12 @@ function LiftController({
         const c = cube.translation()
         const ov = orange.linvel()
         const cv = cube.linvel()
-        const onTop = o.y - c.y > 0.7 // orange clearly stacked above the cube
-        const aligned = Math.hypot(o.x - c.x, o.z - c.z) < 0.9 // sitting over it
+        // both pieces sit inside the ground field (centre within the zone), resting
+        // on the floor, and have come to rest
+        const inField = (t: { x: number; y: number; z: number }) =>
+          Math.abs(t.x) < FIELD_HX && Math.abs(t.z) < FIELD_HZ && t.y < 0.8
         const settled = Math.hypot(ov.x, ov.y, ov.z) < 0.6 && Math.hypot(cv.x, cv.y, cv.z) < 0.6
-        ok = onTop && aligned && settled
+        ok = inField(o) && inField(c) && settled
       }
       if (ok) {
         dwell.current += dt
@@ -3164,6 +3364,7 @@ function SoloRoom({ env }: RoomProps) {
   )
 }
 
+const EMPTY_CELLS: [number, number][] = []
 function SoloController({
   blockId,
   bodies,
@@ -3171,6 +3372,8 @@ function SoloController({
   start = SOLO_START,
   goal = SOLO_GOAL,
   bound = SOLO_BOUND,
+  walls = EMPTY_CELLS,
+  via = EMPTY_CELLS,
 }: {
   blockId: string
   bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
@@ -3178,9 +3381,15 @@ function SoloController({
   start?: [number, number]
   goal?: [number, number]
   bound?: number
+  walls?: [number, number][]
+  via?: [number, number][]
 }) {
   const camera = useThree((s) => s.camera)
   const cell = useRef<[number, number]>([...start])
+  const wallSet = useMemo(() => new Set(walls.map(([x, y]) => `${x},${y}`)), [walls])
+  // checkpoints still to visit before the exit opens (consumed as they're reached)
+  const viaLeft = useRef(new Set(via.map(([x, y]) => `${x},${y}`)))
+  const viaLights = useRef<(THREE.PointLight | null)[]>([])
   const heldDir = useRef<[number, number] | null>(null)
   const baseQ = useRef(new THREE.Quaternion())
   const hop = useRef<{
@@ -3209,6 +3418,7 @@ function SoloController({
     hop.current = null
     heldDir.current = null
     baseQ.current = new THREE.Quaternion()
+    viaLeft.current = new Set(via.map(([x, y]) => `${x},${y}`))
     const body = bodies.current[blockId]
     if (body) {
       body.setBodyType(BODY_KINEMATIC_POSITION, true)
@@ -3229,7 +3439,7 @@ function SoloController({
       camY.current = null
       revealRef.current = false
     }
-  }, [blockId, bodies, revealRef, camera, start])
+  }, [blockId, bodies, revealRef, camera, start, via])
 
   useEffect(() => {
     const keys = new Set<string>()
@@ -3300,7 +3510,8 @@ function SoloController({
     body.wakeUp()
     cool.current = Math.max(0, cool.current - dt)
 
-    const atGoal = () => cell.current[0] === goal[0] && cell.current[1] === goal[1]
+    // the exit only counts once every checkpoint has been visited
+    const atGoal = () => cell.current[0] === goal[0] && cell.current[1] === goal[1] && viaLeft.current.size === 0
 
     // the exact position we command the block to this frame – the camera follows
     // THIS (not the interpolated physics read) so the character never drifts /
@@ -3326,6 +3537,13 @@ function SoloController({
         hop.current = null
         landT.current = 1
         playImpact(blockId, 0.4)
+        // tick off a checkpoint the moment we land on it
+        const key = `${cell.current[0]},${cell.current[1]}`
+        if (viaLeft.current.has(key)) {
+          viaLeft.current.delete(key)
+          flashT.current = 1
+          haptic(14)
+        }
         if (atGoal() && !revealRef.current) {
           revealRef.current = true
           flashT.current = 1
@@ -3342,7 +3560,7 @@ function SoloController({
         const [dx, dy] = heldDir.current
         const tx = THREE.MathUtils.clamp(gx + dx, -bound, bound)
         const ty = THREE.MathUtils.clamp(gy + dy, -bound, bound)
-        if (tx !== gx || ty !== gy) {
+        if ((tx !== gx || ty !== gy) && !wallSet.has(`${tx},${ty}`)) {
           const mv = FIVE_MOVE[blockId] ?? { angle: Math.PI / 2, dur: 0.2 }
           const axis = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx, 0, dy)).normalize()
           // distance travelled this hop is the footprint length along the move axis;
@@ -3384,12 +3602,34 @@ function SoloController({
       flash.current.position.set(goal[0] * stepX, 2, goal[1] * stepZ)
       flash.current.intensity = flashT.current * 120
     }
+    // checkpoints glow until visited, then fade to a dim afterglow
+    for (let i = 0; i < via.length; i++) {
+      const l = viaLights.current[i]
+      if (l) l.intensity = viaLeft.current.has(`${via[i][0]},${via[i][1]}`) ? 7 : 0.5
+    }
   })
 
   return (
     <>
       <pointLight ref={glow} distance={7} decay={2} color="#fff1dc" intensity={6} />
       <pointLight ref={flash} distance={40} decay={2} color="#7cf6c8" intensity={0} />
+      {/* obstacle pillars: the cells the piece cannot enter, so you route around them */}
+      {walls.map(([cx, cy], i) => (
+        <mesh key={`wall-${i}`} position={[cx * stepX, 0.8, cy * stepZ]} castShadow receiveShadow>
+          <boxGeometry args={[stepX * 0.92, 1.6, stepZ * 0.92]} />
+          <meshStandardMaterial color="#3b352c" roughness={0.95} metalness={0} />
+        </mesh>
+      ))}
+      {/* checkpoint pads: visit every one before the exit opens */}
+      {via.map(([vx, vy], i) => (
+        <group key={`via-${i}`} position={[vx * stepX, 0, vy * stepZ]}>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.03, 0]}>
+            <ringGeometry args={[Math.min(stepX, stepZ) * 0.28, Math.min(stepX, stepZ) * 0.42, 28]} />
+            <meshBasicMaterial color="#9ad8ff" transparent opacity={0.85} toneMapped={false} />
+          </mesh>
+          <pointLight ref={(l) => (viaLights.current[i] = l)} position={[0, 1.0, 0]} distance={5} decay={2} color="#9ad8ff" intensity={7} />
+        </group>
+      ))}
     </>
   )
 }
@@ -4574,10 +4814,18 @@ function SceneContents({
           colliderWalls.map((w, i) => (
             <CuboidCollider key={i} args={w.half} position={w.pos} restitution={0} />
           ))}
+        {/* interior barrier walls (the "hole" levels): solid either side of the gap */}
+        {env.holes &&
+          env.holes
+            .flatMap((h) => holeSegments(h, box, WALL_COL_HEIGHT))
+            .map((w, i) => <CuboidCollider key={`hole-${i}`} args={w.half} position={w.pos} restitution={0} />)}
       </RigidBody>
 
       {/* environment-specific room: floor, walls, fill lighting */}
       <Room env={env} box={box} visibleWalls={visibleWalls} shadowSpan={shadowSpan} roughMap={roughMap} muted={muted} revealRef={revealRef} />
+
+      {/* interior barrier walls with a gap to thread a block through */}
+      {env.holes && <GateWalls holes={env.holes} box={box} />}
 
       {/* reactive floor: tiles flash where blocks strike, brightness ~ force */}
       <ImpactGlows poolRef={glowPool} active={!!env.reactive} tile={GLASS_TILE} />
@@ -4618,6 +4866,8 @@ function SceneContents({
           start={env.soloStart}
           goal={env.soloGoal}
           bound={env.soloBound}
+          walls={env.soloWalls}
+          via={env.soloVia}
         />
       )}
 

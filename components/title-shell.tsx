@@ -12,13 +12,11 @@ type Overlay = null | "levels" | "help"
 const GRID = LEVELS.length // one cell per built level
 const SOLVED_COLORS = ["#2b56be", "#eb7f37", "#78b2d6", "#d14332"]
 // the soundtrack, played as a loop. ost-main is the xylophone main/intro theme
-// (it leads); the others come round later in the rotation.
+// (it leads); the two short loops come round after it in the rotation.
 const OST_TRACKS = [
   "/music/ost-main.mp3",
   "/music/ost-1.mp3",
   "/music/ost-2.mp3",
-  "/music/ost-3.mp3",
-  "/music/ost-4.mp3", // the full "eg tilstår" vocal track
 ]
 const SOUNDBOX_ID = "soundbox" // the level where the player makes the music themselves
 
