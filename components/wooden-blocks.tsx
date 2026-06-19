@@ -12,7 +12,7 @@ import {
   type RapierRigidBody,
 } from "@react-three/rapier"
 import * as THREE from "three"
-import { LayoutGrid, Smartphone, Volume2, VolumeX } from "lucide-react"
+import { LayoutGrid, Music, Smartphone, Volume2, VolumeX } from "lucide-react"
 import { audioReady, playImpact, playTone, primeBlocks, setMuted, unlockAudio } from "@/lib/impact-sound"
 import { BLOCKS, MESH_FIT, blockBaseFreq, blockRadius, type Block } from "@/lib/blocks"
 import { CameraRig } from "@/components/engine/CameraRig"
@@ -4505,12 +4505,16 @@ export default function WoodenBlocks({
   initialTilt = false,
   onExit,
   onLevel,
+  musicOn = true,
+  onToggleMusic,
 }: {
   initialLevel?: number
   initialMuted?: boolean
   initialTilt?: boolean
   onExit?: () => void
   onLevel?: (i: number) => void // report the live level up to the shell (picker page + highlight)
+  musicOn?: boolean // OST playing? (drives the in-game music button)
+  onToggleMusic?: () => void // mute/un-mute the OST from the in-game cluster
 } = {}) {
   const [measureMode, setMeasureMode] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -4847,6 +4851,17 @@ export default function WoodenBlocks({
             <Volume2 className="h-5 w-5" strokeWidth={2.4} />
           )}
         </button>
+        {onToggleMusic && (
+          <button
+            type="button"
+            aria-label={musicOn ? "Demp musikk" : "Spel musikk"}
+            aria-pressed={!musicOn}
+            onClick={tapAction(onToggleMusic)}
+            className="flex h-11 w-11 items-center justify-center transition active:scale-95"
+          >
+            <Music className={`h-5 w-5 ${musicOn ? "" : "opacity-40"}`} strokeWidth={2.4} />
+          </button>
+        )}
         <button
           type="button"
           aria-label="Vipp for å styre tyngdekrafta"
