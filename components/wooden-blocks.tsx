@@ -935,10 +935,6 @@ type DragState = {
 // like an accidental nudge.
 const TAP_TIME = 0.2 // seconds
 const TAP_MOVE = 0.3 // world units the centre may travel and still count as a tap
-// A quick, decisive flick across a block "walks" it one step that way (a 90° tip
-// over its leading edge), like the cube-walk later in the game.
-const WALK_TIME = 0.32 // a flick is a short, fast swipe (longer holds carry instead)
-const WALK_MIN = 1.0 // world units the swipe must cover to count as a walk flick
 
 const MIN_LIFT = 2.1 // grabbed blocks float well clear of the floor so you can carry them OVER a stacked layer
 const MAX_LIFT = WALL_VIS_HEIGHT - 0.3 // initial grab height clamp (eases up from here)
@@ -962,7 +958,6 @@ const GRAB_ANG_DAMP = 0.78 // per-frame angular damping while held -> kills wobb
 // stays smooth and bounded, never an instant unlimited-force snap.
 const TWIST_EASE = 0.2
 const TWIST_MAX_RATE = 2.6 // rad/s (~150°/s)
-const TWIST_LIFT_MARGIN = 1.0 // extra clearance under the block while it spins
 const LIGHT_RADIUS = 14 // how far the key light orbits when you shift+right-drag it
 
 /* ------------------------------------------------------------------ */
@@ -3742,6 +3737,10 @@ function SceneContents({
   // to right angles so it's easy to line up. `base` is the orientation when the
   // second finger landed; `delta` is the live yaw the servo applies on top.
   const twist = useRef<{ base: THREE.Quaternion; start: number; delta: number; active: boolean } | null>(null)
+  // true whenever two fingers are on a held block: the block stops being dragged
+  // (it holds still and settles to the floor) so the gesture purely rotates or
+  // walks it.
+  const twoFinger = useRef(false)
   // swipe-walk: a one-step 90° kinematic tip over the block's leading edge
   const walk = useRef<{
     id: string
@@ -3769,6 +3768,7 @@ function SceneContents({
     drag.current = null
     twist.current = null
     walk.current = null
+    twoFinger.current = false
     grabbingRef.current = false
   }, [env.id, grabbingRef])
   // Watch the per-room win signal and fire onSolved exactly once when solved.
@@ -3943,40 +3943,7 @@ function SceneContents({
       // that case; otherwise clamp the release speed so a flick stays a toss.
       const held = (performance.now() - d.grabTime) / 1000
       const tp = d.body.translation()
-      const dxw = tp.x - d.startPos.x
-      const dzw = tp.z - d.startPos.z
-      const moved = Math.hypot(dxw, dzw)
-      // A quick, decisive flick across a resting block walks it one step that way
-      // (a 90° tip over its leading edge). Not on the maze/solo/figure stages,
-      // which drive their own blocks.
-      const e = envRef.current
-      const canWalk = !e.maze && !e.solo && !e.five
-      if (canWalk && held < WALK_TIME && moved > WALK_MIN && tp.y < 1.2) {
-        const dir =
-          Math.abs(dxw) > Math.abs(dzw)
-            ? new THREE.Vector3(Math.sign(dxw), 0, 0)
-            : new THREE.Vector3(0, 0, Math.sign(dzw))
-        const b = d.block
-        const half = b.shape === "cylinder" ? b.radius : dir.x !== 0 ? b.half[0] : b.half[2]
-        const center = new THREE.Vector3(tp.x, tp.y, tp.z)
-        const r = d.body.rotation()
-        d.body.setBodyType(BODY_KINEMATIC_POSITION, true)
-        walk.current = {
-          id: b.id,
-          body: d.body,
-          t: 0,
-          dur: 0.26,
-          axis: new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), dir).normalize(),
-          pivot: new THREE.Vector3(center.x + dir.x * half, 0, center.z + dir.z * half), // leading bottom edge
-          startCenter: center,
-          startQ: new THREE.Quaternion(r.x, r.y, r.z, r.w),
-        }
-        drag.current = null
-        twist.current = null
-        grabbingRef.current = false
-        haptic(6)
-        return
-      }
+      const moved = Math.hypot(tp.x - d.startPos.x, tp.z - d.startPos.z)
       if (held < TAP_TIME && moved < TAP_MOVE) {
         d.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
         d.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
@@ -4032,47 +3999,93 @@ function SceneContents({
     const twoAngle = (e: TouchEvent) =>
       Math.atan2(e.touches[1].clientY - e.touches[0].clientY, e.touches[1].clientX - e.touches[0].clientX)
     const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a))
+    // start a grounded one-step cube-walk in a world-cardinal direction: drop the
+    // block to the floor where it is, then tip it 90° over its leading edge.
+    const startWalk = (dir: THREE.Vector3) => {
+      const dd = drag.current
+      if (!dd) return
+      const body = dd.body
+      const block = dd.block
+      const tr = body.translation()
+      const rq = body.rotation()
+      const q = new THREE.Quaternion(rq.x, rq.y, rq.z, rq.w)
+      const h = block.shape === "cylinder" ? [block.radius, block.halfHeight, block.radius] : block.half
+      const m = new THREE.Matrix4().makeRotationFromQuaternion(q).elements
+      // world AABB half-extents for the block's current orientation
+      const hy = Math.abs(m[1]) * h[0] + Math.abs(m[5]) * h[1] + Math.abs(m[9]) * h[2]
+      const halfAlong =
+        dir.x !== 0
+          ? Math.abs(m[0]) * h[0] + Math.abs(m[4]) * h[1] + Math.abs(m[8]) * h[2]
+          : Math.abs(m[2]) * h[0] + Math.abs(m[6]) * h[1] + Math.abs(m[10]) * h[2]
+      const grounded = new THREE.Vector3(tr.x, hy, tr.z) // sit it on the floor first
+      body.setBodyType(BODY_KINEMATIC_POSITION, true)
+      body.setTranslation({ x: grounded.x, y: grounded.y, z: grounded.z }, true)
+      body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+      body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+      walk.current = {
+        id: block.id,
+        body,
+        t: 0,
+        dur: 0.26,
+        axis: new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), dir).normalize(),
+        pivot: new THREE.Vector3(grounded.x + dir.x * halfAlong, 0, grounded.z + dir.z * halfAlong), // leading floor edge
+        startCenter: grounded,
+        startQ: q,
+      }
+      twist.current = null // yaw re-baselines to the new pose after the walk
+      haptic(10)
+    }
     const onStart = (e: TouchEvent) => {
       if (e.touches.length === 2 && drag.current) {
         startDist = span(e)
         squeeze = 0
         tipC = mid(e)
+        twoFinger.current = true
         const r = drag.current.body.rotation()
         twist.current = { base: new THREE.Quaternion(r.x, r.y, r.z, r.w), start: twoAngle(e), delta: 0, active: true }
       }
     }
     const onMove = (e: TouchEvent) => {
       if (e.touches.length !== 2 || !drag.current || startDist <= 0) return
+      if (walk.current) return // a walk is animating; ignore gestures until it lands
       const dist = span(e)
+      // re-establish the yaw + swipe baseline (e.g. just after a walk cleared it)
+      if (!twist.current) {
+        const r = drag.current.body.rotation()
+        twist.current = { base: new THREE.Quaternion(r.x, r.y, r.z, r.w), start: twoAngle(e), delta: 0, active: true }
+        tipC = mid(e)
+        startDist = dist
+        return
+      }
       squeeze = THREE.MathUtils.clamp((startDist - dist) / (startDist * 0.55), 0, 1)
       const now = performance.now()
       if (squeeze > 0.05 && now - lastBuzz > 65) {
         lastBuzz = now
         haptic(2 + squeeze * 10) // tighter pinch -> stronger buzz
       }
-      // twist -> free yaw (same for every block, the cylinder included)
-      const tw = twist.current
-      if (tw) tw.delta = -wrap(twoAngle(e) - tw.start)
 
-      // two-finger swipe (both fingers glide together, distance steady) flips the
-      // held block 90° to the next of its six faces – up/down/left/right
+      // two-finger swipe (both fingers glide together, distance steady) in a clear
+      // cardinal direction -> walk the block one step that way (a cube-walk)
       const c = mid(e)
       const mx = c.x - tipC.x
       const my = c.y - tipC.y
       const steady = Math.abs(dist - startDist) < startDist * 0.25 // not a pinch
-      if (tw && steady && Math.hypot(mx, my) > TIP_THRESH) {
-        const horizontal = Math.abs(mx) > Math.abs(my)
+      const ev = envRef.current
+      const canWalk = !ev.maze && !ev.solo && !ev.five
+      if (canWalk && steady && Math.hypot(mx, my) > TIP_THRESH) {
         // camera looks straight down: world X = screen-right, world Z = screen-down
-        const axis = horizontal ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0)
-        const sign = horizontal ? (mx > 0 ? 1 : -1) : my > 0 ? 1 : -1
-        const step = new THREE.Quaternion().setFromAxisAngle(axis, (sign * Math.PI) / 2)
-        tw.base = step.multiply(tw.base) // bake the tip into the carried orientation
-        tw.start = twoAngle(e) // re-baseline the twist so it stays continuous
-        tw.delta = 0
+        const dir =
+          Math.abs(mx) > Math.abs(my)
+            ? new THREE.Vector3(mx > 0 ? 1 : -1, 0, 0)
+            : new THREE.Vector3(0, 0, my > 0 ? 1 : -1)
+        startWalk(dir)
         tipC = c
         startDist = dist
-        haptic(10)
+        return
       }
+      // otherwise a rotation: free yaw (same for every block, the cylinder included)
+      const tw = twist.current
+      if (tw) tw.delta = -wrap(twoAngle(e) - tw.start)
     }
     const onEnd = (e: TouchEvent) => {
       if (startDist <= 0) return
@@ -4080,6 +4093,7 @@ function SceneContents({
         const d = drag.current
         // leave the block at exactly the angle you turned it to – no snap
         twist.current = null
+        twoFinger.current = false
         if (d && squeeze > 0.15) {
           // "pop": release the squeezed block with force proportional to squeeze
           const m = d.body.mass() || 1
@@ -4163,6 +4177,7 @@ function SceneContents({
 
   /* ---- held-block spring: hang & swing the grabbed piece from the cursor ---- */
   useFrame((_state, delta) => {
+    if (walk.current) return // a swipe-walk owns the body this frame
     const d = drag.current
     if (!d) return
     // Belt-and-braces: if the held body was removed (a level swap mid-grab), drop
@@ -4170,10 +4185,34 @@ function SceneContents({
     if (!d.body.isValid()) {
       drag.current = null
       twist.current = null
+      twoFinger.current = false
       grabbingRef.current = false
       return
     }
     const dt = THREE.MathUtils.clamp(delta, 1 / 240, 1 / 30)
+
+    // Two fingers down: NO dragging. Hold the block's horizontal position (it
+    // won't chase the fingers) and let gravity settle it onto the floor, applying
+    // only the two-finger yaw. A two-finger swipe is read as a cube-walk instead.
+    if (twoFinger.current) {
+      const lv0 = d.body.linvel()
+      d.body.setLinvel({ x: 0, y: lv0.y, z: 0 }, true) // freeze horizontal drift, keep gravity
+      const tw = twist.current
+      if (tw) {
+        const r0 = d.body.rotation()
+        const targetQ = new THREE.Quaternion()
+          .setFromAxisAngle(new THREE.Vector3(0, 1, 0), tw.delta)
+          .multiply(tw.base)
+        const cur = new THREE.Quaternion(r0.x, r0.y, r0.z, r0.w)
+        const ang = 2 * Math.acos(THREE.MathUtils.clamp(Math.abs(cur.dot(targetQ)), 0, 1))
+        const maxStep = TWIST_MAX_RATE * dt
+        const f = ang > 1e-4 ? Math.min(TWIST_EASE, maxStep / ang) : 1
+        cur.slerp(targetQ, f)
+        d.body.setRotation({ x: cur.x, y: cur.y, z: cur.z, w: cur.w }, true)
+        d.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+      }
+      return
+    }
 
     const held = (performance.now() - d.grabTime) / 1000
     const carry = MIN_LIFT
@@ -4184,22 +4223,10 @@ function SceneContents({
     // 2) keep holding without letting go and it floats all the way up close,
     //    like lifting a chess piece off the board to inspect it
     const rise = THREE.MathUtils.smoothstep(held, 1.3, 4.0)
-    let targetLift = THREE.MathUtils.lerp(carryLift, closeMax, rise)
-    // While twisting, hold the block high enough that it can spin in clear air:
-    // its rotation sweeps a sphere of `reach` about the centre, so lift the
-    // centre to at least that reach (plus a margin) above the floor. Rise to it
-    // quickly so a turn started right after grabbing doesn't clip the floor or a
-    // layer below.
-    const tw = twist.current
-    const twisting = !!(tw && tw.active)
-    const reach =
-      d.block.shape === "cylinder"
-        ? Math.hypot(d.block.radius, d.block.halfHeight)
-        : Math.hypot(d.block.half[0], d.block.half[1], d.block.half[2])
-    if (twisting) targetLift = Math.max(targetLift, reach + TWIST_LIFT_MARGIN)
+    const targetLift = THREE.MathUtils.lerp(carryLift, closeMax, rise)
     // (no hard ceiling here: holding lets the piece float up high to inspect it,
     // and to set the orange up onto the cube in the Lift tutorial)
-    d.liftY += (targetLift - d.liftY) * (twisting ? 0.3 : 0.12)
+    d.liftY += (targetLift - d.liftY) * 0.12
     d.plane.constant = -d.liftY
 
     // where the cursor wants the grab point to be (a point on the lift plane,
@@ -4248,26 +4275,8 @@ function SceneContents({
       },
       true,
     )
-    if (twisting && tw) {
-      // a second finger is twisting: ease the orientation toward the gesture
-      // target instead of snapping to it. Every block yaws about world-Y the same
-      // way (the cylinder included), so the control is identical across pieces;
-      // choosing which face to stand on is the two-finger swipe, whose 90° flips
-      // bake into tw.base and ride this same easing so they turn over smoothly.
-      const axis = new THREE.Vector3(0, 1, 0)
-      const targetQ = new THREE.Quaternion().setFromAxisAngle(axis, tw.delta).multiply(tw.base)
-      const cur = new THREE.Quaternion(r.x, r.y, r.z, r.w)
-      // angle still to turn, and the most we may turn this frame (speed cap)
-      const ang = 2 * Math.acos(THREE.MathUtils.clamp(Math.abs(cur.dot(targetQ)), 0, 1))
-      const maxStep = TWIST_MAX_RATE * dt
-      const f = ang > 1e-4 ? Math.min(TWIST_EASE, maxStep / ang) : 1
-      cur.slerp(targetQ, f)
-      d.body.setRotation({ x: cur.x, y: cur.y, z: cur.z, w: cur.w }, true)
-      d.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
-    } else {
-      const av = d.body.angvel()
-      d.body.setAngvel({ x: av.x * GRAB_ANG_DAMP, y: av.y * GRAB_ANG_DAMP, z: av.z * GRAB_ANG_DAMP }, true)
-    }
+    const av = d.body.angvel()
+    d.body.setAngvel({ x: av.x * GRAB_ANG_DAMP, y: av.y * GRAB_ANG_DAMP, z: av.z * GRAB_ANG_DAMP }, true)
   })
 
   /* ---- swipe-walk: animate the one-step 90° tip, then hand back to physics ---- */
@@ -4291,6 +4300,17 @@ function SceneContents({
       W.body.setBodyType(BODY_DYNAMIC, true)
       W.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
       W.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+      // if the fingers are still on it, re-anchor the grab to the new pose so a
+      // following swipe (or one-finger carry) doesn't snap from a stale anchor
+      const d = drag.current
+      if (d && d.body === W.body) {
+        const t = W.body.translation()
+        d.localAnchor.set(0, 0, 0)
+        d.startPos.set(t.x, t.y, t.z)
+        d.liftY = t.y
+        d.baseLift = t.y
+        d.grabTime = performance.now()
+      }
       playImpact(W.id, 0.4) // a wooden knock as it lands
       haptic(8)
       walk.current = null
