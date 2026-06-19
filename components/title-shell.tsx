@@ -265,23 +265,18 @@ function HelpOverlay({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        <div className="flex flex-col gap-3 text-[15px] leading-relaxed text-[#473f33]">
-          <p>Kvart nivå har eit lite mål — få klossane på rett plass, så løyser nivået seg.</p>
-          <ul className="flex flex-col gap-2">
-            <li>
-              <span className="font-semibold">Dra:</span> ta tak i ein kloss med fingeren og flytt han rundt. Slepp for å sleppe eller kaste han lett.
-            </li>
-            <li>
-              <span className="font-semibold">Vipp:</span> slå på rørslesensoren på hovudmenyen, så dreg tyngdekrafta klossane når du vippar telefonen.
-            </li>
-            <li>
-              <span className="font-semibold">Éin kloss:</span> på nokre nivå styrer du éin kloss om gongen — sveip (eller bruk piltastar / WASD) i den retninga du vil. Klossen tippar eit steg.
-            </li>
-          </ul>
+        <div className="flex flex-col gap-2.5 text-[15px] leading-snug text-[#473f33]">
+          <p>
+            <span className="font-semibold">Dra:</span> flytt klossane med fingeren.
+          </p>
+          <p>
+            <span className="font-semibold">Vipp:</span> vipp telefonen — tyngdekrafta dreg klossane.
+          </p>
+          <p>Få klossane på plass, så løyser nivået seg.</p>
         </div>
 
-        <div className="rounded-2xl bg-[#efe9dd] p-4 text-sm leading-relaxed text-[#6b6155]">
-          <span className="font-semibold text-[#473f33]">Tips:</span> legg klossete til på heimskjermen for fullskjerm utan nettlesarlinje. Trykk Del-knappen i nettlesaren og vel «Legg til på Heim-skjerm».
+        <div className="rounded-2xl bg-[#efe9dd] p-4 text-sm leading-snug text-[#6b6155]">
+          Spelet er berre laga for mobil. Skru på rørslesensor for best oppleving, og legg klossete til på heimskjermen.
         </div>
 
         <button
