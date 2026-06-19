@@ -402,6 +402,8 @@ type EnvConfig = {
   soloStart?: [number, number] // cube-walk start cell (overrides the default)
   soloGoal?: [number, number] // cube-walk exit cell (overrides the default)
   soloBound?: number // cube-walk roam radius in cells (overrides the default)
+  mazeRooms?: number // maze level size (grid is 2·rooms+1)
+  mazeSeed?: number // maze level layout seed
 }
 
 // A target outline a block must be dragged into. nx/nz are -1..1, scaled by the
@@ -718,9 +720,18 @@ const STACK_LEVELS: EnvConfig[] = STACK_BGS.map((bg, i) => ({
   stackAll: true,
 }))
 
-// 26–49: the "cube-walk" section – one tip-walked maze + piloted solo stages of
-// rising reach. 50 closes the game by assembling the totem figure.
-const CW_BLOCKS = ["cube", "plank-long", "plank-short", "orange", "cylinder"]
+// 26–49: the "cube-walk" section – mostly real labyrinths that grow level by
+// level (tip the cube to the exit), with a piloted solo block stage every few
+// levels for variety. 50 closes the game by assembling the totem figure.
+const SOLO_BLOCKS = ["plank-long", "plank-short", "orange", "cylinder"]
+const MAZE_LOOK = {
+  look: "maze" as EnvKind,
+  bg: "#05070d",
+  keyColor: "#cfe0ff",
+  keyIntensity: 1.4,
+  contact: { color: "#000000", opacity: 0 },
+  bloom: true,
+}
 const SOLO_LOOK = {
   bg: "#0c0b0a",
   keyColor: "#fff1dc",
@@ -728,22 +739,31 @@ const SOLO_LOOK = {
   contact: { color: "#000000", opacity: 0.4 },
   bloom: true,
 }
-const CUBEWALK_LEVELS: EnvConfig[] = [
-  { ...base("maze"), id: "cw-maze", name: "Labyrint" },
-  ...Array.from({ length: 23 }, (_, i) => {
-    const b = CW_BLOCKS[i % CW_BLOCKS.length]
-    const bnd = 4 + (i % 4) // roam radius grows 4..7 for gentle difficulty
+const CUBEWALK_LEVELS: EnvConfig[] = Array.from({ length: 24 }, (_, i) => {
+  // every 4th stage pilots a non-cube block on open ground; the rest are mazes
+  if (i % 4 === 3) {
+    const b = SOLO_BLOCKS[Math.floor(i / 4) % SOLO_BLOCKS.length]
+    const bnd = 4 + (Math.floor(i / 4) % 4) // roam radius 4..7
     return {
-      id: `cw-${i}`,
-      name: `Gå ${i + 1}`,
+      id: `cw-solo-${i}`,
+      name: `Pilot ${i + 1}`,
       ...SOLO_LOOK,
       solo: b,
       soloStart: [-(bnd - 1), bnd - 1] as [number, number],
       soloGoal: [bnd - 1, -(bnd - 1)] as [number, number],
       soloBound: bnd,
     }
-  }),
-]
+  }
+  const rooms = Math.min(12, 4 + Math.floor(i / 2)) // labyrinths grow with depth
+  return {
+    id: `cw-maze-${i}`,
+    name: `Labyrint ${i + 1}`,
+    ...MAZE_LOOK,
+    maze: true,
+    mazeRooms: rooms,
+    mazeSeed: 0x9e37 + i * 2654435761,
+  }
+})
 
 // The curated 50-level journey, in two sections.
 const ENVIRONMENTS: EnvConfig[] = [
@@ -1399,7 +1419,7 @@ function Room(props: RoomProps) {
   if (look === "klossete") return <KlosseRoom {...props} />
   if (look === "projection") return <ProjectionRoom {...props} />
   if (look === "magnet") return <MagnetRoom />
-  if (look === "maze") return <MazeRoom />
+  if (look === "maze") return <MazeRoom {...props} />
   if (look === "five") return <FiveRoom />
   return <ConcreteRoom {...props} />
 }
@@ -2114,19 +2134,33 @@ function buildMaze(rooms: number, seed: number): Maze {
   }
   return { W, H, wall, start, goal, spots }
 }
-const MAZE = buildMaze(8, 20260617) // larger maze
+// Each maze level is built (once, cached) from its own rooms+seed so the
+// cube-walk section is a series of distinct labyrinths.
+const mazeCache = new Map<string, Maze>()
+function mazeFor(env: EnvConfig): Maze {
+  const rooms = env.mazeRooms ?? 8
+  const seed = env.mazeSeed ?? 20260617
+  const key = `${rooms}:${seed}`
+  let m = mazeCache.get(key)
+  if (!m) {
+    m = buildMaze(rooms, seed)
+    mazeCache.set(key, m)
+  }
+  return m
+}
 // grid cell -> world (x,z), with the start cell at the origin
-function mazeWorld(gx: number, gy: number): [number, number] {
-  return [(gx - MAZE.start[0]) * MAZE_CELL, (gy - MAZE.start[1]) * MAZE_CELL]
+function mazeWorld(maze: Maze, gx: number, gy: number): [number, number] {
+  return [(gx - maze.start[0]) * MAZE_CELL, (gy - maze.start[1]) * MAZE_CELL]
 }
 
 // — Maze room: dark floor, a forest of wall blocks, a glowing exit tile.
-function MazeRoom() {
+function MazeRoom({ env }: RoomProps) {
+  const maze = mazeFor(env)
   // All wall cubes drawn as ONE instanced mesh (one draw call, no shadows) so
   // even the large maze stays light on mobile GPUs.
   const wallMesh = useMemo(() => {
     const cells: [number, number][] = []
-    for (let y = 0; y < MAZE.H; y++) for (let x = 0; x < MAZE.W; x++) if (MAZE.wall[y][x]) cells.push([x, y])
+    for (let y = 0; y < maze.H; y++) for (let x = 0; x < maze.W; x++) if (maze.wall[y][x]) cells.push([x, y])
     const geo = new THREE.BoxGeometry(MAZE_CELL, MAZE_CELL, MAZE_CELL)
     const mat = new THREE.MeshStandardMaterial({ color: "#27345c", roughness: 0.78, metalness: 0.06 })
     const mesh = new THREE.InstancedMesh(geo, mat, cells.length)
@@ -2134,14 +2168,14 @@ function MazeRoom() {
     mesh.receiveShadow = false
     const o = new THREE.Object3D()
     cells.forEach(([x, y], i) => {
-      const [wx, wz] = mazeWorld(x, y)
+      const [wx, wz] = mazeWorld(maze, x, y)
       o.position.set(wx, MAZE_CELL * 0.5, wz)
       o.updateMatrix()
       mesh.setMatrixAt(i, o.matrix)
     })
     mesh.instanceMatrix.needsUpdate = true
     return mesh
-  }, [])
+  }, [maze])
   useEffect(
     () => () => {
       wallMesh.geometry.dispose()
@@ -2155,23 +2189,31 @@ function MazeRoom() {
       <pointLight position={[0, 14, 0]} intensity={26} distance={70} decay={2} color="#bcd0ff" />
       {/* a large dark floor under the whole maze */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
-        <planeGeometry args={[MAZE.W * MAZE_CELL + 6, MAZE.H * MAZE_CELL + 6]} />
+        <planeGeometry args={[maze.W * MAZE_CELL + 6, maze.H * MAZE_CELL + 6]} />
         <meshStandardMaterial color="#0b1020" roughness={0.96} metalness={0} />
       </mesh>
       <primitive object={wallMesh} />
-      {/* the exit: a lit tile + a tall beacon you can steer toward */}
-      <MazeExit />
+      {/* the exit: a crayon cube footprint + a tall beacon you can steer toward */}
+      <MazeExit maze={maze} />
     </>
   )
 }
 
-function MazeExit() {
-  const [gx, gz] = mazeWorld(MAZE.goal[0], MAZE.goal[1])
+function MazeExit({ maze }: { maze: Maze }) {
+  const [gx, gz] = mazeWorld(maze, maze.goal[0], maze.goal[1])
+  const sils = useTexture(SILHOUETTES)
+  const cube = sils[SILHOUETTES.indexOf("/silhouettes/cube.png")]
+  useMemo(() => {
+    cube.colorSpace = THREE.SRGBColorSpace
+    cube.generateMipmaps = false
+    cube.minFilter = THREE.LinearFilter
+    cube.needsUpdate = true
+  }, [cube])
   return (
     <>
       <mesh position={[gx, 0.03, gz]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[MAZE_CELL * 0.92, MAZE_CELL * 0.92]} />
-        <meshBasicMaterial color="#7cf6c8" toneMapped={false} transparent opacity={0.9} />
+        <planeGeometry args={[MAZE_CELL * 0.96, MAZE_CELL * 0.96]} />
+        <meshBasicMaterial map={cube} color="#7cf6c8" transparent alphaTest={0.7} toneMapped={false} />
       </mesh>
       <mesh position={[gx, 9, gz]}>
         <cylinderGeometry args={[0.12, 0.12, 18, 8, 1, true]} />
@@ -2192,14 +2234,17 @@ type TipState = {
   target: [number, number]
 }
 function MazeController({
+  env,
   bodies,
   revealRef,
 }: {
+  env: EnvConfig
   bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
   revealRef: React.MutableRefObject<boolean>
 }) {
+  const maze = mazeFor(env)
   const camera = useThree((s) => s.camera)
-  const cell = useRef<[number, number]>([MAZE.start[0], MAZE.start[1]])
+  const cell = useRef<[number, number]>([maze.start[0], maze.start[1]])
   const tip = useRef<TipState | null>(null)
   const heldDir = useRef<[number, number] | null>(null) // tap-hold steering direction
   const camY = useRef<number | null>(null) // follow height (a touch higher = wider view)
@@ -2213,7 +2258,7 @@ function MazeController({
   // seat the player cube at the start cell (the other blocks aren't even rendered
   // in this level – see BLOCKS render below – so there's nothing to hide)
   useEffect(() => {
-    cell.current = [MAZE.start[0], MAZE.start[1]]
+    cell.current = [maze.start[0], maze.start[1]]
     tip.current = null
     heldDir.current = null
     const cube = bodies.current["cube"]
@@ -2236,7 +2281,7 @@ function MazeController({
       camY.current = null
       revealRef.current = false
     }
-  }, [bodies, revealRef, camera])
+  }, [bodies, revealRef, camera, maze])
 
   // input -> a HELD steering direction (grid +y is world +z). Tap-and-hold to
   // keep rolling that way; release to stop. No more one-tap-per-roll.
@@ -2319,9 +2364,9 @@ function MazeController({
       const [gx, gy] = cell.current
       const tx = gx + dx
       const ty = gy + dy
-      const open = ty >= 0 && ty < MAZE.H && tx >= 0 && tx < MAZE.W && !MAZE.wall[ty][tx]
+      const open = ty >= 0 && ty < maze.H && tx >= 0 && tx < maze.W && !maze.wall[ty][tx]
       if (open) {
-        const [wx, wz] = mazeWorld(gx, gy)
+        const [wx, wz] = mazeWorld(maze, gx, gy)
         const d = new THREE.Vector3(dx, 0, dy)
         const up = new THREE.Vector3(0, 1, 0)
         const startCenter = new THREE.Vector3(wx, MAZE_CELL / 2, wz)
@@ -2362,7 +2407,7 @@ function MazeController({
       cube.setNextKinematicRotation({ x: rot.x, y: rot.y, z: rot.z, w: rot.w })
       if (T.t >= T.dur) {
         cell.current = T.target
-        const [fx, fz] = mazeWorld(T.target[0], T.target[1])
+        const [fx, fz] = mazeWorld(maze, T.target[0], T.target[1])
         cube.setNextKinematicTranslation({ x: fx, y: MAZE_CELL / 2, z: fz })
         cube.setNextKinematicRotation({ x: 0, y: 0, z: 0, w: 1 })
         tip.current = null
@@ -2370,14 +2415,14 @@ function MazeController({
         playImpact("cube", 0.42) // a wooden knock as it lands
         haptic(8)
         landT.current = 1
-        if (T.target[0] === MAZE.goal[0] && T.target[1] === MAZE.goal[1] && !revealRef.current) {
+        if (T.target[0] === maze.goal[0] && T.target[1] === maze.goal[1] && !revealRef.current) {
           revealRef.current = true // reached the exit -> solved, progression advances
           flashT.current = 1
         }
       }
     } else {
       // idle: pin the cube to its cell so nothing (e.g. a reset) drifts it
-      const [wx, wz] = mazeWorld(cell.current[0], cell.current[1])
+      const [wx, wz] = mazeWorld(maze, cell.current[0], cell.current[1])
       camFx = wx
       camFz = wz
       cube.setNextKinematicTranslation({ x: wx, y: MAZE_CELL / 2, z: wz })
@@ -2395,7 +2440,7 @@ function MazeController({
     }
     flashT.current = Math.max(0, flashT.current - dt * 0.6)
     if (flash.current) {
-      const [gx, gz] = mazeWorld(MAZE.goal[0], MAZE.goal[1])
+      const [gx, gz] = mazeWorld(maze, maze.goal[0], maze.goal[1])
       flash.current.position.set(gx, 2, gz)
       flash.current.intensity = flashT.current * 120
     }
@@ -4567,7 +4612,7 @@ function SceneContents({
       {env.magnet && <MagnetController bodies={bodies} box={box} dragRef={drag} revealRef={revealRef} />}
 
       {/* maze: one block flip-flops through corridors, camera following, to the exit */}
-      {env.maze && <MazeController bodies={bodies} revealRef={revealRef} />}
+      {env.maze && <MazeController env={env} bodies={bodies} revealRef={revealRef} />}
 
       {/* gather: rest all five blocks on the glowing pad to solve */}
       {env.gather && <GatherController bodies={bodies} box={box} revealRef={revealRef} />}
