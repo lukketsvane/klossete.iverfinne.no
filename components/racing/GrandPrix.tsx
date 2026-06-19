@@ -19,14 +19,13 @@ const CAN_GLB_R = 0.675 // the block's native cylinder radius before scaling
 const CAN_R = 0.72 // rolling radius we want on the track (physics + roll)
 const CAN_SCALE = CAN_R / CAN_GLB_R
 const MAX_SPEED = 24
-const STEER = 26 // lateral acceleration from a full left/right hold
+const STEER = 26 // lateral acceleration from a full left/right input
 
 type Phase = "ready" | "run" | "paused" | "finish"
 
 // Shared mutable channel between the DOM HUD and the in-canvas sim, so the
 // per-frame loop can drive the readout without re-rendering React every frame.
 type Hud = {
-  coinsEl: HTMLSpanElement | null
   progEl: HTMLSpanElement | null
 }
 
@@ -34,30 +33,64 @@ export default function GrandPrix() {
   const track = useMemo(() => buildTrack(7), [])
   const [phase, setPhase] = useState<Phase>("ready")
   const [runId, setRunId] = useState(0)
-  const [result, setResult] = useState<{ coins: number; time: number }>({ coins: 0, time: 0 })
+  const [result, setResult] = useState<{ time: number }>({ time: 0 })
+  const [tiltOk, setTiltOk] = useState(false) // device tilt is the live steering source
 
   const steerRef = useRef(0) // -1 (left) .. 1 (right)
   const phaseRef = useRef<Phase>("ready")
   phaseRef.current = phase
-  const hud = useRef<Hud>({ coinsEl: null, progEl: null }).current
+  const hud = useRef<Hud>({ progEl: null }).current
   const containerRef = useRef<HTMLDivElement>(null)
 
   const running = phase === "run"
 
-  // Pointer steering: thumb position relative to centre gives an analog value.
-  const applyPointer = useCallback((clientX: number) => {
-    const el = containerRef.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    const k = (clientX - rect.left) / rect.width - 0.5
-    steerRef.current = THREE.MathUtils.clamp(k / 0.32, -1, 1)
+  // Tilt steering. The phone's left/right roll (gamma) drives the can; the first
+  // reading after enabling becomes the neutral "hold flat" baseline so however
+  // you're holding it reads as straight. Touch/keys remain as a fallback when no
+  // motion sensor is present (desktop, the CI smoke test).
+  const tiltBase = useRef<number | null>(null)
+  const tiltListening = useRef(false)
+  const enableTilt = useCallback(async () => {
+    if (tiltListening.current) return
+    const DOE = (typeof window !== "undefined" ? (window as any).DeviceOrientationEvent : null) as any
+    if (!DOE) return
+    try {
+      if (typeof DOE.requestPermission === "function") {
+        const res = await DOE.requestPermission()
+        if (res !== "granted") return
+      }
+    } catch {
+      return
+    }
+    tiltListening.current = true
+    tiltBase.current = null
+    const onTilt = (e: DeviceOrientationEvent) => {
+      const g = e.gamma // left/right roll in degrees
+      if (g == null) return // a device with no real sensor never sends this
+      if (tiltBase.current == null) tiltBase.current = g
+      steerRef.current = THREE.MathUtils.clamp((g - tiltBase.current) / 22, -1, 1)
+      // only hand steering to tilt once a real reading lands, so desktop keeps
+      // its pointer/keyboard fallback
+      setTiltOk(true)
+    }
+    window.addEventListener("deviceorientation", onTilt)
   }, [])
 
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
     let down = false
-    const start = () => phaseRef.current === "ready" && setPhase("run")
+    const start = () => {
+      if (phaseRef.current === "ready") setPhase("run")
+      // the start gesture is the user gesture iOS needs to grant sensor access
+      if (!tiltOk) void enableTilt()
+    }
+    // Pointer fallback: thumb position relative to centre gives an analog value.
+    const applyPointer = (clientX: number) => {
+      if (tiltOk) return // tilt owns steering once it's live
+      const rect = el.getBoundingClientRect()
+      steerRef.current = THREE.MathUtils.clamp(((clientX - rect.left) / rect.width - 0.5) / 0.32, -1, 1)
+    }
     const onDown = (e: PointerEvent) => {
       down = true
       start()
@@ -66,11 +99,14 @@ export default function GrandPrix() {
     const onMove = (e: PointerEvent) => down && applyPointer(e.clientX)
     const onUp = () => {
       down = false
-      steerRef.current = 0
+      if (!tiltOk) steerRef.current = 0
     }
-    // Track which arrow keys are held so releasing one falls back to the other.
+    // Keyboard fallback. Track which arrow keys are held so releasing one falls
+    // back to the other.
     const held = { left: false, right: false }
-    const sync = () => (steerRef.current = held.left === held.right ? 0 : held.left ? -1 : 1)
+    const sync = () => {
+      if (!tiltOk) steerRef.current = held.left === held.right ? 0 : held.left ? -1 : 1
+    }
     const kd = (e: KeyboardEvent) => {
       if (e.key === "ArrowLeft" || e.key === "a") held.left = true
       else if (e.key === "ArrowRight" || e.key === "d") held.right = true
@@ -97,18 +133,18 @@ export default function GrandPrix() {
       window.removeEventListener("keydown", kd)
       window.removeEventListener("keyup", ku)
     }
-  }, [applyPointer])
+  }, [enableTilt, tiltOk])
 
   const restart = () => {
     steerRef.current = 0
-    setResult({ coins: 0, time: 0 })
-    if (hud.coinsEl) hud.coinsEl.textContent = "0"
+    tiltBase.current = null
+    setResult({ time: 0 })
     if (hud.progEl) hud.progEl.textContent = "0%"
     setRunId((n) => n + 1)
     setPhase("run")
   }
-  const onFinish = useCallback((coins: number, time: number) => {
-    setResult({ coins, time })
+  const onFinish = useCallback((time: number) => {
+    setResult({ time })
     setPhase("finish")
   }, [])
 
@@ -152,12 +188,8 @@ export default function GrandPrix() {
           </button>
         )}
 
-        {/* coins + progress */}
-        <div className="absolute right-4 top-4 flex items-center gap-3 font-klossete text-lg text-[#473f33]">
-          <span className="flex items-center gap-1.5 rounded-full bg-white/65 px-3 py-1 shadow-sm backdrop-blur-sm">
-            <span className="inline-block h-3.5 w-3.5 rounded-full bg-[#f0c33c] shadow-[inset_0_0_0_2px_rgba(0,0,0,0.08)]" />
-            <span ref={(el) => { hud.coinsEl = el }}>0</span>
-          </span>
+        {/* progress */}
+        <div className="absolute right-4 top-4 font-klossete text-lg text-[#473f33]">
           <span
             data-testid="gp-progress"
             className="rounded-full bg-white/65 px-3 py-1 shadow-sm backdrop-blur-sm"
@@ -175,7 +207,7 @@ export default function GrandPrix() {
           <div className="absolute inset-x-0 bottom-24 flex flex-col items-center gap-1 text-center font-klossete text-[#473f33]">
             <p className="text-2xl">klossete grand prix</p>
             <p className="rounded-full bg-white/60 px-4 py-1.5 text-base backdrop-blur-sm">
-              trykk og hald — styr venstre/høgre
+              {tiltOk ? "vipp telefonen for å styre" : "trykk for å starte — vipp for å styre"}
             </p>
           </div>
         )}
@@ -189,9 +221,7 @@ export default function GrandPrix() {
               {phase === "finish" ? "i mål!" : "pause"}
             </h2>
             {phase === "finish" && (
-              <p className="font-klossete text-lg text-[#473f33]">
-                {result.coins} myntar · {result.time.toFixed(1)} s
-              </p>
+              <p className="font-klossete text-lg text-[#473f33]">{result.time.toFixed(1)} s</p>
             )}
             <div className="flex w-full flex-col gap-2.5">
               {phase === "paused" && (
@@ -238,7 +268,7 @@ function Scene({
   steerRef: React.MutableRefObject<number>
   phaseRef: React.MutableRefObject<Phase>
   hud: Hud
-  onFinish: (coins: number, time: number) => void
+  onFinish: (time: number) => void
 }) {
   const body = useRef<RapierRigidBody>(null)
   const canRef = useRef<THREE.Group>(null)
@@ -251,23 +281,22 @@ function Scene({
   const sim = useRef({
     seg: 0, // nearest centreline index (monotonic-ish progress)
     checkpoint: 3, // sample index to respawn at
-    coins: 0,
     time: 0,
     roll: 0, // accumulated barrel-roll angle
     forward: track.startDir.clone(),
-    started: false,
+    camPos: new THREE.Vector3(), // smoothed camera position
+    camLook: new THREE.Vector3(), // smoothed camera aim point
     finished: false,
   }).current
 
-  const collected = useMemo(() => new Uint8Array(track.coins.length), [track])
-  const coinRefs = useRef<(THREE.Group | null)[]>([])
-
-  // Place the camera behind the start line before the first frame.
+  // Seed the camera (and its smoothing targets) behind the start line.
   useEffect(() => {
     const f = track.startDir
-    camera.position.copy(track.start).addScaledVector(f, -8).add(new THREE.Vector3(0, 4.2, 0))
-    camera.lookAt(track.start.clone().addScaledVector(f, 6))
-  }, [camera, track])
+    sim.camPos.copy(track.start).addScaledVector(f, -7.5).add(new THREE.Vector3(0, 3.4, 0))
+    sim.camLook.copy(track.start).addScaledVector(f, 6)
+    camera.position.copy(sim.camPos)
+    camera.lookAt(sim.camLook)
+  }, [camera, track, sim])
 
   const respawn = useCallback(() => {
     const sm = track.samples[sim.checkpoint]
@@ -332,18 +361,6 @@ function Scene({
         rb.setLinvel({ x: vel.x * k, y: vel.y * k, z: vel.z * k }, true)
       }
 
-      // Coin pickups.
-      for (let i = 0; i < track.coins.length; i++) {
-        if (collected[i]) continue
-        if (pos.distanceToSquared(track.coins[i].p) < 1.5 * 1.5) {
-          collected[i] = 1
-          sim.coins++
-          const g = coinRefs.current[i]
-          if (g) g.visible = false
-          if (hud.coinsEl) hud.coinsEl.textContent = String(sim.coins)
-        }
-      }
-
       // Fell off the course → back to the last checkpoint.
       if (pos.y < sm.p.y - 7) respawn()
 
@@ -351,7 +368,7 @@ function Scene({
       if (!sim.finished && best >= track.samples.length - 6) {
         sim.finished = true
         rb.setLinvel({ x: 0, y: 0, z: 0 }, true)
-        onFinish(sim.coins, sim.time)
+        onFinish(sim.time)
       }
 
       // Progress readout.
@@ -372,19 +389,20 @@ function Scene({
       canRef.current.quaternion.copy(qSpin.multiply(qAlign))
     }
 
-    // --- Chase camera: behind and a little above, aimed at the road a few
-    // samples ahead so the view dips with the descent and the track fills the
-    // frame (rather than staring into the haze on downhills).
-    const aheadSm = track.samples[Math.min(best + 7, track.samples.length - 1)]
-    const camGoal = pos.clone().addScaledVector(fwd, -7.2).add(new THREE.Vector3(0, 3.6, 0))
-    const lookGoal = aheadSm.p.clone().add(new THREE.Vector3(0, 0.8, 0))
-    const lerp = 1 - Math.pow(0.0015, dt) // frame-rate independent smoothing
-    camera.position.lerp(camGoal, lerp)
-    const curLook = new THREE.Vector3()
-    camera.getWorldDirection(curLook)
-    const desiredDir = lookGoal.clone().sub(camera.position).normalize()
-    curLook.lerp(desiredDir, lerp)
-    camera.lookAt(camera.position.clone().add(curLook))
+    // --- Chase camera: a smoothed rig that sits a fixed distance behind and
+    // above the can and aims at the road a few samples ahead, so the view dips
+    // with the descent and the can stays planted in frame. Independent position
+    // and aim smoothing (frame-rate independent) keep it steady over bumps
+    // without feeling laggy in the turns.
+    const aheadSm = track.samples[Math.min(best + 6, track.samples.length - 1)]
+    const camGoal = pos.clone().addScaledVector(fwd, -7.5).add(new THREE.Vector3(0, 3.4, 0))
+    const lookGoal = aheadSm.p.clone().addScaledVector(fwd, 1.5).add(new THREE.Vector3(0, 0.6, 0))
+    const posK = 1 - Math.pow(0.0006, dt)
+    const lookK = 1 - Math.pow(0.0009, dt)
+    sim.camPos.lerp(camGoal, posK)
+    sim.camLook.lerp(lookGoal, lookK)
+    camera.position.copy(sim.camPos)
+    camera.lookAt(sim.camLook)
 
     // --- Sun follows the can so its shadow is always crisp underneath.
     if (lightRef.current) {
@@ -426,13 +444,6 @@ function Scene({
 
       <Scenery decos={track.decos} />
       <Flags gates={track.gates} />
-
-      {/* Coins */}
-      {track.coins.map((c, i) => (
-        <group key={i} ref={(g) => { coinRefs.current[i] = g }} position={c.p}>
-          <Coin />
-        </group>
-      ))}
 
       {/* The red can */}
       <RigidBody
@@ -531,20 +542,6 @@ function Can() {
   return <primitive object={model} scale={CAN_SCALE} dispose={null} />
 }
 useGLTF.preload(CAN_GLB)
-
-/* A spinning gold coin. */
-function Coin() {
-  const ref = useRef<THREE.Mesh>(null)
-  useFrame((_, dt) => {
-    if (ref.current) ref.current.rotation.y += dt * 2.4
-  })
-  return (
-    <mesh ref={ref} rotation={[Math.PI / 2, 0, 0]} castShadow>
-      <cylinderGeometry args={[0.42, 0.42, 0.1, 20]} />
-      <meshStandardMaterial color="#f0c33c" roughness={0.35} metalness={0.5} emissive="#7a5a10" emissiveIntensity={0.25} />
-    </mesh>
-  )
-}
 
 /* ------------------------------------------------------------------------- */
 /*  Dust trail: a pool of billboarded smoke sprites kicked up behind the can. */
