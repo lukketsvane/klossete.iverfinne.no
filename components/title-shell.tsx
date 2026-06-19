@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { Check, X } from "lucide-react"
+import { Check, ChevronLeft, ChevronRight, X } from "lucide-react"
 import WoodenBlocks, { LEVELS } from "@/components/wooden-blocks"
 import { getProgress, type Progress } from "@/lib/progression"
 import { getSettings, setSound, setTiltPref } from "@/lib/settings"
@@ -185,6 +185,8 @@ function SettingRow({
   )
 }
 
+const PAGE_SIZE = 25 // levels per page in the picker
+
 function LevelOverlay({
   progress,
   onClose,
@@ -196,13 +198,18 @@ function LevelOverlay({
   onHome: () => void
   onPick: (i: number) => void
 }) {
+  const pages = Math.max(1, Math.ceil(GRID / PAGE_SIZE))
+  const [page, setPage] = useState(() => Math.min(pages - 1, Math.floor((progress.current ?? 0) / PAGE_SIZE)))
+  const startIdx = page * PAGE_SIZE
+  const count = Math.min(PAGE_SIZE, GRID - startIdx)
+
   return (
     <div
       className="fixed inset-0 z-20 flex items-center justify-center bg-[#26262699] px-5 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
-        className="relative flex w-full max-w-md flex-col items-center gap-6 rounded-3xl bg-[#f6f2ea] p-6 shadow-xl"
+        className="relative flex w-full max-w-md flex-col items-center gap-5 rounded-3xl bg-[#f6f2ea] p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex w-full items-center justify-between">
@@ -225,31 +232,26 @@ function LevelOverlay({
           </button>
         </div>
 
-        <div className="grid max-h-[60vh] w-full grid-cols-5 gap-2.5 overflow-y-auto">
-          {Array.from({ length: GRID }, (_, i) => {
+        <div className="grid w-full grid-cols-5 gap-2.5">
+          {Array.from({ length: count }, (_, j) => {
+            const i = startIdx + j
             const level = LEVELS[i]
-            const exists = i < LEVELS.length
-            const solved = exists && progress.solved.includes(level.id)
-            const unlocked = exists // every built level is open from the board
-            const isCurrent = exists && i === progress.current && !solved
+            const solved = progress.solved.includes(level.id)
+            const isCurrent = i === progress.current && !solved
             const fill = solved ? SOLVED_COLORS[i % SOLVED_COLORS.length] : undefined
             return (
               <button
                 key={i}
                 type="button"
-                disabled={!unlocked}
-                onClick={() => unlocked && onPick(i)}
-                aria-label={
-                  exists ? `Nivå ${i + 1}: ${level.name}${solved ? " (klart)" : ""}` : `Nivå ${i + 1} (låst)`
-                }
-                title={exists ? level.name : "låst"}
-                className={`font-klossete relative flex aspect-square items-center justify-center rounded-xl text-xl transition ${
-                  unlocked ? "active:scale-95 hover:brightness-105" : "cursor-not-allowed"
-                } ${isCurrent ? "ring-2 ring-[#2b56be] ring-offset-2 ring-offset-[#f6f2ea]" : ""}`}
+                onClick={() => onPick(i)}
+                aria-label={`Nivå ${i + 1}: ${level.name}${solved ? " (klart)" : ""}`}
+                title={level.name}
+                className={`font-klossete relative flex aspect-square items-center justify-center rounded-xl text-xl transition active:scale-95 hover:brightness-105 ${
+                  isCurrent ? "ring-2 ring-[#2b56be] ring-offset-2 ring-offset-[#f6f2ea]" : ""
+                }`}
                 style={{
-                  background: fill ?? (unlocked ? "#e7e1d5" : "#eee9df"),
-                  color: solved ? "#f6f2ea" : unlocked ? "#473f33" : "#bdb4a4",
-                  opacity: unlocked ? 1 : 0.55,
+                  background: fill ?? "#e7e1d5",
+                  color: solved ? "#f6f2ea" : "#473f33",
                 }}
               >
                 {i + 1}
@@ -257,6 +259,32 @@ function LevelOverlay({
             )
           })}
         </div>
+
+        {pages > 1 && (
+          <div className="flex w-full items-center justify-center gap-6">
+            <button
+              type="button"
+              aria-label="Førre side"
+              disabled={page === 0}
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-[#6b6155] transition hover:bg-[#e7e1d5] hover:text-[#262626] active:scale-95 disabled:opacity-30"
+            >
+              <ChevronLeft className="h-5 w-5" strokeWidth={2.4} />
+            </button>
+            <span className="font-klossete text-base text-[#6b6155]">
+              {page + 1}/{pages}
+            </span>
+            <button
+              type="button"
+              aria-label="Neste side"
+              disabled={page >= pages - 1}
+              onClick={() => setPage((p) => Math.min(pages - 1, p + 1))}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-[#6b6155] transition hover:bg-[#e7e1d5] hover:text-[#262626] active:scale-95 disabled:opacity-30"
+            >
+              <ChevronRight className="h-5 w-5" strokeWidth={2.4} />
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
