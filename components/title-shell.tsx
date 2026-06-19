@@ -11,6 +11,10 @@ type Screen = "title" | "game"
 type Overlay = null | "levels" | "help"
 const GRID = LEVELS.length // one cell per built level
 const SOLVED_COLORS = ["#2b56be", "#eb7f37", "#78b2d6", "#d14332"]
+// the soundtrack, played as a loop. ost-main is the xylophone main/intro theme
+// (it leads); the others come round later in the rotation.
+const OST_TRACKS = ["/music/ost-main.mp3", "/music/ost-1.mp3", "/music/ost-2.mp3", "/music/ost-3.mp3"]
+const SOUNDBOX_ID = "soundbox" // the level where the player makes the music themselves
 
 export default function TitleShell() {
   const [screen, setScreen] = useState<Screen>("title")
@@ -22,6 +26,8 @@ export default function TitleShell() {
   const [music, setMusicOn] = useState(true)
   const [tilt, setTiltOn] = useState(false)
   const musicEl = useRef<HTMLAudioElement | null>(null)
+  const trackIdx = useRef(0)
+  const fadeRaf = useRef<number | null>(null)
 
   // load saved settings once on mount + keep the audio engine in sync
   useEffect(() => {
@@ -32,34 +38,51 @@ export default function TitleShell() {
     setMuted(!s.sound)
   }, [])
 
-  // The OST loops quietly under everything. Browsers block autoplay until a real
-  // user gesture, so we (re)try to start it on the first tap as well as whenever
-  // the music toggle turns on.
+  // The OST (a two-track playlist) waits until you actually start the game, then
+  // fades in quietly and loops (when one track ends we advance to the next and
+  // wrap around). Turning music off pauses it at once.
+  const MUSIC_VOL = 0.45
+  const fadeInMusic = useCallback(() => {
+    const a = musicEl.current
+    if (!a) return
+    if (fadeRaf.current) cancelAnimationFrame(fadeRaf.current)
+    a.volume = 0
+    void a.play().catch(() => {})
+    const t0 = performance.now()
+    const step = () => {
+      const k = Math.min(1, (performance.now() - t0) / 1600)
+      a.volume = MUSIC_VOL * k
+      if (k < 1) fadeRaf.current = requestAnimationFrame(step)
+      else fadeRaf.current = null
+    }
+    fadeRaf.current = requestAnimationFrame(step)
+  }, [])
+
+  // the soundbox level falls silent so the player can hear the tiles they strike
+  // (and the music button is locked there – the hush is itself the hint)
+  const onSoundbox = screen === "game" && LEVELS[liveLevel ?? -1]?.id === SOUNDBOX_ID
+  // start (fade) once the game begins / music turns back on; pause when music is
+  // off or while on the soundbox level. Never plays in the menu before a game.
   useEffect(() => {
     const a = musicEl.current
     if (!a) return
-    a.volume = 0.45
-    if (music) void a.play().catch(() => {})
-    else a.pause()
-  }, [music])
-  useEffect(() => {
-    const kick = () => {
-      if (music) void musicEl.current?.play().catch(() => {})
-      window.removeEventListener("pointerdown", kick)
-    }
-    window.addEventListener("pointerdown", kick)
-    return () => window.removeEventListener("pointerdown", kick)
-  }, [music])
+    if (!music || onSoundbox) a.pause()
+    else if (screen === "game" && a.paused) fadeInMusic()
+  }, [screen, music, onSoundbox, fadeInMusic])
+
+  const onTrackEnded = () => {
+    const a = musicEl.current
+    if (!a) return
+    trackIdx.current = (trackIdx.current + 1) % OST_TRACKS.length
+    a.src = OST_TRACKS[trackIdx.current]
+    a.volume = MUSIC_VOL
+    void a.play().catch(() => {})
+  }
 
   const toggleMusic = () => {
     const next = !music
     setMusicOn(next)
     setMusic(next)
-    const a = musicEl.current
-    if (a) {
-      if (next) void a.play().catch(() => {})
-      else a.pause()
-    }
   }
 
   // refresh progress whenever we land back on the menu (so newly passed levels show up)
@@ -103,14 +126,18 @@ export default function TitleShell() {
 
   return (
     <>
-      {/* the OST – loops under the whole experience, gated by the music toggle */}
-      <audio ref={musicEl} src="/music/ost.mp3" loop preload="auto" />
+      {/* the OST – a two-track playlist looping under the whole experience, gated
+          by the music toggle */}
+      <audio ref={musicEl} src={OST_TRACKS[0]} preload="auto" onEnded={onTrackEnded} />
       {screen === "game" ? (
         <WoodenBlocks
           key={launch ?? "resume"}
           initialLevel={launch ?? undefined}
           initialMuted={!sound}
           initialTilt={tilt}
+          musicOn={music}
+          onToggleMusic={toggleMusic}
+          musicLocked={onSoundbox}
           onLevel={setLiveLevel}
           // the grid button opens the level picker OVER the running level, so it
           // never throws you back out to the main menu

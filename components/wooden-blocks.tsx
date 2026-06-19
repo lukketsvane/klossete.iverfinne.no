@@ -12,7 +12,7 @@ import {
   type RapierRigidBody,
 } from "@react-three/rapier"
 import * as THREE from "three"
-import { LayoutGrid, Smartphone, Volume2, VolumeX } from "lucide-react"
+import { LayoutGrid, Music, Smartphone, Volume2, VolumeX } from "lucide-react"
 import { audioReady, playImpact, playTone, primeBlocks, setMuted, unlockAudio } from "@/lib/impact-sound"
 import { BLOCKS, MESH_FIT, blockBaseFreq, blockRadius, type Block } from "@/lib/blocks"
 import { CameraRig } from "@/components/engine/CameraRig"
@@ -3795,11 +3795,18 @@ function SceneContents({
   }, [])
   // a block striking a reactive floor lights a (dim) tile AND plays its note
   const reactive = env.reactive === true
-  // soundbox: count the notes the player strikes; solve once they've played enough
+  // soundbox: the music is off here, so the player makes it themselves by striking
+  // tiles. Notes only count when struck at roughly a steady tempo (a musical gap
+  // between hits) – mashing too fast is ignored, a long pause restarts the run –
+  // so the melody has to be played in time. Solve once enough land in tempo.
   const noteCount = useRef(0)
+  const lastNote = useRef(0)
   const noteTarget = env.notes ?? 0
+  const NOTE_MIN_GAP = 0.18 // s – faster than this is mashing, not playing
+  const NOTE_MAX_GAP = 0.85 // s – slower than this drops the tempo, run restarts
   useEffect(() => {
     noteCount.current = 0
+    lastNote.current = 0
   }, [env.id])
   const onBlockImpact = useCallback(
     (x: number, z: number, strength: number) => {
@@ -3807,7 +3814,12 @@ function SceneContents({
       if (reactive && strength > 0.06) {
         playTone(tileFreq(x, z), strength)
         if (noteTarget > 0 && !revealRef.current) {
-          noteCount.current += 1
+          const now = performance.now() / 1000
+          const gap = now - lastNote.current
+          if (gap < NOTE_MIN_GAP) return // too fast – ignore this strike entirely
+          lastNote.current = now
+          // a steady gap continues the run; too long a pause starts it over
+          noteCount.current = gap <= NOTE_MAX_GAP ? noteCount.current + 1 : 1
           if (noteCount.current >= noteTarget) revealRef.current = true
         }
       }
@@ -4505,12 +4517,18 @@ export default function WoodenBlocks({
   initialTilt = false,
   onExit,
   onLevel,
+  musicOn = true,
+  onToggleMusic,
+  musicLocked = false,
 }: {
   initialLevel?: number
   initialMuted?: boolean
   initialTilt?: boolean
   onExit?: () => void
   onLevel?: (i: number) => void // report the live level up to the shell (picker page + highlight)
+  musicOn?: boolean // OST playing? (drives the in-game music button)
+  onToggleMusic?: () => void // mute/un-mute the OST from the in-game cluster
+  musicLocked?: boolean // hide the music button (soundbox level keeps the OST off)
 } = {}) {
   const [measureMode, setMeasureMode] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -4847,6 +4865,17 @@ export default function WoodenBlocks({
             <Volume2 className="h-5 w-5" strokeWidth={2.4} />
           )}
         </button>
+        {onToggleMusic && !musicLocked && (
+          <button
+            type="button"
+            aria-label={musicOn ? "Demp musikk" : "Spel musikk"}
+            aria-pressed={!musicOn}
+            onClick={tapAction(onToggleMusic)}
+            className="flex h-11 w-11 items-center justify-center transition active:scale-95"
+          >
+            <Music className={`h-5 w-5 ${musicOn ? "" : "opacity-40"}`} strokeWidth={2.4} />
+          </button>
+        )}
         <button
           type="button"
           aria-label="Vipp for å styre tyngdekrafta"
