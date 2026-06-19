@@ -1,5 +1,5 @@
-import TitleShell from "@/components/title-shell"
+import GrandPrix from "@/components/grand-prix/GrandPrix"
 
 export default function Page() {
-  return <TitleShell />
+  return <GrandPrix />
 }
