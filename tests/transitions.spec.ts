@@ -61,10 +61,10 @@ test("bespoke arrangement levels 12–19 load and render", async ({ page }) => {
   // tightest mosaic. They all run through the same place/stack renderer, so this
   // covers the new configs without eight slow reloads.
   const picks: { lvl: number; name: string }[] = [
-    { lvl: 12, name: "Firkant" },
+    { lvl: 12, name: "Gjennom" },
     { lvl: 14, name: "Kross" },
     { lvl: 17, name: "Stable 5" },
-    { lvl: 19, name: "Mosaikk" },
+    { lvl: 19, name: "Sluse" },
   ]
   for (const { lvl, name } of picks) {
     // fresh boot per level – the menu picker is the reliable route. A reload from
@@ -89,4 +89,45 @@ test("bespoke arrangement levels 12–19 load and render", async ({ page }) => {
     expect(alive, `level ${lvl} (${name}) canvas alive`).toBeTruthy()
   }
   expect(fatal, `fatal errors loading 12–19:\n${fatal.join("\n")}`).toHaveLength(0)
+})
+
+// The piloting section (26–50) now has obstacles (blocked cells) and checkpoints
+// in its pilot stages, driven each frame by the solo controller. Load an obstacle
+// stage and the hardest checkpoint stage (both on picker page 2) and confirm the
+// controller mounts and runs without throwing.
+test("piloting stages with obstacles + checkpoints load and render", async ({ page }) => {
+  test.setTimeout(120_000)
+  const fatal: string[] = []
+  page.on("pageerror", (e) => fatal.push(`pageerror: ${e.message}`))
+
+  const picks: { lvl: number; name: string }[] = [
+    { lvl: 32, name: "Langferd 2" }, // one barrier to route around
+    { lvl: 49, name: "Vippen 6" }, // two barriers + two checkpoints (boss ramp peak)
+  ]
+  for (const { lvl, name } of picks) {
+    try {
+      await page.goto("/", { waitUntil: "domcontentloaded" })
+    } catch {
+      await page.waitForTimeout(500)
+      await page.goto("/", { waitUntil: "domcontentloaded" })
+    }
+    await page.getByRole("button", { name: "nivå", exact: true }).click()
+    // wait for the picker to actually open (page 1) before paging to levels 26–50
+    await expect(page.getByRole("button", { name: /^Nivå 1:/ })).toBeVisible({ timeout: 15_000 })
+    await page.getByRole("button", { name: "Neste side" }).click()
+    // confirm page 2 loaded (level 26 is its first cell) before hunting the target
+    await expect(page.getByRole("button", { name: /^Nivå 26:/ })).toBeVisible({ timeout: 15_000 })
+    const cell = page.getByRole("button", { name: new RegExp(`^Nivå ${lvl}: ${name}`) })
+    await expect(cell).toBeVisible({ timeout: 15_000 })
+    await cell.click()
+    const canvas = page.locator("canvas").first()
+    await expect(canvas).toBeVisible({ timeout: 20_000 })
+    await page.waitForTimeout(900)
+    const alive = await canvas.evaluate((el: HTMLCanvasElement) => {
+      const ctx = el.getContext("webgl2") || el.getContext("webgl")
+      return !!ctx && el.width > 0 && el.height > 0
+    })
+    expect(alive, `level ${lvl} (${name}) canvas alive`).toBeTruthy()
+  }
+  expect(fatal, `fatal errors loading pilot stages:\n${fatal.join("\n")}`).toHaveLength(0)
 })
