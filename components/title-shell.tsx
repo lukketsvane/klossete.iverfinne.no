@@ -24,6 +24,7 @@ export default function TitleShell() {
   const [tilt, setTiltOn] = useState(false)
   const musicEl = useRef<HTMLAudioElement | null>(null)
   const trackIdx = useRef(0)
+  const fadeRaf = useRef<number | null>(null)
 
   // load saved settings once on mount + keep the audio engine in sync
   useEffect(() => {
@@ -34,31 +35,42 @@ export default function TitleShell() {
     setMuted(!s.sound)
   }, [])
 
-  // The OST (a two-track playlist) loops quietly under everything. Browsers block
-  // autoplay until a real user gesture, so we (re)try to start it on the first tap
-  // as well as whenever the music toggle turns on. When one track ends we advance
-  // to the next and wrap around.
-  useEffect(() => {
+  // The OST (a two-track playlist) waits until you actually start the game, then
+  // fades in quietly and loops (when one track ends we advance to the next and
+  // wrap around). Turning music off pauses it at once.
+  const MUSIC_VOL = 0.45
+  const fadeInMusic = useCallback(() => {
     const a = musicEl.current
     if (!a) return
-    a.volume = 0.45
-    if (music) void a.play().catch(() => {})
-    else a.pause()
-  }, [music])
-  useEffect(() => {
-    const kick = () => {
-      if (music) void musicEl.current?.play().catch(() => {})
-      window.removeEventListener("pointerdown", kick)
+    if (fadeRaf.current) cancelAnimationFrame(fadeRaf.current)
+    a.volume = 0
+    void a.play().catch(() => {})
+    const t0 = performance.now()
+    const step = () => {
+      const k = Math.min(1, (performance.now() - t0) / 1600)
+      a.volume = MUSIC_VOL * k
+      if (k < 1) fadeRaf.current = requestAnimationFrame(step)
+      else fadeRaf.current = null
     }
-    window.addEventListener("pointerdown", kick)
-    return () => window.removeEventListener("pointerdown", kick)
+    fadeRaf.current = requestAnimationFrame(step)
+  }, [])
+
+  // pause the moment music is switched off
+  useEffect(() => {
+    if (!music) musicEl.current?.pause()
   }, [music])
+  // start (with a fade) once the game begins, or when music is turned back on
+  // while playing – never in the menu before the first game
+  useEffect(() => {
+    if (screen === "game" && music && musicEl.current?.paused) fadeInMusic()
+  }, [screen, music, fadeInMusic])
 
   const onTrackEnded = () => {
     const a = musicEl.current
     if (!a) return
     trackIdx.current = (trackIdx.current + 1) % OST_TRACKS.length
     a.src = OST_TRACKS[trackIdx.current]
+    a.volume = MUSIC_VOL
     void a.play().catch(() => {})
   }
 
@@ -66,11 +78,6 @@ export default function TitleShell() {
     const next = !music
     setMusicOn(next)
     setMusic(next)
-    const a = musicEl.current
-    if (a) {
-      if (next) void a.play().catch(() => {})
-      else a.pause()
-    }
   }
 
   // refresh progress whenever we land back on the menu (so newly passed levels show up)
@@ -123,6 +130,8 @@ export default function TitleShell() {
           initialLevel={launch ?? undefined}
           initialMuted={!sound}
           initialTilt={tilt}
+          musicOn={music}
+          onToggleMusic={toggleMusic}
           onLevel={setLiveLevel}
           // the grid button opens the level picker OVER the running level, so it
           // never throws you back out to the main menu
