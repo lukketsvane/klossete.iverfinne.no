@@ -396,7 +396,8 @@ type EnvConfig = {
   hint?: string // a short on-screen Nynorsk instruction
   spawn?: Record<string, { pos: [number, number, number]; rot?: [number, number, number] }> // per-block start override
   place?: PlaceSpec[] // drag each listed block into its outlined target (with orientation rules)
-  stackAll?: boolean // win by stacking every block into one tower
+  stackAll?: boolean // win by stacking blocks into one tower
+  stackCount?: number // how many blocks the tower needs (defaults to all five)
   watchVideo?: boolean // the video room as a "just watch it to the end" level
   notes?: number // soundbox: play this many tile-notes to solve
   soloStart?: [number, number] // cube-walk start cell (overrides the default)
@@ -589,31 +590,6 @@ const BASE_ENVIRONMENTS: EnvConfig[] = [
   },
 ]
 
-// Pull the visual theme of a base "look" so extra levels can reuse it.
-const VISUAL = (look: EnvKind) => {
-  const b = BASE_ENVIRONMENTS.find((e) => e.id === look) ?? BASE_ENVIRONMENTS[0]
-  return { look, bg: b.bg, keyColor: b.keyColor, keyIntensity: b.keyIntensity, contact: b.contact, bloom: b.bloom }
-}
-type KeyFlag = "stack" | "gather" | "corners" | "lineup" | "plate" | "apart"
-// Extra levels that fill the board toward 25: each pairs a distinct room look
-// with a key it doesn't already use, so every square is a fresh, solvable combo.
-const EXTRA_SPECS: { name: string; look: EnvKind; key: KeyFlag }[] = [
-  { name: "Glass · stack", look: "glass", key: "stack" },
-  { name: "Gold · corners", look: "gold", key: "corners" },
-  { name: "Play mat · gather", look: "playmat", key: "gather" },
-  { name: "Concrete · line", look: "concrete", key: "lineup" },
-  { name: "Video · scatter", look: "video", key: "apart" },
-  { name: "Peel · stack", look: "peel", key: "stack" },
-  { name: "Texture · gather", look: "texturemiss", key: "gather" },
-  { name: "Fourth · scatter", look: "fourthside", key: "apart" },
-]
-const EXTRA_ENVIRONMENTS: EnvConfig[] = EXTRA_SPECS.map((s, i) => ({
-  id: `x${i + 13}`,
-  name: s.name,
-  ...VISUAL(s.look),
-  [s.key]: true,
-}))
-
 // Tutorial stages – a gentle on-ramp that introduces one skill at a time, on a
 // calm plain floor. They lead the level order so a new player learns the verbs
 // (place, rotate, stand a cylinder, place all five, stack) before the themed
@@ -710,14 +686,19 @@ const INTRO_REST: EnvConfig[] = [
   { id: "t9-stack", name: "Stable", ...TUT_LOOK, stackAll: true },
 ]
 
-// 11–19: nine stacking levels (calm look, subtly different backdrops)
+// 11–19: nine stacking levels (calm look, subtly different backdrops). Rather
+// than nine identical "stack all five" rooms, the goal ramps: a short three-high
+// tower to start, growing to the full five, so the difficulty climbs instead of
+// repeating. The name shows the target height so it reads without extra text.
 const STACK_BGS = ["#cdc6b8", "#c9bfb0", "#c4c8be", "#ccc3b3", "#c6c0b4", "#cebfac", "#c1c5bd", "#cac3b3", "#c5bdb0"]
+const STACK_COUNTS = [3, 3, 4, 4, 4, 5, 5, 5, 5]
 const STACK_LEVELS: EnvConfig[] = STACK_BGS.map((bg, i) => ({
   id: `stack-${i}`,
-  name: `Stable ${i + 2}`,
+  name: `Stable ${STACK_COUNTS[i]}`,
   ...TUT_LOOK,
   bg,
   stackAll: true,
+  stackCount: STACK_COUNTS[i],
 }))
 
 // 26–49: the "cube-walk" section – mostly real labyrinths that grow level by
@@ -754,7 +735,7 @@ const CUBEWALK_LEVELS: EnvConfig[] = Array.from({ length: 24 }, (_, i) => {
       soloBound: bnd,
     }
   }
-  const rooms = Math.min(12, 4 + Math.floor(i / 2)) // labyrinths grow with depth
+  const rooms = Math.min(8, 4 + Math.floor(i / 2)) // labyrinths grow with depth (capped so late mazes stay readable on a phone)
   return {
     id: `cw-maze-${i}`,
     name: `Labyrint ${i + 1}`,
@@ -1354,9 +1335,11 @@ function PlaceController({
 function StackAllController({
   bodies,
   revealRef,
+  count,
 }: {
   bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
   revealRef: React.MutableRefObject<boolean>
+  count?: number // tower height to win; defaults to every block
 }) {
   const dwell = useRef(0)
   const flash = useRef<THREE.PointLight>(null)
@@ -1365,18 +1348,24 @@ function StackAllController({
     revealRef.current = false
   }, [revealRef])
 
+  // how many blocks the tower needs – clamped so a stray value can't ask for
+  // more pieces than exist (which would make the level unwinnable).
+  const need = Math.max(2, Math.min(count ?? BLOCKS.length, BLOCKS.length))
+
   useFrame((_s, dt) => {
     if (!revealRef.current) {
-      const stack = BLOCKS.map((b) => {
+      const present = BLOCKS.map((b) => {
         const body = bodies.current[b.id]
         if (!body) return null
         const t = body.translation()
         const lv = body.linvel()
         return { y: t.y, x: t.x, z: t.z, speed: Math.hypot(lv.x, lv.y, lv.z) }
-      })
-      let ok = stack.every((s) => s != null)
+      }).filter((s): s is { y: number; x: number; z: number; speed: number } => s != null)
+      let ok = present.length >= need
       if (ok) {
-        const items = (stack as { y: number; x: number; z: number; speed: number }[]).slice().sort((a, b) => a.y - b.y)
+        // take the `need` highest pieces and check they form one resting tower;
+        // any remaining blocks may sit wherever they like on the floor.
+        const items = present.slice().sort((a, b) => b.y - a.y).slice(0, need).sort((a, b) => a.y - b.y)
         for (let i = 0; i < items.length; i++) {
           if (items[i].speed > 0.8) ok = false // everything must be at rest
           if (i > 0) {
@@ -1403,6 +1392,55 @@ function StackAllController({
   })
 
   return <pointLight ref={flash} position={[0, 6, 0]} distance={44} decay={2} color="#fff6e6" intensity={0} />
+}
+
+// Soundbox: a wordless row of pips along the far edge that count the tones still
+// to play. Each tone struck extinguishes one pip; when the last goes dark the
+// room is solved. Driven from the live note ref in useFrame (no React state, so
+// it never re-renders the scene) – the same ref-driven pattern as the puzzle
+// lights. Stays a visual cue, matching the game's no-text design.
+function NoteCounter({
+  target,
+  countRef,
+  box,
+}: {
+  target: number
+  countRef: React.MutableRefObject<number>
+  box: Box
+}) {
+  const pips = useRef<(THREE.Mesh | null)[]>([])
+  const lit = useRef<number[]>(Array.from({ length: target }, () => 1))
+  // spread the pips across (most of) the play width, near the top (-z) edge
+  const span = Math.min(box.bx * 1.7, target * 0.62)
+  const step = target > 1 ? span / (target - 1) : 0
+  const z = -box.bz + 0.55
+
+  useFrame(() => {
+    const remaining = Math.max(0, target - countRef.current)
+    for (let i = 0; i < target; i++) {
+      const want = i < remaining ? 1 : 0.12 // unplayed pips glow; played ones dim
+      lit.current[i] += (want - lit.current[i]) * 0.18
+      const m = pips.current[i]?.material as THREE.MeshBasicMaterial | undefined
+      if (m) m.opacity = lit.current[i]
+    }
+  })
+
+  return (
+    <group position={[0, 0.02, z]} rotation={[-Math.PI / 2, 0, 0]}>
+      {Array.from({ length: target }, (_, i) => (
+        <mesh
+          key={i}
+          position={[(i - (target - 1) / 2) * step, 0, 0]}
+          ref={(el) => {
+            pips.current[i] = el
+          }}
+        >
+          <circleGeometry args={[0.16, 24]} />
+          <meshBasicMaterial color="#cfe0ff" transparent opacity={1} toneMapped={false} />
+        </mesh>
+      ))}
+    </group>
+  )
 }
 
 function Room(props: RoomProps) {
@@ -4651,7 +4689,10 @@ function SceneContents({
       {env.place && <PlaceController specs={env.place} bodies={bodies} box={box} revealRef={revealRef} />}
 
       {/* tutorial: stack every block into one tower */}
-      {env.stackAll && <StackAllController bodies={bodies} revealRef={revealRef} />}
+      {env.stackAll && <StackAllController bodies={bodies} revealRef={revealRef} count={env.stackCount} />}
+
+      {/* soundbox: a wordless pip row counting down the tones left to play */}
+      {noteTarget > 0 && <NoteCounter target={noteTarget} countRef={noteCount} box={box} />}
 
       {/* blocks — a solo stage shows only its one block; the maze only the cube;
           tutorial stages may restrict to a subset via env.only */}
