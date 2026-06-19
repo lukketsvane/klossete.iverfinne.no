@@ -811,8 +811,15 @@ type DragState = {
   liftY: number // current carry height (ramps up the longer you hold)
   baseLift: number // height at the moment of grab
   grabTime: number // performance.now() when grabbed – drives the "lift close" ramp
+  startPos: THREE.Vector3 // body centre at grab – lets a quick tap stay put
   radius: number // horizontal footprint, used to keep the block off the walls
 }
+
+// A press shorter than this that barely moved the block is treated as a tap:
+// the block is left where it was instead of drifting off, so a tap never feels
+// like an accidental nudge.
+const TAP_TIME = 0.2 // seconds
+const TAP_MOVE = 0.3 // world units the centre may travel and still count as a tap
 
 const MIN_LIFT = 2.1 // grabbed blocks float well clear of the floor so you can carry them OVER a stacked layer
 const MAX_LIFT = WALL_VIS_HEIGHT - 0.3 // never lift above the tray rim
@@ -3609,6 +3616,7 @@ function SceneContents({
         liftY: grabY,
         baseLift: grabY,
         grabTime: performance.now(),
+        startPos: center.clone(),
         radius: blockRadius(block),
       }
       grabbingRef.current = true
@@ -3665,12 +3673,23 @@ function SceneContents({
       const d = drag.current
       if (!d) return
       el.style.cursor = "grab"
-      // clamp the release speed so a flick stays a toss, not a hurl
-      const lv = d.body.linvel()
-      const v = new THREE.Vector3(lv.x, lv.y, lv.z)
-      if (v.length() > THROW_MAX) {
-        v.setLength(THROW_MAX)
-        d.body.setLinvel({ x: v.x, y: v.y, z: v.z }, true)
+      // A quick tap (short hold, barely moved) should leave the block where it
+      // is, not send it drifting – the carry ramp can impart a little stray
+      // velocity that otherwise feels like losing control. Kill all motion in
+      // that case; otherwise clamp the release speed so a flick stays a toss.
+      const held = (performance.now() - d.grabTime) / 1000
+      const tp = d.body.translation()
+      const moved = Math.hypot(tp.x - d.startPos.x, tp.z - d.startPos.z)
+      if (held < TAP_TIME && moved < TAP_MOVE) {
+        d.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+        d.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+      } else {
+        const lv = d.body.linvel()
+        const v = new THREE.Vector3(lv.x, lv.y, lv.z)
+        if (v.length() > THROW_MAX) {
+          v.setLength(THROW_MAX)
+          d.body.setLinvel({ x: v.x, y: v.y, z: v.z }, true)
+        }
       }
       drag.current = null
       twist.current = null
