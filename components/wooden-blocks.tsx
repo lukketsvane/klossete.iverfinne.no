@@ -125,6 +125,7 @@ function BlockMesh({
 /* ------------------------------------------------------------------ */
 function BlockBody({
   block,
+  spawn,
   bodyRef,
   onGrab,
   onImpact,
@@ -137,6 +138,7 @@ function BlockBody({
   onSelect,
 }: {
   block: Block
+  spawn?: { pos: [number, number, number]; rot?: [number, number, number] } // per-level start override
   bodyRef: (b: RapierRigidBody | null) => void
   onGrab: (body: RapierRigidBody, point: THREE.Vector3, block: Block) => void
   onImpact: (x: number, z: number, strength: number) => void
@@ -149,6 +151,8 @@ function BlockBody({
   onSelect: (id: string) => void
 }) {
   const ref = useRef<RapierRigidBody>(null)
+  const startPos = spawn?.pos ?? block.pos
+  const startRot = spawn?.rot ?? block.rot
 
   const handlePointerDown = (e: any) => {
     e.stopPropagation()
@@ -190,8 +194,8 @@ function BlockBody({
         ref.current = r
         bodyRef(r)
       }}
-      position={block.pos}
-      rotation={block.rot}
+      position={startPos}
+      rotation={startRot}
       colliders={false}
       // hardwood feel: grippy wood-on-wood friction, a small hard clack of
       // restitution, and a uniform dense-hardwood density so mass scales with
@@ -227,8 +231,9 @@ function BlockBody({
 /*  Tilt controller – maps device orientation to gravity + light       */
 /* ------------------------------------------------------------------ */
 // Gravity tuned so blocks settle with weight but stay calm enough to stack
-// without bouncing themselves over (too strong made them impossible to build with).
-const G = 20
+// without bouncing themselves over (too strong made them impossible to build
+// with). Nudged up a touch so falls feel snappier and less floaty / slow-mo.
+const G = 25
 
 // Default resting position of the warm key light. The camera looks straight
 // down with screen-up mapped to -z, so a light on the -z side reads as coming
@@ -386,7 +391,23 @@ type EnvConfig = {
   five?: boolean // bring each block to its glowing slot -> build the Messias figure
   solo?: string // a one-block stage: pilot just this block (by id) to the exit
   mosaic?: number // which mosaic floor (1-4) a solo stage stands on
+  // ---- tutorial stages: a clean room that teaches one skill at a time ----
+  only?: string[] // restrict which blocks appear (the rest of the five stay hidden)
+  hint?: string // a short on-screen Nynorsk instruction
+  spawn?: Record<string, { pos: [number, number, number]; rot?: [number, number, number] }> // per-block start override
+  place?: PlaceSpec[] // drag each listed block into its outlined target (with orientation rules)
+  stackAll?: boolean // win by stacking every block into one tower
+  watchVideo?: boolean // the video room as a "just watch it to the end" level
+  notes?: number // soundbox: play this many tile-notes to solve
+  soloStart?: [number, number] // cube-walk start cell (overrides the default)
+  soloGoal?: [number, number] // cube-walk exit cell (overrides the default)
+  soloBound?: number // cube-walk roam radius in cells (overrides the default)
 }
+
+// A target outline a block must be dragged into. nx/nz are -1..1, scaled by the
+// tray; `upright` wants a cylinder stood on its end; `align` wants a plank's long
+// side pointing along that axis (so the player has to rotate it to fit).
+type PlaceSpec = { id: string; nx: number; nz: number; upright?: boolean; align?: "x" | "z" }
 const BASE_ENVIRONMENTS: EnvConfig[] = [
   {
     id: "concrete",
@@ -591,7 +612,154 @@ const EXTRA_ENVIRONMENTS: EnvConfig[] = EXTRA_SPECS.map((s, i) => ({
   [s.key]: true,
 }))
 
-const ENVIRONMENTS: EnvConfig[] = [...BASE_ENVIRONMENTS, ...EXTRA_ENVIRONMENTS]
+// Tutorial stages – a gentle on-ramp that introduces one skill at a time, on a
+// calm plain floor. They lead the level order so a new player learns the verbs
+// (place, rotate, stand a cylinder, place all five, stack) before the themed
+// rooms. Screen-up is -z, so blocks start near the bottom (+z) and the targets
+// sit toward the top (-z), matching how you naturally drag upward.
+const TUT_LOOK = {
+  bg: "#cdc6b8",
+  keyColor: "#fff1df",
+  keyIntensity: 3.0,
+  contact: { color: "#332b20", opacity: 0.42 },
+  bloom: false,
+}
+const TUTORIAL_ENVIRONMENTS: EnvConfig[] = [
+  {
+    id: "t1-place",
+    name: "Kloss inn",
+    ...TUT_LOOK,
+    only: ["cube"],
+    hint: "Dra klossen inn i ruta.",
+    spawn: { cube: { pos: [0, 0.6, 2.4] } },
+    place: [{ id: "cube", nx: 0, nz: -0.5 }],
+  },
+  {
+    id: "t2-rotate",
+    name: "Roter",
+    ...TUT_LOOK,
+    only: ["plank-long"],
+    hint: "Knip med to fingrar og roter planken så han passar i ruta.",
+    spawn: { "plank-long": { pos: [0, 0.4, 2.4], rot: [0, Math.PI / 2, 0] } }, // long side across
+    place: [{ id: "plank-long", nx: 0, nz: -0.4, align: "z" }], // must turn it upright on screen
+  },
+  {
+    id: "t3-stand",
+    name: "Reis sylinderen",
+    ...TUT_LOOK,
+    only: ["cylinder"],
+    hint: "Knip og roter for å reise sylinderen på enden, så set han i ringen.",
+    spawn: { cylinder: { pos: [0, 0.55, 2.4], rot: [Math.PI / 2, 0, 0] } }, // lying on its side
+    place: [{ id: "cylinder", nx: 0, nz: -0.4, upright: true }],
+  },
+  {
+    id: "t4-five",
+    name: "Alle fem",
+    ...TUT_LOOK,
+    hint: "Få alle fem klossane på rett plass.",
+    place: [
+      { id: "cube", nx: -0.5, nz: -0.55 },
+      { id: "orange", nx: 0.5, nz: -0.55 },
+      { id: "plank-long", nx: 0, nz: 0 },
+      { id: "plank-short", nx: -0.5, nz: 0.55 },
+      { id: "cylinder", nx: 0.5, nz: 0.55, upright: true },
+    ],
+  },
+  {
+    id: "t5-stack",
+    name: "Stable",
+    ...TUT_LOOK,
+    hint: "Stable alle fem oppå kvarandre.",
+    stackAll: true,
+  },
+]
+
+// pull a base room config by id so the curated order can reuse its look + keys
+const base = (id: string): EnvConfig => BASE_ENVIRONMENTS.find((e) => e.id === id) ?? BASE_ENVIRONMENTS[0]
+
+// 6–9: more intro practice, still on the calm first-level background
+const INTRO_REST: EnvConfig[] = [
+  {
+    id: "t6-two",
+    name: "Plasser to",
+    ...TUT_LOOK,
+    only: ["cube", "orange"],
+    spawn: { cube: { pos: [-0.9, 0.6, 2.4] }, orange: { pos: [0.9, 0.45, 2.4] } },
+    place: [
+      { id: "cube", nx: -0.4, nz: -0.45 },
+      { id: "orange", nx: 0.4, nz: -0.45 },
+    ],
+  },
+  { id: "t7-stack", name: "Stable", ...TUT_LOOK, stackAll: true },
+  {
+    id: "t8-rotate2",
+    name: "Roter to",
+    ...TUT_LOOK,
+    only: ["plank-long", "plank-short"],
+    spawn: {
+      "plank-long": { pos: [-1.0, 0.4, 2.4], rot: [0, Math.PI / 2, 0] },
+      "plank-short": { pos: [1.0, 0.4, 2.4], rot: [0, Math.PI / 2, 0] },
+    },
+    place: [
+      { id: "plank-long", nx: -0.45, nz: -0.4, align: "z" },
+      { id: "plank-short", nx: 0.45, nz: -0.4, align: "z" },
+    ],
+  },
+  { id: "t9-stack", name: "Stable", ...TUT_LOOK, stackAll: true },
+]
+
+// 11–19: nine stacking levels (calm look, subtly different backdrops)
+const STACK_BGS = ["#cdc6b8", "#c9bfb0", "#c4c8be", "#ccc3b3", "#c6c0b4", "#cebfac", "#c1c5bd", "#cac3b3", "#c5bdb0"]
+const STACK_LEVELS: EnvConfig[] = STACK_BGS.map((bg, i) => ({
+  id: `stack-${i}`,
+  name: `Stable ${i + 2}`,
+  ...TUT_LOOK,
+  bg,
+  stackAll: true,
+}))
+
+// 26–49: the "cube-walk" section – one tip-walked maze + piloted solo stages of
+// rising reach. 50 closes the game by assembling the totem figure.
+const CW_BLOCKS = ["cube", "plank-long", "plank-short", "orange", "cylinder"]
+const SOLO_LOOK = {
+  bg: "#0c0b0a",
+  keyColor: "#fff1dc",
+  keyIntensity: 1.8,
+  contact: { color: "#000000", opacity: 0.4 },
+  bloom: true,
+}
+const CUBEWALK_LEVELS: EnvConfig[] = [
+  { ...base("maze"), id: "cw-maze", name: "Labyrint" },
+  ...Array.from({ length: 23 }, (_, i) => {
+    const b = CW_BLOCKS[i % CW_BLOCKS.length]
+    const bnd = 4 + (i % 4) // roam radius grows 4..7 for gentle difficulty
+    return {
+      id: `cw-${i}`,
+      name: `Gå ${i + 1}`,
+      ...SOLO_LOOK,
+      solo: b,
+      soloStart: [-(bnd - 1), bnd - 1] as [number, number],
+      soloGoal: [bnd - 1, -(bnd - 1)] as [number, number],
+      soloBound: bnd,
+    }
+  }),
+]
+
+// The curated 50-level journey, in two sections.
+const ENVIRONMENTS: EnvConfig[] = [
+  ...TUTORIAL_ENVIRONMENTS, // 1–5  intro: place, rotate, stand, place-all, stack
+  ...INTRO_REST, // 6–9  more intro practice (same calm background)
+  { ...base("video"), id: "video", name: "Film", plate: undefined, watchVideo: true }, // 10 watch to the end
+  ...STACK_LEVELS, // 11–19 stacking
+  { ...base("glass"), id: "soundbox", look: "glass", name: "Lydboks", corners: undefined, reactive: true, notes: 12 }, // 20 play 12 notes
+  base("gold"), // 21
+  base("peel"), // 22
+  base("playmat"), // 23
+  base("texturemiss"), // 24
+  { ...base("magnet"), id: "magnet", name: "Rommet" }, // 25 the space room closes section one
+  ...CUBEWALK_LEVELS, // 26–49 cube-walk
+  { ...base("five"), id: "five", name: "Totem" }, // 50 assemble the figure
+]
 
 // Public level list (id + name, in play order) for the title/level-select UI.
 export const LEVELS: { id: string; name: string }[] = ENVIRONMENTS.map((e) => ({ id: e.id, name: e.name }))
@@ -810,8 +978,15 @@ type DragState = {
   liftY: number // current carry height (ramps up the longer you hold)
   baseLift: number // height at the moment of grab
   grabTime: number // performance.now() when grabbed – drives the "lift close" ramp
+  startPos: THREE.Vector3 // body centre at grab – lets a quick tap stay put
   radius: number // horizontal footprint, used to keep the block off the walls
 }
+
+// A press shorter than this that barely moved the block is treated as a tap:
+// the block is left where it was instead of drifting off, so a tap never feels
+// like an accidental nudge.
+const TAP_TIME = 0.2 // seconds
+const TAP_MOVE = 0.3 // world units the centre may travel and still count as a tap
 
 const MIN_LIFT = 2.1 // grabbed blocks float well clear of the floor so you can carry them OVER a stacked layer
 const MAX_LIFT = WALL_VIS_HEIGHT - 0.3 // never lift above the tray rim
@@ -842,6 +1017,7 @@ type RoomProps = {
   shadowSpan: number
   roughMap: THREE.Texture
   muted: boolean // global mute state (drives the video room's audio)
+  revealRef?: React.MutableRefObject<boolean> // some rooms (video watch level) raise the solve here
 }
 
 // glass floor is tiled into chunky ~1.9-unit bricks; the glow snaps to this grid
@@ -925,8 +1101,245 @@ function puzzleZones(box: Box): Zone[] {
   })
 }
 
+/* ---- tutorial stages: place / rotate / stand / place-all / stack ---- */
+// A target outline (extends the sorting Zone with the orientation it wants).
+type PlaceZone = Zone & { upright: boolean; align?: "x" | "z" }
+function placeZones(specs: PlaceSpec[], box: Box): PlaceZone[] {
+  return specs.flatMap((s) => {
+    const b = BLOCKS.find((bb) => bb.id === s.id)
+    if (!b) return []
+    const isCyl = b.shape === "cylinder"
+    let hx: number, hz: number, restY: number
+    if (isCyl) {
+      // an upright cylinder reads as its circular footprint, standing on its end
+      hx = b.radius
+      hz = b.radius
+      restY = b.halfHeight
+    } else {
+      const h = b.half
+      if (s.align === "z") {
+        hx = Math.min(h[0], h[2])
+        hz = Math.max(h[0], h[2])
+      } else if (s.align === "x") {
+        hx = Math.max(h[0], h[2])
+        hz = Math.min(h[0], h[2])
+      } else {
+        hx = h[0]
+        hz = h[2]
+      }
+      restY = h[1]
+    }
+    return [
+      {
+        id: s.id,
+        color: b.color,
+        shape: b.shape,
+        x: s.nx * box.bx,
+        z: s.nz * box.bz,
+        hx,
+        hz,
+        radius: isCyl ? b.radius : 0,
+        restY,
+        tolX: hx + 0.55,
+        tolZ: hz + 0.55,
+        upright: !!s.upright,
+        align: s.align,
+      } satisfies PlaceZone,
+    ]
+  })
+}
+
+// Calm, plain floor with the target outlines drawn on it (and a stack pad for
+// the stacking stage). No photo tiles, so the lesson stays the focus.
+function TutorialRoom({ env, box, visibleWalls }: RoomProps) {
+  const zones = useMemo(() => placeZones(env.place ?? [], box), [env.place, box.bx, box.bz])
+  return (
+    <>
+      <ambientLight intensity={0.5} color="#fff3e3" />
+      <pointLight position={[0, 11, 2]} intensity={14} distance={50} decay={2} color="#fff0d8" />
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
+        <planeGeometry args={[box.bx * 2, box.bz * 2]} />
+        <meshStandardMaterial color="#c7c0b1" roughness={0.95} metalness={0} />
+      </mesh>
+
+      {zones.map((z) => (
+        <group key={z.id} position={[z.x, 0.014, z.z]} rotation={[-Math.PI / 2, 0, 0]}>
+          {z.shape === "cylinder" && z.upright ? (
+            <>
+              <mesh>
+                <circleGeometry args={[z.radius + 0.22, 40]} />
+                <meshBasicMaterial color={z.color} transparent opacity={0.22} />
+              </mesh>
+              <lineSegments>
+                <edgesGeometry args={[new THREE.CircleGeometry(z.radius + 0.22, 40)]} />
+                <lineBasicMaterial color={z.color} transparent opacity={0.85} toneMapped={false} />
+              </lineSegments>
+            </>
+          ) : (
+            <>
+              <mesh>
+                <planeGeometry args={[(z.hx + 0.22) * 2, (z.hz + 0.22) * 2]} />
+                <meshBasicMaterial color={z.color} transparent opacity={0.22} />
+              </mesh>
+              <lineSegments>
+                <edgesGeometry args={[new THREE.PlaneGeometry((z.hx + 0.22) * 2, (z.hz + 0.22) * 2)]} />
+                <lineBasicMaterial color={z.color} transparent opacity={0.85} toneMapped={false} />
+              </lineSegments>
+            </>
+          )}
+        </group>
+      ))}
+
+      {env.stackAll && (
+        <group position={[0, 0.014, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+          <lineSegments>
+            <edgesGeometry args={[new THREE.CircleGeometry(1.0, 40)]} />
+            <lineBasicMaterial color="#2b56be" transparent opacity={0.8} toneMapped={false} />
+          </lineSegments>
+        </group>
+      )}
+
+      {visibleWalls.map((w, i) => (
+        <mesh key={`wall-${i}`} position={w.pos} castShadow receiveShadow>
+          <boxGeometry args={[w.half[0] * 2, w.half[1] * 2, w.half[2] * 2]} />
+          <meshStandardMaterial color="#b3ab9b" roughness={0.92} metalness={0} />
+        </mesh>
+      ))}
+    </>
+  )
+}
+
+// Win when every listed block rests in its outline, settled, and oriented right
+// (a cylinder stood upright; a plank turned to the asked-for axis).
+function PlaceController({
+  specs,
+  bodies,
+  box,
+  revealRef,
+}: {
+  specs: PlaceSpec[]
+  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  box: Box
+  revealRef: React.MutableRefObject<boolean>
+}) {
+  const zones = useMemo(() => placeZones(specs, box), [specs, box.bx, box.bz])
+  const dwell = useRef(0)
+  const flash = useRef<THREE.PointLight>(null)
+  const flashT = useRef(0)
+  useEffect(() => () => {
+    revealRef.current = false
+  }, [revealRef])
+
+  useFrame((_s, dt) => {
+    if (!revealRef.current) {
+      let all = true
+      for (const z of zones) {
+        const body = bodies.current[z.id]
+        if (!body) {
+          all = false
+          break
+        }
+        const t = body.translation()
+        const lv = body.linvel()
+        const placed =
+          Math.abs(t.x - z.x) < z.tolX &&
+          Math.abs(t.z - z.z) < z.tolZ &&
+          t.y < z.restY + 0.55 &&
+          Math.hypot(lv.x, lv.y, lv.z) < 0.85
+        let orient = true
+        const r = body.rotation()
+        const q = new THREE.Quaternion(r.x, r.y, r.z, r.w)
+        if (z.upright) {
+          const up = new THREE.Vector3(0, 1, 0).applyQuaternion(q)
+          orient = Math.abs(up.y) > 0.9 // cylinder axis vertical -> standing on either end
+        } else if (z.align) {
+          const dir = new THREE.Vector3(0, 0, 1).applyQuaternion(q) // the plank's long axis
+          const h = Math.hypot(dir.x, dir.z)
+          const comp = z.align === "z" ? Math.abs(dir.z) : Math.abs(dir.x)
+          orient = h > 1e-4 && comp / h > 0.85
+        }
+        if (!(placed && orient)) {
+          all = false
+          break
+        }
+      }
+      if (all) {
+        dwell.current += dt
+        if (dwell.current > 0.5) {
+          revealRef.current = true
+          flashT.current = 1
+          haptic(26)
+        }
+      } else {
+        dwell.current = 0
+      }
+    }
+    flashT.current = Math.max(0, flashT.current - dt * 0.8)
+    if (flash.current) flash.current.intensity = flashT.current * 60
+  })
+
+  return <pointLight ref={flash} position={[0, 6, 0]} distance={44} decay={2} color="#fff6e6" intensity={0} />
+}
+
+// Win when all five blocks form one tower: each block clearly above and roughly
+// over the one below it, and the whole pile has come to rest.
+function StackAllController({
+  bodies,
+  revealRef,
+}: {
+  bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
+  revealRef: React.MutableRefObject<boolean>
+}) {
+  const dwell = useRef(0)
+  const flash = useRef<THREE.PointLight>(null)
+  const flashT = useRef(0)
+  useEffect(() => () => {
+    revealRef.current = false
+  }, [revealRef])
+
+  useFrame((_s, dt) => {
+    if (!revealRef.current) {
+      const stack = BLOCKS.map((b) => {
+        const body = bodies.current[b.id]
+        if (!body) return null
+        const t = body.translation()
+        const lv = body.linvel()
+        return { y: t.y, x: t.x, z: t.z, speed: Math.hypot(lv.x, lv.y, lv.z) }
+      })
+      let ok = stack.every((s) => s != null)
+      if (ok) {
+        const items = (stack as { y: number; x: number; z: number; speed: number }[]).slice().sort((a, b) => a.y - b.y)
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].speed > 0.8) ok = false // everything must be at rest
+          if (i > 0) {
+            const below = items[i - 1]
+            const here = items[i]
+            const apart = Math.hypot(here.x - below.x, here.z - below.z)
+            if (here.y - below.y < 0.25 || apart > 1.25) ok = false // genuinely on top, not beside
+          }
+        }
+      }
+      if (ok) {
+        dwell.current += dt
+        if (dwell.current > 0.6) {
+          revealRef.current = true
+          flashT.current = 1
+          haptic(26)
+        }
+      } else {
+        dwell.current = 0
+      }
+    }
+    flashT.current = Math.max(0, flashT.current - dt * 0.8)
+    if (flash.current) flash.current.intensity = flashT.current * 60
+  })
+
+  return <pointLight ref={flash} position={[0, 6, 0]} distance={44} decay={2} color="#fff6e6" intensity={0} />
+}
+
 function Room(props: RoomProps) {
   if (props.env.solo) return <SoloRoom {...props} />
+  if (props.env.place || props.env.stackAll) return <TutorialRoom {...props} />
   const look = props.env.look ?? props.env.id // extra levels reuse a base look
   if (look === "gold") return <GoldRoom {...props} />
   if (look === "glass") return <GlassRoom {...props} />
@@ -2716,7 +3129,8 @@ function soloStep(id: string): [number, number] {
 // piloted block stays the clear focus).
 function SoloRoom({ env }: RoomProps) {
   const [sx, sz] = soloStep(env.solo ?? "")
-  const [gx, gz] = [SOLO_GOAL[0] * sx, SOLO_GOAL[1] * sz]
+  const goal = env.soloGoal ?? SOLO_GOAL
+  const [gx, gz] = [goal[0] * sx, goal[1] * sz]
   return (
     <>
       <ambientLight intensity={0.42} color="#fff1df" />
@@ -2739,13 +3153,19 @@ function SoloController({
   blockId,
   bodies,
   revealRef,
+  start = SOLO_START,
+  goal = SOLO_GOAL,
+  bound = SOLO_BOUND,
 }: {
   blockId: string
   bodies: React.MutableRefObject<Record<string, RapierRigidBody | null>>
   revealRef: React.MutableRefObject<boolean>
+  start?: [number, number]
+  goal?: [number, number]
+  bound?: number
 }) {
   const camera = useThree((s) => s.camera)
-  const cell = useRef<[number, number]>([...SOLO_START])
+  const cell = useRef<[number, number]>([...start])
   const heldDir = useRef<[number, number] | null>(null)
   const baseQ = useRef(new THREE.Quaternion())
   const hop = useRef<{
@@ -2770,14 +3190,14 @@ function SoloController({
   const [stepX, stepZ] = soloStep(blockId)
 
   useEffect(() => {
-    cell.current = [...SOLO_START]
+    cell.current = [...start]
     hop.current = null
     heldDir.current = null
     baseQ.current = new THREE.Quaternion()
     const body = bodies.current[blockId]
     if (body) {
       body.setBodyType(BODY_KINEMATIC_POSITION, true)
-      body.setTranslation({ x: SOLO_START[0] * stepX, y: CARRY, z: SOLO_START[1] * stepZ }, true)
+      body.setTranslation({ x: start[0] * stepX, y: CARRY, z: start[1] * stepZ }, true)
       body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true)
     }
     return () => {
@@ -2794,7 +3214,7 @@ function SoloController({
       camY.current = null
       revealRef.current = false
     }
-  }, [blockId, bodies, revealRef, camera])
+  }, [blockId, bodies, revealRef, camera, start])
 
   useEffect(() => {
     const keys = new Set<string>()
@@ -2865,7 +3285,7 @@ function SoloController({
     body.wakeUp()
     cool.current = Math.max(0, cool.current - dt)
 
-    const atGoal = () => cell.current[0] === SOLO_GOAL[0] && cell.current[1] === SOLO_GOAL[1]
+    const atGoal = () => cell.current[0] === goal[0] && cell.current[1] === goal[1]
 
     if (hop.current) {
       const H = hop.current
@@ -2893,8 +3313,8 @@ function SoloController({
       body.setNextKinematicRotation({ x: baseQ.current.x, y: baseQ.current.y, z: baseQ.current.z, w: baseQ.current.w })
       if (heldDir.current && cool.current === 0 && !revealRef.current) {
         const [dx, dy] = heldDir.current
-        const tx = THREE.MathUtils.clamp(gx + dx, -SOLO_BOUND, SOLO_BOUND)
-        const ty = THREE.MathUtils.clamp(gy + dy, -SOLO_BOUND, SOLO_BOUND)
+        const tx = THREE.MathUtils.clamp(gx + dx, -bound, bound)
+        const ty = THREE.MathUtils.clamp(gy + dy, -bound, bound)
         if (tx !== gx || ty !== gy) {
           const mv = FIVE_MOVE[blockId] ?? { angle: Math.PI / 2, dur: 0.2 }
           const axis = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx, 0, dy)).normalize()
@@ -2935,7 +3355,7 @@ function SoloController({
     }
     flashT.current = Math.max(0, flashT.current - dt * 0.6)
     if (flash.current) {
-      flash.current.position.set(SOLO_GOAL[0] * stepX, 2, SOLO_GOAL[1] * stepZ)
+      flash.current.position.set(goal[0] * stepX, 2, goal[1] * stepZ)
       flash.current.intensity = flashT.current * 120
     }
   })
@@ -3108,7 +3528,8 @@ function TextureMissRoom({ box, visibleWalls }: RoomProps) {
 // through a low-res CRT shader so each surface reads as an old TV display.
 // The <video> + VideoTexture are created inside the effect (one per mount) so
 // React StrictMode's mount/unmount/mount can't leave a dead, src-less element.
-function VideoRoom({ box, visibleWalls, muted }: RoomProps) {
+function VideoRoom({ env, box, visibleWalls, muted, revealRef }: RoomProps) {
+  const watch = env.watchVideo === true
   const [tex, setTex] = useState<THREE.VideoTexture | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const mutedRef = useRef(muted)
@@ -3138,7 +3559,7 @@ function VideoRoom({ box, visibleWalls, muted }: RoomProps) {
     if (typeof document === "undefined") return
     const v = document.createElement("video")
     v.src = "/videoplayback.mp4"
-    v.loop = true
+    v.loop = !watch // the watch-to-the-end level plays once, then solves
     v.muted = true
     v.defaultMuted = true
     v.playsInline = true
@@ -3168,11 +3589,17 @@ function VideoRoom({ box, visibleWalls, muted }: RoomProps) {
       v.muted = mutedRef.current
       start()
     }
+    // the watch level is solved when the clip reaches its end
+    const onEnded = () => {
+      if (watch && revealRef) revealRef.current = true
+    }
+    v.addEventListener("ended", onEnded)
     start()
     window.addEventListener("pointerdown", onGesture)
     window.addEventListener("touchend", onGesture)
 
     return () => {
+      v.removeEventListener("ended", onEnded)
       window.removeEventListener("pointerdown", onGesture)
       window.removeEventListener("touchend", onGesture)
       v.pause()
@@ -3550,12 +3977,24 @@ function SceneContents({
   }, [])
   // a block striking a reactive floor lights a (dim) tile AND plays its note
   const reactive = env.reactive === true
+  // soundbox: count the notes the player strikes; solve once they've played enough
+  const noteCount = useRef(0)
+  const noteTarget = env.notes ?? 0
+  useEffect(() => {
+    noteCount.current = 0
+  }, [env.id])
   const onBlockImpact = useCallback(
     (x: number, z: number, strength: number) => {
       pushGlow(x, z, strength)
-      if (reactive) playTone(tileFreq(x, z), strength)
+      if (reactive && strength > 0.06) {
+        playTone(tileFreq(x, z), strength)
+        if (noteTarget > 0 && !revealRef.current) {
+          noteCount.current += 1
+          if (noteCount.current >= noteTarget) revealRef.current = true
+        }
+      }
     },
-    [pushGlow, reactive],
+    [pushGlow, reactive, noteTarget],
   )
 
   /* ---- keep the shadow camera in sync when the box resizes ---- */
@@ -3569,16 +4008,19 @@ function SceneContents({
       BLOCKS.forEach((b) => {
         const body = bodies.current[b.id]
         if (!body) return
+        const sp = env.spawn?.[b.id]
+        const pos = sp?.pos ?? b.pos
+        const rot = sp?.rot ?? b.rot
         body.setBodyType(BODY_DYNAMIC, true)
-        body.setTranslation({ x: b.pos[0], y: b.pos[1], z: b.pos[2] }, true)
-        const e = new THREE.Euler(...(b.rot ?? [0, 0, 0]))
+        body.setTranslation({ x: pos[0], y: pos[1], z: pos[2] }, true)
+        const e = new THREE.Euler(...(rot ?? [0, 0, 0]))
         const q = new THREE.Quaternion().setFromEuler(e)
         body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
         body.setLinvel({ x: 0, y: 0, z: 0 }, true)
         body.setAngvel({ x: 0, y: 0, z: 0 }, true)
       })
     })
-  }, [registerReset])
+  }, [registerReset, env])
 
   /* ---- grab ---- */
   // The body stays DYNAMIC: we hold it by a spring at the grab point so it
@@ -3608,6 +4050,7 @@ function SceneContents({
         liftY: grabY,
         baseLift: grabY,
         grabTime: performance.now(),
+        startPos: center.clone(),
         radius: blockRadius(block),
       }
       grabbingRef.current = true
@@ -3664,12 +4107,23 @@ function SceneContents({
       const d = drag.current
       if (!d) return
       el.style.cursor = "grab"
-      // clamp the release speed so a flick stays a toss, not a hurl
-      const lv = d.body.linvel()
-      const v = new THREE.Vector3(lv.x, lv.y, lv.z)
-      if (v.length() > THROW_MAX) {
-        v.setLength(THROW_MAX)
-        d.body.setLinvel({ x: v.x, y: v.y, z: v.z }, true)
+      // A quick tap (short hold, barely moved) should leave the block where it
+      // is, not send it drifting – the carry ramp can impart a little stray
+      // velocity that otherwise feels like losing control. Kill all motion in
+      // that case; otherwise clamp the release speed so a flick stays a toss.
+      const held = (performance.now() - d.grabTime) / 1000
+      const tp = d.body.translation()
+      const moved = Math.hypot(tp.x - d.startPos.x, tp.z - d.startPos.z)
+      if (held < TAP_TIME && moved < TAP_MOVE) {
+        d.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+        d.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+      } else {
+        const lv = d.body.linvel()
+        const v = new THREE.Vector3(lv.x, lv.y, lv.z)
+        if (v.length() > THROW_MAX) {
+          v.setLength(THROW_MAX)
+          d.body.setLinvel({ x: v.x, y: v.y, z: v.z }, true)
+        }
       }
       drag.current = null
       twist.current = null
@@ -3769,11 +4223,14 @@ function SceneContents({
   useEffect(() => {
     const el = gl.domElement
     const UP = new THREE.Vector3(0, 1, 0)
+    const SIDE = new THREE.Vector3(1, 0, 0)
     const rotateHeld = (angle: number) => {
       const d = drag.current
       if (!d) return
+      // the cylinder tips about a horizontal axis (to stand on its end); boxes yaw
+      const axis = d.block.shape === "cylinder" ? SIDE : UP
       const r = d.body.rotation()
-      const q = new THREE.Quaternion().setFromAxisAngle(UP, angle).multiply(new THREE.Quaternion(r.x, r.y, r.z, r.w))
+      const q = new THREE.Quaternion().setFromAxisAngle(axis, angle).multiply(new THREE.Quaternion(r.x, r.y, r.z, r.w))
       d.body.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
       d.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
       haptic(6)
@@ -3880,9 +4337,13 @@ function SceneContents({
     )
     const tw = twist.current
     if (tw && tw.active) {
-      // a second finger is twisting: drive the yaw directly (predictable, snappy)
-      // about world-Y, on top of the orientation captured when it landed
-      const targetQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), tw.delta).multiply(tw.base)
+      // a second finger is twisting: drive the rotation directly (predictable,
+      // snappy) on top of the orientation captured when it landed. A box yaws
+      // about world-Y; the cylinder is symmetric about its axis, so for it the
+      // same twist instead tips it about a horizontal axis — that's how you
+      // stand it up on its end.
+      const axis = d.block.shape === "cylinder" ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)
+      const targetQ = new THREE.Quaternion().setFromAxisAngle(axis, tw.delta).multiply(tw.base)
       d.body.setRotation({ x: targetQ.x, y: targetQ.y, z: targetQ.z, w: targetQ.w }, true)
       d.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
     } else {
@@ -3974,7 +4435,7 @@ function SceneContents({
       </RigidBody>
 
       {/* environment-specific room: floor, walls, fill lighting */}
-      <Room env={env} box={box} visibleWalls={visibleWalls} shadowSpan={shadowSpan} roughMap={roughMap} muted={muted} />
+      <Room env={env} box={box} visibleWalls={visibleWalls} shadowSpan={shadowSpan} roughMap={roughMap} muted={muted} revealRef={revealRef} />
 
       {/* reactive floor: tiles flash where blocks strike, brightness ~ force */}
       <ImpactGlows poolRef={glowPool} active={!!env.reactive} tile={GLASS_TILE} />
@@ -4013,13 +4474,38 @@ function SceneContents({
       {env.five && <FiveController bodies={bodies} box={box} revealRef={revealRef} />}
 
       {/* solo stage: pilot just one block (its own move set) to the exit */}
-      {env.solo && <SoloController blockId={env.solo} bodies={bodies} revealRef={revealRef} />}
+      {env.solo && (
+        <SoloController
+          blockId={env.solo}
+          bodies={bodies}
+          revealRef={revealRef}
+          start={env.soloStart}
+          goal={env.soloGoal}
+          bound={env.soloBound}
+        />
+      )}
 
-      {/* blocks — a solo stage shows only its one block; the maze only the cube */}
-      {BLOCKS.filter((b) => (env.solo ? b.id === env.solo : !env.maze || b.id === "cube")).map((b) => (
+      {/* tutorial: drag each block into its outline (with the right orientation) */}
+      {env.place && <PlaceController specs={env.place} bodies={bodies} box={box} revealRef={revealRef} />}
+
+      {/* tutorial: stack every block into one tower */}
+      {env.stackAll && <StackAllController bodies={bodies} revealRef={revealRef} />}
+
+      {/* blocks — a solo stage shows only its one block; the maze only the cube;
+          tutorial stages may restrict to a subset via env.only */}
+      {BLOCKS.filter((b) =>
+        env.solo
+          ? b.id === env.solo
+          : env.maze
+            ? b.id === "cube"
+            : env.only
+              ? env.only.includes(b.id)
+              : true,
+      ).map((b) => (
         <BlockBody
           key={b.id}
           block={b}
+          spawn={env.spawn?.[b.id]}
           bodyRef={(r) => (bodies.current[b.id] = r)}
           onGrab={onGrab}
           onImpact={onBlockImpact}
@@ -4104,8 +4590,23 @@ export default function WoodenBlocks({
   }, [])
   const scheduleHide = useCallback(() => {
     if (hideTimer.current) clearTimeout(hideTimer.current)
-    hideTimer.current = setTimeout(() => setUiShown(false), 2200)
+    hideTimer.current = setTimeout(() => setUiShown(false), 2600)
   }, [])
+  // When the cluster has faded out, the first tap just brings it back (and is
+  // otherwise inconsequential); only a tap while it's visible runs the action.
+  // Either way we keep it up for a beat before fading again.
+  const tapAction = useCallback(
+    (fn: () => void) => () => {
+      if (!uiShown) {
+        revealUI()
+        scheduleHide()
+        return
+      }
+      fn()
+      scheduleHide()
+    },
+    [uiShown, revealUI, scheduleHide],
+  )
   useEffect(() => {
     scheduleHide() // visible on load, then fade out after a beat
     return () => {
@@ -4307,9 +4808,14 @@ export default function WoodenBlocks({
         <CameraRig />
         <Physics
           gravity={[0, -G, 0]}
-          timeStep={1 / 120}
-          numSolverIterations={12}
-          maxCcdSubsteps={4}
+          // 60 Hz fixed step matches the display: it stops the simulation
+          // falling behind real time on phones (the occasional "slow-mo"), and
+          // roughly halves the physics cost vs 120 Hz. Interpolation keeps it
+          // smooth on 120 Hz ProMotion screens; fast throws are speed-clamped +
+          // CCD so nothing tunnels at this rate.
+          timeStep={1 / 60}
+          numSolverIterations={8}
+          maxCcdSubsteps={2}
           interpolate
         >
           <Suspense fallback={null}>
@@ -4336,19 +4842,24 @@ export default function WoodenBlocks({
           It stays interactive at all times (the buttons are small enough not to
           get in the way of the toy). */}
       <div
-        onPointerEnter={revealUI}
-        onPointerLeave={scheduleHide}
-        style={{ color: env.id === "gold" ? "#efe1c2" : "#262626" }}
-        className={`pointer-events-auto absolute left-2 top-2 z-10 flex flex-col gap-2 p-1 transition-opacity duration-700 ease-out ${
+        onPointerEnter={(e) => e.pointerType === "mouse" && revealUI()}
+        onPointerLeave={(e) => e.pointerType === "mouse" && scheduleHide()}
+        style={{
+          color: env.id === "gold" ? "#efe1c2" : "#262626",
+          // sit clear of the status bar / notch now that we draw edge-to-edge
+          top: "calc(env(safe-area-inset-top, 0px) + 0.5rem)",
+          left: "calc(env(safe-area-inset-left, 0px) + 0.5rem)",
+        }}
+        className={`pointer-events-auto absolute z-10 flex flex-col gap-2 p-1 transition-opacity duration-700 ease-out ${
           uiShown ? "opacity-90" : "opacity-30"
         }`}
       >
         {onExit && (
           <button
             type="button"
-            aria-label="Tilbake til nivå"
-            onClick={onExit}
-            className="flex h-11 w-11 items-center justify-center rounded-full transition hover:bg-black/5 active:scale-95"
+            aria-label="Nivå"
+            onClick={tapAction(onExit)}
+            className="flex h-11 w-11 items-center justify-center transition active:scale-95"
           >
             <LayoutGrid className="h-5 w-5" strokeWidth={2.4} />
           </button>
@@ -4357,13 +4868,13 @@ export default function WoodenBlocks({
           type="button"
           aria-label={muted ? "Slå på lyd" : "Demp lyd"}
           aria-pressed={muted}
-          onClick={() => {
+          onClick={tapAction(() => {
             const next = !muted
             setMutedState(next)
             setMuted(next)
             setSound(!next) // keep the menu's saved preference in sync
-          }}
-          className="flex h-11 w-11 items-center justify-center rounded-full transition hover:bg-black/5 active:scale-95"
+          })}
+          className="flex h-11 w-11 items-center justify-center transition active:scale-95"
         >
           {muted ? (
             <VolumeX className="h-5 w-5" strokeWidth={2.4} />
@@ -4375,17 +4886,14 @@ export default function WoodenBlocks({
           type="button"
           aria-label="Vipp for å styre tyngdekrafta"
           aria-pressed={tiltOn}
-          onClick={toggleTilt}
-          className={`flex h-11 w-11 items-center justify-center rounded-full transition active:scale-95 ${
-            tiltOn ? "bg-black/10" : "hover:bg-black/5"
-          }`}
+          onClick={tapAction(toggleTilt)}
+          className="flex h-11 w-11 items-center justify-center transition active:scale-95"
         >
           <span ref={iconRef} className="flex items-center justify-center [transform-style:preserve-3d]">
             <Smartphone className="h-5 w-5" strokeWidth={2.4} />
           </span>
         </button>
       </div>
-
     </div>
   )
 }

@@ -40,6 +40,9 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
+  // draw edge-to-edge under the status bar / home indicator so the game fills
+  // the whole screen instead of leaving a coloured safe-area strip at the top
+  viewportFit: 'cover',
   colorScheme: 'light',
   themeColor: '#f6f2ea',
 }
